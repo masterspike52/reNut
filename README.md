@@ -42,3 +42,8 @@ MAKING ISSUES
 --------------------------------------------------------------------------
 Remember that this game and rexglue are in an experimental state, there are some issues i myself cannot fix and there may even be some that rexglue cant fix
 if you make an issue you will ned to be a bit specific 
+
+
+When Running
+----------------------------------------------------
+instead of double clicking run a terminal and do .\renut --gpu_allow_invalid_fetch_constants=true to prevent some hangs in game
