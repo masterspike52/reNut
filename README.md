@@ -40,7 +40,7 @@ HOW TO BUILD
 7. change the configuration to win-amd64-relwithdebinfo
 8. expand the reNut project in VS and right click renut_codegen(utility target) > build renut_codegen to generate the files for compiling in the generated folder
 10. right click reNut project and select build all
-11. copy the assets folder with the dumped contents of the iso in out/build/win-amd64-relwithdebinfo
+11. copy the assets folder with the dumped contents of the iso in out/build/win-amd64-relwithdebinfo 
 
 PREFFERED METHOD OF RUNNING THE GAME
 -----------------------------------------------------------
