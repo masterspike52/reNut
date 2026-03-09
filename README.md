@@ -36,7 +36,7 @@ HOW TO BUILD
 3. clone/download the repository
 4. dump your copy of Banjo-Kazooie: Nuts&bolts and use a tool like ISO-Extract to dump the contents of the iso (INCLUDING THE DEFAULT.XEX FILE)
 5. place the contents of the iso in the assets folder you created in step 4 (INCLUDING THE DEFAULT.XEX FILE)
-6. run rexglue codegen renut_config.toml to generate the files for compiling in the generated folder
+6. run ```rexglue codegen renut_config.toml``` to generate the files for compiling in the generated folder
 7. open the folder in visual studio, go into cmake targets view
 8. change the configuration to win-amd64-relwithdebinfo
 9. right click reNut project and select build all
@@ -44,9 +44,9 @@ HOW TO BUILD
 
 PREFFERED METHOD OF RUNNING THE GAME
 -----------------------------------------------------------
-open a terminal and do .\renut --gpu_allow_invalid_fetch_constants=true to prevent some hangs in game
+open a terminal and do ```.\renut --gpu_allow_invalid_fetch_constants=true``` to prevent some hangs in game
 
-if your using something like cmd or similar you only need to run renut --gpu_allow_invalid_fetch_constants=true 
+if your using something like cmd or similar you only need to run ```renut --gpu_allow_invalid_fetch_constants=true``` 
 
 
 CURRENT ISSUE!!!!
