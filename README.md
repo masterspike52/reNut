@@ -35,8 +35,8 @@ HOW TO BUILD
 2. install Visual Studio Community edition and ensure you install the desktop development with C++ and make sure you check the box that says C++ clang compiler for windows (note: if you are using Mac or linux you can skip this for you will have to follow the wiki linked in step 1 to build the game)
 3. clone/download the repository
 4. in the repository folder make an assets and generated folder
-5. dump your copy of Banjo-Kazooie: Nuts&bolts and use a tool like ISO-Extract to dump the contents of the iso
-6. place the contents of the iso in the assets folder you created in step 4
+5. dump your copy of Banjo-Kazooie: Nuts&bolts and use a tool like ISO-Extract to dump the contents of the iso (INCLUDING THE DEFAULT.XEX FILE)
+6. place the contents of the iso in the assets folder you created in step 4 (INCLUDING THE DEFAULT.XEX FILE)
 7. open the folder in visual studio, go into cmake targets view
 8. change the configuration to win-amd64-relwithdebinfo
 9. right click reNut project and select build all
