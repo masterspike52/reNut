@@ -11,7 +11,6 @@ setjmp_address = 0x82BB5EF0
 longjmp_address = 0x82BB59B0
 
 
-
 [functions]
 0x82B100E8 = {}
 0x82AEC718 = {}
@@ -48,4 +47,9 @@ longjmp_address = 0x82BB59B0
 0x824e0e88 = {}
 
 
-
+[[midasm_hook]]
+address = 0x825A9110
+name = "overworld_vehicles_hook"
+registers = []
+after_instruction = false
+jump_address_on_true = 0x825A8F24

@@ -14,6 +14,7 @@ include(generated/rexglue.cmake)
 # Sources
 set(RENUT_SOURCES
     src/main.cpp
+    src/renut_engine/hooks.cpp
 )
 
 if(WIN32)
