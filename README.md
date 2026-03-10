@@ -12,7 +12,7 @@ Rexglue team for creating Rexglue-SDK
 <br>
 the Rexglue SDK discord for helping with any info they have
 <br>
-SolarCookies
+SolarCookies for midasm hooks and future use of CRT functions
 <br>
 .
 <br>
