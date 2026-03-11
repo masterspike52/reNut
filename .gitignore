@@ -20,3 +20,4 @@ out/build/win-amd64-relwithdebinfo/renut.lib
 out/build/win-amd64-relwithdebinfo/Testing/
 out/build/win-amd64-relwithdebinfo/VSInheritEnvironments.txt
 out/build/win-amd64-relwithdebinfo/isenseconfig/
+/out/build/win-amd64-relwithdebinfo/logs
