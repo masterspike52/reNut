@@ -1,9 +1,10 @@
 ## Ignore Recomp files, Build results, and Assets
 
+# Whitelist renut.exe for launcher updates
+!out/build/win-amd64-release/renut.exe
+
 assets/
 generated/
 out/
 .vs/
 
-# Whitelist renut.exe for launcher updates
-!out/build/win-amd64-release/renut.exe
