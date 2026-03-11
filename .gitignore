@@ -1,6 +1,21 @@
 ## Ignore Recomp files, Build results, and Assets
 
+# Whitelist renut.exe for launcher updates
+!out/build/win-amd64-release/renut.exe
+
 assets/
 generated/
-out/
 .vs/
+
+/out/build/win-amd64-debug
+/out/build/win-amd64-release/.cmake
+out/build/win-amd64-release/.ninja_deps
+out/build/win-amd64-release/.ninja_log
+out/build/win-amd64-release/build.ninja
+out/build/win-amd64-release/cmake_install.cmake
+out/build/win-amd64-release/CMakeCache.txt
+/out/build/win-amd64-release/CMakeFiles
+out/build/win-amd64-release/renut.lib
+out/build/win-amd64-release/Testing/Temporary/LastTest.log
+out/build/win-amd64-release/VSInheritEnvironments.txt
+out/build/win-amd64-release/isenseconfig/1816891061-iconfig.json
