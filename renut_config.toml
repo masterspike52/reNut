@@ -45,6 +45,10 @@ longjmp_address = 0x82BB59B0
 0x8245a730 = {}
 0x82391ab0 = {}
 0x824e0e88 = {}
+0x82cdc9e8 = {}
+0x82cdca68 = {}
+0x82cdca00 = {}
+0x82cdca40 = {}
 
 
 [[midasm_hook]]
