@@ -61,3 +61,9 @@ name = "no_notes_spent"
 registers = []
 after_instruction = false
 jump_address_on_true = 0x824CE32C
+
+[[midasm_hook]]
+address = 0x823EDEC0
+name = "fps_hook"
+registers = ["r3"]
+after_instruction = false

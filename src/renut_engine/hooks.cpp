@@ -10,7 +10,7 @@
 
 REXCVAR_DEFINE_BOOL(overworld_vehicles, false, "Nuts&Bolts", "Enables Overworld Vehicles");
 REXCVAR_DEFINE_BOOL(no_notes_spent, false, "Nuts&Bolts", "hook created by serenity");
-//forword delare loc_825A8F24
+//REXCVAR_DEFINE_DOUBLE(fpsCount, 0.0, "Nuts&Bolts", ""); //This would be a frame timer display that updates every frame
 
 
 
@@ -26,4 +26,9 @@ bool no_notes_spent() {
         return true;
     }
     return false;
+}
+
+void fps_hook(PPCRegister& r3) {
+    //REXCVAR_SET(fpsCount, 60.0);
+    r3.u64 = 0;
 }
