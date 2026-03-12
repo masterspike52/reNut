@@ -1,6 +1,6 @@
 
-<img width="1920" height="1080" alt="renut logo" src="https://github.com/user-attachments/assets/80513c46-105b-4184-9258-ab643205cb69" />
 
+<img width="1920" height="1080" alt="renut logo" src="https://github.com/user-attachments/assets/273bee28-755f-4494-920f-9333af72091e" />
 
 
 
