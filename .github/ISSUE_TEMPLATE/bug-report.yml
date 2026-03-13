@@ -5,7 +5,7 @@ labels: ["bug"]
 body:
 - type: markdown
    attributes:
-      value: | 
+   value: | 
       Thanks for reporting a crash! Please fill out as much detail as possible.
 
   - type: textarea
