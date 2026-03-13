@@ -71,3 +71,9 @@ address = 0x823EDEC0
 name = "fps_hook"
 registers = ["r3"]
 after_instruction = false
+
+[[midasm_hook]]
+address = 0x821F8CC4
+name = "fpsCount_hook"
+registers = []
+after_instruction = false
