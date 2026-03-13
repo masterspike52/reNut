@@ -5,8 +5,7 @@ labels: ["bug"]
 body:
 - type: markdown
    attributes:
-      value: |
-        Thanks for reporting a crash! Please fill out as much detail as possible.
+      value: Thanks for reporting a crash! Please fill out as much detail as possible.
 
   - type: textarea
     id: reNut or reNut-Launcher
