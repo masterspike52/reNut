@@ -84,3 +84,10 @@ name = "meGetResolutionParams_hook"
 registers = ["r5", "r6"]
 after_instruction = true
 jump_address_on_true = 0x823ED950
+
+[[midasm_hook]]
+address = 0x8228F610
+name = "Optimization_Hook"
+registers = []
+after_instruction = false
+

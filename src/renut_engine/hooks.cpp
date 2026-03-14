@@ -62,3 +62,8 @@ bool meGetResolutionParams_hook(PPCRegister& r5, PPCRegister& r6){
   }
   return false;
 }
+
+void Optimization_Hook(){
+  std::this_thread::yield();
+}
+
