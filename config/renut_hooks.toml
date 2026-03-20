@@ -57,3 +57,17 @@ address = 0x822C7F0C
 name = "StopNSwap_hook"
 registers = ["r22"]
 after_instruction = true
+
+[[midasm_hook]]
+address = 0x82288310
+name = "Infinite_weight_part_capacity"
+registers = []
+after_instruction = false
+jump_address_on_true = 0x82288318
+
+[[midasm_hook]]
+address = 0x823F47C8
+name = "Infinite_health"
+registers = []
+after_instruction = false
+jump_address_on_true = 0x823F47D0

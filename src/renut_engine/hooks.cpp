@@ -24,7 +24,8 @@ REXCVAR_DEFINE_BOOL(disable_lod, false, "Nuts&Bolts", "Disables LOD (Level of De
 REXCVAR_DEFINE_BOOL(infinite_fuel_and_ammo, false, "Nuts&Bolts", "fuel never decreases");
 // Name = "Infinite Health"
 REXCVAR_DEFINE_BOOL(infinite_health, false, "Nuts&Bolts", "health never decreases");
-
+// Name = "Infinite Weight and Capacity"
+REXCVAR_DEFINE_BOOL(infinite_weight_and_capacity, false, "Nuts&Bolts", "weight and parts capacity never decreases in mumbos motors");
 
 
 
@@ -90,3 +91,16 @@ void Infinite_fuel_and_ammo() {
     }
 }
 
+bool Infinite_weight_part_capacity() {
+    if (REXCVAR_GET(infinite_weight_and_capacity)) {
+        return true;
+    }
+    return false;
+}
+
+bool Infinite_health() {
+    if (REXCVAR_GET(infinite_health)) {
+        return true;
+    }
+    return false;
+}
