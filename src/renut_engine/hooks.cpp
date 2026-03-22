@@ -26,6 +26,10 @@ REXCVAR_DEFINE_BOOL(infinite_fuel_and_ammo, false, "Nuts&Bolts", "fuel never dec
 REXCVAR_DEFINE_BOOL(infinite_health, false, "Nuts&Bolts", "health never decreases");
 // Name = "No Timer"
 REXCVAR_DEFINE_BOOL(no_timer, false, "Nuts&Bolts", "timer never goes past 0 in missions with a timer");
+// Name = "Infinite Parts"
+REXCVAR_DEFINE_BOOL(infinite_parts, false, "Nuts&Bolts/Cheats", "vehicle parts never decreases");
+// Name = "Extended Build Range"
+REXCVAR_DEFINE_BOOL(extended_build_range, false, "Nuts&Bolts/Cheats", "Allows you to build in a bit bigger area of mumbos motors");
 // Name = "Banjo Skins"
 REXCVAR_DEFINE_STRING(banjo_skin, "default", "Nuts&Bolts/Skins", "Banjo skin override")
 .allowed({ "default", "robot", "tuxedo" });
@@ -102,6 +106,19 @@ bool Infinite_health() {
 
 bool No_Timer() {
     if (REXCVAR_GET(no_timer)) {
+        return true;
+    }
+    return false;
+}
+
+void Infinite_parts(PPCRegister& r11) {
+    if (REXCVAR_GET(infinite_parts)) {
+        r11.u32 = 0x7F800000;
+    }
+}
+
+bool Extended_build_range() {
+    if (REXCVAR_GET(extended_build_range)) {
         return true;
     }
     return false;
