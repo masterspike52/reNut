@@ -2,6 +2,13 @@
 #include "renut_logging.h"
 #include "rex_macros.h"
 
+#if defined(_MSC_VER)
+#include <stdlib.h>
+#define REX_BSWAP32(x) _byteswap_ulong(x)
+#else
+#define REX_BSWAP32(x) __builtin_bswap32(x)
+#endif
+
 REX_PPC_EXTERN_IMPORT(gameFlagsSetFlag_82363ED0);
 
 inline bool hasStopNSwap_hook_Ran = false;
@@ -20,7 +27,7 @@ void StopNSwap_hook(PPCRegister& r22)
     uint8_t* base = reinterpret_cast<uint8_t*>(0x100000000);
 
     // Read the guest pointer at *(a1 + 92) — big-endian byte swap
-    uint32_t flags_ptr = _byteswap_ulong(*reinterpret_cast<uint32_t*>(base + a1 + 92));
+    uint32_t flags_ptr = REX_BSWAP32(*reinterpret_cast<uint32_t*>(base + a1 + 92));
 
 
     // Set byte flags and call gameFlagsSetFlag with the dereferenced pointer
