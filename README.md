@@ -26,7 +26,7 @@ SolarCookies for midasm hooks and future use of CRT functions and the reNut Laun
 <br>
 ValcomDrifty for the renut logo
 <br>
-etonemid for the linux build/fixes
+etonedemid for the linux build/fixes
 <br>
 .
 <br>
