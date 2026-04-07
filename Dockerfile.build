@@ -1,0 +1,25 @@
+# Build container for reNut — targets glibc 2.39 (Ubuntu 24.04)
+# Compatible with SteamOS 3.6+, Ubuntu 24.04+, Fedora 40+, etc.
+FROM ubuntu:24.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Install LLVM 19 (for C++23 std::expected compat) + build deps
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates gnupg wget && \
+    wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key \
+      | gpg --dearmor -o /usr/share/keyrings/llvm.gpg && \
+    echo "deb [signed-by=/usr/share/keyrings/llvm.gpg] http://apt.llvm.org/noble/ llvm-toolchain-noble-19 main" \
+      > /etc/apt/sources.list.d/llvm.list && \
+    apt-get update && apt-get install -y --no-install-recommends \
+    clang-19 lld-19 \
+    libstdc++-14-dev \
+    cmake ninja-build pkg-config \
+    libgtk-3-dev libx11-xcb-dev \
+    python3 git && \
+    update-alternatives --install /usr/bin/clang clang /usr/bin/clang-19 100 && \
+    update-alternatives --install /usr/bin/clang++ clang++ /usr/bin/clang++-19 100 && \
+    update-alternatives --install /usr/bin/lld lld /usr/bin/lld-19 100 && \
+    apt-get clean && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /build
