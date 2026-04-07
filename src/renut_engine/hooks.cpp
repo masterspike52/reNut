@@ -14,12 +14,9 @@
 REXCVAR_DEFINE_BOOL(overworld_vehicles, false, "Nuts&Bolts", "Enables Overworld Vehicles");
 // Name = "No Notes Spent"
 REXCVAR_DEFINE_BOOL(no_notes_spent, false, "Nuts&Bolts", "hook created by serenity");
-// Name = "VSync Mode"
-REXCVAR_DEFINE_INT32(target_fps, 30, "Nuts&Bolts/Performance", "Target frame rate cap. 30 = original, 60 = unlocked")
-.range(30, 60)
-.validator([](std::string_view v) {
-    return v == "30" || v == "60";
-    });
+// Name = "Target FPS"
+// 0 = unlimited, 30 = original (vsync/2), 60 = unlocked (vsync), any other positive value = frame cap
+REXCVAR_DEFINE_INT32(target_fps, 30, "Nuts&Bolts/Performance", "Target frame rate cap. 30 = original, 60 = unlocked, 0 = unlimited, or any positive value");
 // Name = "Disable LOD"
 REXCVAR_DEFINE_BOOL(disable_lod, false, "Nuts&Bolts", "Disables LOD (Level of Detail) scaling");
 // Name = "Infinite Fuel and Ammo"
@@ -57,8 +54,14 @@ bool no_notes_spent() {
 }
 
 void fps_hook(PPCRegister & r11) {
-    if (REXCVAR_GET(target_fps) == 60) {
-        r11.u32 = 1; 
+    int fps = REXCVAR_GET(target_fps);
+    if (fps == 0 || fps > 30) {
+        // r11 controls vsync interval: 1 = every frame (~60fps), 2 = every other frame (~30fps)
+        // Setting to 1 unlocks the game's own vsync-based 60fps cap.
+        // The actual cap beyond 60 is handled by the host presentation layer.
+        r11.u32 = 1;
+    } else {
+        // 30fps: leave r11 as-is (=2, game default)
     }
 }
 

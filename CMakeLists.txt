@@ -38,9 +38,11 @@ rexglue_setup_target(renut)
 # Symlink the source assets folder into the build output directory so the
 # runtime VFS can find game data regardless of which build config is active.
 add_custom_command(TARGET renut POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E rm -rf "$<TARGET_FILE_DIR:renut>/assets"
     COMMAND ${CMAKE_COMMAND} -E create_symlink
         "${CMAKE_SOURCE_DIR}/assets"
         "$<TARGET_FILE_DIR:renut>/assets"
+    COMMAND ${CMAKE_COMMAND} -E rm -f "$<TARGET_FILE_DIR:renut>/renut.toml"
     COMMAND ${CMAKE_COMMAND} -E create_symlink
         "${CMAKE_SOURCE_DIR}/renut.toml"
         "$<TARGET_FILE_DIR:renut>/renut.toml"
