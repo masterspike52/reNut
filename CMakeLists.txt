@@ -28,6 +28,7 @@ set(RENUT_SOURCES
 )
 
 if(WIN32)
+list(APPEND RENUT_SOURCES icon/app.rc)
     add_executable(renut WIN32 ${RENUT_SOURCES})
 else()
     add_executable(renut ${RENUT_SOURCES})

@@ -4,7 +4,8 @@
 // Customize your app by overriding virtual hooks from rex::ReXApp.
 #pragma once
 #include <rex/rex_app.h>
-#include "renut_engine/fps_overlay_dialog.h"
+#include "renut_engine/overlays/fps_overlay_dialog.h"
+#include "renut_engine/overlays/renut_logging_overlay.h"
 
 
 
