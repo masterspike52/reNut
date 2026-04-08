@@ -1,8 +1,5 @@
 # Auto-generated cvar configuration
 license_mask = 1
-video_mode_refresh_rate = 120.0
-target_fps = 60
-banjo_skin = "tuxedo"
 vulkan_async_skip_incomplete_frames = false
 gpu_allow_invalid_fetch_constants = true
 native_2x_msaa = false
