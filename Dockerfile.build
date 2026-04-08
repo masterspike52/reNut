@@ -1,6 +1,6 @@
-# Build container for reNut — targets glibc 2.35 (Ubuntu 22.04)
-# Compatible with SteamOS 3.4+, Ubuntu 22.04+, Debian 12+, Fedora 38+, etc.
-FROM ubuntu:22.04
+# Build container for reNut — targets glibc 2.39 (Ubuntu 24.04)
+# Compatible with SteamOS 3.6+, Ubuntu 24.04+, Debian 12+, Fedora 40+, etc.
+FROM ubuntu:24.04
 
 ENV DEBIAN_FRONTEND=noninteractive
 
@@ -9,11 +9,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates gnupg wget && \
     wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key \
       | gpg --dearmor -o /usr/share/keyrings/llvm.gpg && \
-    echo "deb [signed-by=/usr/share/keyrings/llvm.gpg] http://apt.llvm.org/jammy/ llvm-toolchain-jammy-20 main" \
+    echo "deb [signed-by=/usr/share/keyrings/llvm.gpg] http://apt.llvm.org/noble/ llvm-toolchain-noble-20 main" \
       > /etc/apt/sources.list.d/llvm.list && \
     apt-get update && apt-get install -y --no-install-recommends \
     clang-20 lld-20 \
-    libstdc++-12-dev \
+    libstdc++-14-dev \
     ninja-build pkg-config \
     libgtk-3-dev libx11-xcb-dev \
     python3 git && \
