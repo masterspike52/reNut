@@ -5,7 +5,8 @@
 
 
 
-Created with <a href="https://github.com/rexglue/rexglue-sdk">Rexglue-SDK</a>
+Originally created with <a href="https://github.com/rexglue/rexglue-sdk">Rexglue-SDK</a>
+
 
 
 DISCORD
@@ -18,7 +19,7 @@ https://discord.gg/D5Bz2ZsHdY
 
 Credits
 ------------------------------------------------
-Rexglue team for creating Rexglue-SDK
+<a href="https://github.com/rexglue/rexglue-sdk">Rexglue team</a> for creating Rexglue-SDK
 <br>
 the Rexglue SDK discord for helping with any info they have
 <br>
@@ -56,7 +57,7 @@ NOTE: YOU MUST DELETE ALL INSTANCES OF .gitignore OTHERWISE WHATEVER YOU COMPILE
 <br>
 NOTE: YOU MUST INSTALL <a href="https://git-scm.com/install/windows">GIT</a> BEFORE INSTALLING THE REXGLUE-SDK, OR BUILDING THIS REPO.
 <br>
-NOTE: YOU MUST INSTALL THE REXGLUE-SDK TO BUILD PLEASE FOLLOW THE <a href="https://github.com/rexglue/rexglue-sdk/wiki/Getting-Started">REXGLUE-SDK WIKI</a> BEFORE CONTINUING.
+NOTE: YOU MUST INSTALL THE REXGLUE-SDK TO BUILD <a href="https://github.com/etonedemid/rexglue-sdk">REXGLUE-SDK</a> BEFORE CONTINUING.
 
 1. Clone the repository with ```git clone https://github.com/masterspike52/reNut.git```
 2. Inside the assets folder you need to extract your banjo-kazooie: Nuts&Bolts iso's contents and the default.xex. I reccomend using <a href="https://consolemods.org/wiki/images/5/5f/XBOX360_ISO_Extract.zip">iso extract</a>. (I don't know what linux users use. I use Windows, however iso extract does work on linux through WINE.)
