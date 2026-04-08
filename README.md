@@ -67,17 +67,29 @@ NOTE: YOU MUST INSTALL THE REXGLUE-SDK TO BUILD PLEASE FOLLOW THE <a href="https
    5b. If you're on Linux, and don't have access to VS, you will need to use a terminal and run ```cmake --preset linux-amd64-relwithdebinfo``` and then ```cmake --build --preset linux-amd64-relwithdebinfo```. (You can do this on Windows as well, just replace `linux` with `windows`.)
 6. Once its compiled, you need to have the built exe in the same directory as the assets, otherwise the game won't open.
 
+
 IF YOU DONT WANT TO BUILD
 --------------------------------------------
 Building is mainly for those who either would rather build or want to help develop the game with myself and others. If you don't want to build;
-- Download the latest release for your platform
-- Make an assets folder, and dump your iso's contents and the default.xex into said folder
-- In the root directory where you put those assets, put the executable/application
+* Go to https://goopie.xyz/ and download the goopie launcher 
+* In the launcher select banjo-kazooie: nuts and bolts
+* Click Select ISO and select your iso for banjo-kazooie: nuts and bolts (must be the north american release) and wait for extraction to finish
+* After extraction is finished click the update button, the launcher will then download the latest release of the windows version of renut
+* Click play
+
+
+If you are on linux
+--------------------------------------
+* Download the latest linux release from releases
+* run ```./launch.sh '/path/to/iso'``` (/path/to/iso being where you have your iso)
+* any launches after the first only require ```./launch.sh ```
+
 
 KNOWN ISSUES
 -----------------------------------------------
 1. Animations are a little jank (there's jitter, banjo's and others bones break, some of the animations are half done, and some other little ancillaries) but they do not inhibit gameplay, it's just funny to see happen.
 2. *Nutty Acres Act 5 - Humbas Mission* causes a crash. This may require a Rexglue update, for it may have something to do with how Rexglue handles certain opcodes and things like `enableflushbuffer`. (It will be worked on, but for now just don't do it. I do apologize to the completionists out there.)
+
 
 MAKING AN ISSUE
 --------------------------
