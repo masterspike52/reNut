@@ -2,7 +2,7 @@
 #include <rex/ui/imgui_dialog.h>
 #include <rex/ui/keybinds.h>
 #include "imgui.h"
-#include "globals.h"
+#include "renut_engine/globals.h"
 
 class FpsOverlayDialog : public rex::ui::ImGuiDialog {
 public:

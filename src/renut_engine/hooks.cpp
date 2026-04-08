@@ -16,7 +16,7 @@ REXCVAR_DEFINE_BOOL(overworld_vehicles, false, "Nuts&Bolts", "Enables Overworld 
 REXCVAR_DEFINE_BOOL(no_notes_spent, false, "Nuts&Bolts", "hook created by serenity");
 // Name = "Target FPS"
 // 0 = unlimited, 30 = original (vsync/2), 60 = unlocked (vsync), any other positive value = frame cap
-REXCVAR_DEFINE_INT32(target_fps, 30, "Nuts&Bolts/Performance", "Target frame rate cap. 30 = original, 60 = unlocked, 0 = unlimited, or any positive value");
+REXCVAR_DEFINE_INT32(target_fps, 60, "Nuts&Bolts/Performance", "Target frame rate cap. 30 = original, 60 = unlocked, 0 = unlimited, or any positive value");
 // Name = "Disable LOD"
 REXCVAR_DEFINE_BOOL(disable_lod, false, "Nuts&Bolts", "Disables LOD (Level of Detail) scaling");
 // Name = "Infinite Fuel and Ammo"
