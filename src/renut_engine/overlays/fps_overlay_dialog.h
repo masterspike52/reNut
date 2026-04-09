@@ -8,7 +8,7 @@ class FpsOverlayDialog : public rex::ui::ImGuiDialog {
 public:
     explicit FpsOverlayDialog(rex::ui::ImGuiDrawer* drawer)
         : rex::ui::ImGuiDialog(drawer) {
-        rex::ui::RegisterBind("bind_fps_overlay", "F12", "Toggle FPS overlay", [this] {
+        rex::ui::RegisterBind("bind_fps_overlay", "F1", "Toggle FPS overlay", [this] {
             visible_ = !visible_;
             });
     }

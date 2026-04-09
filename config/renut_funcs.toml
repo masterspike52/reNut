@@ -42,8 +42,7 @@ longjmp_address = 0x82BB59B0
 0x82cdca68 = {}
 0x82cdca00 = {}
 0x82cdca40 = {}
-0x822C7D08 = {name = "rex_sub_822C7D08"}
-0x82363ED0 = {name = "rex_gameFlagsSetFlag_82363ED0"}
-
-
-
+0x82768e00 = {}
+0x822C7D08 = {name = "rex_sub_822C7D08" }
+0x82363ED0 = {name = "rex_gameFlagsSetFlag_82363ED0" }
+0x8225b4c8 = {}
