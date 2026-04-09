@@ -59,7 +59,8 @@ sudo pacman -Sy --noconfirm --needed \
     libxcb \
     libpipewire \
     vulkan-headers \
-    vulkan-icd-loader
+    vulkan-icd-loader \
+    linux-api-headers
 
 if [ "$READONLY_DISABLED" -eq 1 ]; then
     info "Re-enabling SteamOS read-only filesystem."
@@ -110,12 +111,19 @@ fi
 
 # ── Step 4: configure ─────────────────────────────────────────────────────────
 info "Configuring build…"
+# SteamOS ships a patched Clang (holo repo) that may not auto-detect the
+# freshly-installed GCC sysroot. Passing --gcc-toolchain=/usr makes clang
+# find /usr/lib/gcc/x86_64-pc-linux-gnu/... and thus /usr/include/ so that
+# cmake feature-detection tests (check_include_file, check_symbol_exists)
+# succeed for standard libc headers.
 cmake -S "$INSTALL_DIR" \
       -B "$INSTALL_DIR/out/build/linux-amd64-relwithdebinfo" \
       -G Ninja \
       -DCMAKE_BUILD_TYPE=RelWithDebInfo \
       -DCMAKE_C_COMPILER=clang \
       -DCMAKE_CXX_COMPILER=clang++ \
+      "-DCMAKE_C_FLAGS=--gcc-toolchain=/usr" \
+      "-DCMAKE_CXX_FLAGS=--gcc-toolchain=/usr" \
       -DREXSDK_DIR="$SDK_DIR"
 
 # ── Step 5: build ─────────────────────────────────────────────────────────────
