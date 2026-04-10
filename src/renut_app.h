@@ -6,7 +6,7 @@
 #include <rex/rex_app.h>
 #include "renut_engine/overlays/fps_overlay_dialog.h"
 #include "renut_engine/overlays/renut_logging_overlay.h"
-
+#include <renut_engine/sleep.h>
 
 
 class RenutApp : public rex::ReXApp {
@@ -31,4 +31,8 @@ public:
     //    // Redirect game data root from assets/debug to assets/bundle
     //    paths.game_data_root = paths.game_data_root.parent_path() / "assets";
     //}
+
+    void OnShutdown() override {
+        DisableHighResTimer();
+    }
 };
