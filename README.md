@@ -60,7 +60,7 @@ NOTE: YOU MUST INSTALL <a href="https://git-scm.com/install/windows">GIT</a> BEF
 NOTE: YOU MUST BUILD and INSTALL THIS FORK OF <a href="https://github.com/etonedemid/rexglue-sdk">REXGLUE-SDK</a> BEFORE CONTINUING.
 
 1. Clone the repository with ```git clone https://github.com/masterspike52/reNut.git```
-2. Inside the assets folder you need to extract your banjo-kazooie: Nuts&Bolts iso's contents and the default.xex. I reccomend using <a href="https://consolemods.org/wiki/images/5/5f/XBOX360_ISO_Extract.zip">iso extract</a>. (I don't know what linux users use. I use Windows, however iso extract does work on linux through WINE.)
+2. Inside the assets folder you need to extract your banjo-kazooie: Nuts&Bolts iso's contents and the default.xex. I reccomend using <a href="https://consolemods.org/wiki/images/5/5f/XBOX360_ISO_Extract.zip">iso extract</a>. (linux releases contain xiso-extract)
 3. Inside your cloned git open a terminal and run ```rexglue migrate --app_root .``` This ensures that if anything with codegen changes on Rexglue, you can codegen properly.
    3b. You must then either delete your out folder, or if your on Windows you can open VS, right click your cmakelists.txt, and delete cache and reconfigure so you codegen with the version your using.
 4. You can now open a terminal and run ```rexglue codegen renut_config.toml``` which will give you the ppc files to recompile in the generated folder.
