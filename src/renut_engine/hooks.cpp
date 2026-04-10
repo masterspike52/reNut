@@ -8,27 +8,23 @@
 #include "rex_macros.h"
 #include "globals.h"
 #include <rex/logging.h>
-#include <rex/graphics/flags.h>
 
 
 // Name = "Showdown Town Vehicles"
-REXCVAR_DEFINE_BOOL(overworld_vehicles, false, "Nuts&Bolts/Cheats", "Enables Overworld Vehicles");
+REXCVAR_DEFINE_BOOL(overworld_vehicles, false, "Nuts&Bolts", "Enables Overworld Vehicles");
 // Name = "No Notes Spent"
-REXCVAR_DEFINE_BOOL(no_notes_spent, false, "Nuts&Bolts/Cheats", "hook created by serenity");
-// Name = "VSync Mode"
-REXCVAR_DEFINE_INT32(target_fps, 60, "Nuts&Bolts/Performance", "Target frame rate cap. 30 = original, 60 = unlocked")
-.range(30, 60)
-.validator([](std::string_view v) {
-    return v == "30" || v == "60";
-    });
+REXCVAR_DEFINE_BOOL(no_notes_spent, false, "Nuts&Bolts", "hook created by serenity");
+// Name = "Target FPS"
+// 0 = unlimited, 30 = original (vsync/2), 60 = unlocked (vsync), any other positive value = frame cap
+REXCVAR_DEFINE_INT32(target_fps, 60, "Nuts&Bolts/Performance", "Target frame rate cap. 30 = original, 60 = unlocked, 0 = unlimited, or any positive value");
 // Name = "Disable LOD"
-REXCVAR_DEFINE_BOOL(disable_lod, false, "Nuts&Bolts/Graphics", "Disables LOD (Level of Detail) scaling");
+REXCVAR_DEFINE_BOOL(disable_lod, false, "Nuts&Bolts", "Disables LOD (Level of Detail) scaling");
 // Name = "Infinite Fuel and Ammo"
-REXCVAR_DEFINE_BOOL(infinite_fuel_and_ammo, false, "Nuts&Bolts/Cheats", "fuel never decreases");
+REXCVAR_DEFINE_BOOL(infinite_fuel_and_ammo, false, "Nuts&Bolts", "fuel never decreases");
 // Name = "Infinite Health"
-REXCVAR_DEFINE_BOOL(infinite_health, false, "Nuts&Bolts/Cheats", "health never decreases");
+REXCVAR_DEFINE_BOOL(infinite_health, false, "Nuts&Bolts", "health never decreases");
 // Name = "No Timer"
-REXCVAR_DEFINE_BOOL(no_timer, false, "Nuts&Bolts/Cheats", "timer never goes past 0 in missions with a timer");
+REXCVAR_DEFINE_BOOL(no_timer, false, "Nuts&Bolts", "timer never goes past 0 in missions with a timer");
 // Name = "Infinite Parts"
 REXCVAR_DEFINE_BOOL(infinite_parts, false, "Nuts&Bolts/Cheats", "vehicle parts never decreases");
 // Name = "Extended Build Range"
@@ -36,7 +32,6 @@ REXCVAR_DEFINE_BOOL(extended_build_range, false, "Nuts&Bolts/Cheats", "Allows yo
 // Name = "Banjo Skins"
 REXCVAR_DEFINE_STRING(banjo_skin, "default", "Nuts&Bolts/Skins", "Banjo skin override")
 .allowed({ "default", "robot", "tuxedo" });
-
 
 
 inline int bWidth = 640;
@@ -58,11 +53,17 @@ bool no_notes_spent() {
     return false;
 }
 
-    void fps_hook(PPCRegister & r11) {
-        if (REXCVAR_GET(target_fps) == 60) {
-            r11.u32 = 1; 
-        }
+void fps_hook(PPCRegister & r11) {
+    int fps = REXCVAR_GET(target_fps);
+    if (fps == 0 || fps > 30) {
+        // r11 controls vsync interval: 1 = every frame (~60fps), 2 = every other frame (~30fps)
+        // Setting to 1 unlocks the game's own vsync-based 60fps cap.
+        // The actual cap beyond 60 is handled by the host presentation layer.
+        r11.u32 = 1;
+    } else {
+        // 30fps: leave r11 as-is (=2, game default)
     }
+}
 
 void fpsCount_hook() {
     frame++;
@@ -108,6 +109,7 @@ bool Infinite_health() {
     return false;
 }
 
+
 bool No_Timer() {
     if (REXCVAR_GET(no_timer)) {
         return true;
@@ -117,7 +119,7 @@ bool No_Timer() {
 
 void Infinite_parts(PPCRegister& r11) {
     if (REXCVAR_GET(infinite_parts)) {
-        r11.u32 = 100;
+        r11.u32 = 0x7F800000;
     }
 }
 
@@ -127,8 +129,6 @@ bool Extended_build_range() {
     }
     return false;
 }
-
-
 
 bool BanjoActorOverride(PPCRegister& r3, PPCRegister& r5) {
     const auto& skin = REXCVAR_GET(banjo_skin);
@@ -148,6 +148,3 @@ bool BanjoActorOverride(PPCRegister& r3, PPCRegister& r5) {
     // "default" — let the original function run
     return true;
 }
-
-
-
