@@ -89,8 +89,9 @@ If you are on linux
 KNOWN ISSUES
 -----------------------------------------------
 1. Animations are a little jank (there's jitter, banjo's and others bones break, some of the animations are half done, and some other little ancillaries) but they do not inhibit gameplay, it's just funny to see happen.
-2. *Nutty Acres Act 5 - Humbas Mission* causes a crash. This may require a Rexglue update, for it may have something to do with how Rexglue handles certain opcodes and things like `enableflushbuffer`. (It will be worked on, but for now just don't do it. I do apologize to the completionists out there.)
-
+2. The Jiggy Challenge "Old Dog, New Tricks" in Nutty Acres Act 5 will crash the game when starting it.
+3. Water doesn't render (Atleast on linux)
+4. The Jiggy Challenge Even Older Dog, Newer Tricks crashes similarly to 2.
 
 MAKING AN ISSUE
 --------------------------
