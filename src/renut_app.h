@@ -33,6 +33,8 @@ public:
     //}
 
     void OnShutdown() override {
+#ifdef _WIN32
         DisableHighResTimer();
+#endif
     }
 };

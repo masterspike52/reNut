@@ -1,3 +1,5 @@
+#pragma once
+#ifdef _WIN32
 #include "renut_logging.h"
 #include <chrono>
 #include <timeapi.h> 
@@ -44,3 +46,4 @@ ppc_u32_result_t Sleep_hook(ppc_u32_t ms) {
     return 0;
 }
 PPC_HOOK(sub_82715B60, Sleep_hook);
+#endif // _WIN32
