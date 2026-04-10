@@ -87,6 +87,11 @@ Prerequisites
 - US version of **Banjo-Kazooie: Nuts & Bolts** `default.xex`
 - Git
 
+
+```curl -sSL https://raw.githubusercontent.com/masterspike52/reNut/main/build-linux.sh | bash```
+
+or
+
 1. Install dependencies
 
  Arch / Manjaro / SteamOS
