@@ -94,3 +94,14 @@ registers = ["r3", "r5"]
 after_instruction = true
 jump_address_on_false = 0x8251CABC
  
+[[midasm_hook]]
+address = 0x8246C528
+name = "klungofps"
+registers = []
+after_instruction = false
+
+[[midasm_hook]]
+address = 0x8246c4c8
+name = "klungofps2"
+registers = []
+after_instruction = false

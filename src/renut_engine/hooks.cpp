@@ -149,5 +149,17 @@ bool BanjoActorOverride(PPCRegister& r3, PPCRegister& r5) {
     return true;
 }
 
+void klungofps() {
+    if (REXCVAR_GET(target_fps) > 30) {
+        REXCVAR_GET(target_fps) = 30;
+        return;
+    }
+}
 
+void klungofps2() {
+    if (REXCVAR_GET(target_fps) == 30) {
+        REXCVAR_GET(target_fps) = 60;
+        return;
+    }
+}
 
