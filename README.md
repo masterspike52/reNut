@@ -67,6 +67,10 @@ NOTE: NOTE: YOU MUST BUILD AND INSTALL THE MAIN REPO OF <a href="https://github.
    5b. If you're on Linux, and don't have access to VS, you will need to use a terminal and run ```cmake --preset linux-amd64-relwithdebinfo``` and then ```cmake --build --preset linux-amd64-relwithdebinfo```. (You can do this on Windows as well, just replace `linux` with `windows`.)
 6. Once its compiled, you need to have the built exe in the same directory as the assets, otherwise the game won't open.
 
+THERES A LINUX FORK
+-------------------------------------------------
+if you wish to build for linux please use this fork of <a href="https://github.com/etonedemid/reNut">reNut</a> made by EtonedMid it requires using his fork of <a href="https://github.com/etonedemid/rexglue-sdk">rexlgue</a> and he has made a pr to rexglue so this stuff becomes part of main. 
+
 
 IF YOU DONT WANT TO BUILD
 --------------------------------------------
@@ -76,6 +80,7 @@ Building is mainly for those who either would rather build or want to help devel
 * Click Select ISO and select your iso for banjo-kazooie: nuts and bolts (must be the north american release) and wait for extraction to finish
 * After extraction is finished click the update button, the launcher will then download the latest release of the windows version of renut
 * Click play
+
 
 
 
