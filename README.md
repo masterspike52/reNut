@@ -27,8 +27,6 @@ SolarCookies for midasm hooks and future use of CRT functions and the reNut Laun
 <br>
 ValcomDrifty for the renut logo
 <br>
-etonedemid for the linux build/fixes
-<br>
 .
 <br>
 .
@@ -57,9 +55,7 @@ NOTE: YOU MUST DELETE ALL INSTANCES OF .gitignore OTHERWISE WHATEVER YOU COMPILE
 <br>
 NOTE: YOU MUST INSTALL <a href="https://git-scm.com/install/windows">GIT</a> BEFORE INSTALLING THE REXGLUE-SDK, OR BUILDING THIS REPO.
 <br>
-NOTE: IF YOUR BUILDING FOR LINUX YOU MUST BUILD and INSTALL THIS FORK OF <a href="https://github.com/etonedemid/rexglue-sdk">REXGLUE-SDK</a> BEFORE CONTINUING.
-<br>
-NOTE: IF YOUR BUILDING FOR WINDOWS PLEASE BUILD AND INSTALL THE MAIN REPO OF <a href="https://github.com/rexglue/rexglue-sdk">Rexglue-SDK</a>
+NOTE: NOTE: YOU MUST BUILD AND INSTALL THE MAIN REPO OF <a href="https://github.com/rexglue/rexglue-sdk">Rexglue-SDK</a> BEFORE CONTINUING
 
 
 1. Clone the repository with ```git clone https://github.com/masterspike52/reNut.git```
