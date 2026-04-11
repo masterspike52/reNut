@@ -69,7 +69,7 @@ NOTE: NOTE: YOU MUST BUILD AND INSTALL THE MAIN REPO OF <a href="https://github.
 
 THERES A LINUX FORK
 -------------------------------------------------
-if you wish to build for linux please use this fork of <a href="https://github.com/etonedemid/reNut">reNut</a> made by EtonedMid it requires using his fork of <a href="https://github.com/etonedemid/rexglue-sdk">rexlgue</a> and he has made a pr to rexglue so this stuff becomes part of main. 
+if you wish to build for linux please use this fork of <a href="https://github.com/etonedemid/reNut">reNut</a> made by etonedemid it requires using his fork of <a href="https://github.com/etonedemid/rexglue-sdk">rexlgue</a> and he has made a pr to rexglue so this stuff becomes part of main. 
 
 
 IF YOU DONT WANT TO BUILD
