@@ -27,8 +27,6 @@ SolarCookies for midasm hooks and future use of CRT functions and the reNut Laun
 <br>
 ValcomDrifty for the renut logo
 <br>
-etonedemid for the linux build/fixes
-<br>
 .
 <br>
 .
@@ -57,9 +55,7 @@ NOTE: YOU MUST DELETE ALL INSTANCES OF .gitignore OTHERWISE WHATEVER YOU COMPILE
 <br>
 NOTE: YOU MUST INSTALL <a href="https://git-scm.com/install/windows">GIT</a> BEFORE INSTALLING THE REXGLUE-SDK, OR BUILDING THIS REPO.
 <br>
-NOTE: IF YOUR BUILDING FOR LINUX YOU MUST BUILD and INSTALL THIS FORK OF <a href="https://github.com/etonedemid/rexglue-sdk">REXGLUE-SDK</a> BEFORE CONTINUING.
-<br>
-NOTE: IF YOUR BUILDING FOR WINDOWS PLEASE BUILD AND INSTALL THE MAIN REPO OF <a href="https://github.com/rexglue/rexglue-sdk">Rexglue-SDK</a>
+NOTE: NOTE: YOU MUST BUILD AND INSTALL THE MAIN REPO OF <a href="https://github.com/rexglue/rexglue-sdk">Rexglue-SDK</a> BEFORE CONTINUING
 
 
 1. Clone the repository with ```git clone https://github.com/masterspike52/reNut.git```
@@ -70,6 +66,10 @@ NOTE: IF YOUR BUILDING FOR WINDOWS PLEASE BUILD AND INSTALL THE MAIN REPO OF <a 
 5. If you're on Windows, you can open the project in VS, change the build type to `win-amd64-relwithdebinfo`, then build all.
    5b. If you're on Linux, and don't have access to VS, you will need to use a terminal and run ```cmake --preset linux-amd64-relwithdebinfo``` and then ```cmake --build --preset linux-amd64-relwithdebinfo```. (You can do this on Windows as well, just replace `linux` with `windows`.)
 6. Once its compiled, you need to have the built exe in the same directory as the assets, otherwise the game won't open.
+
+THERES A LINUX FORK
+-------------------------------------------------
+if you wish to build for linux please use this fork of <a href="https://github.com/etonedemid/reNut">reNut</a> made by etonedemid it requires using his fork of <a href="https://github.com/etonedemid/rexglue-sdk">rexlgue</a> and he has made a pr to rexglue so this stuff becomes part of main. 
 
 
 IF YOU DONT WANT TO BUILD
@@ -82,18 +82,12 @@ Building is mainly for those who either would rather build or want to help devel
 * Click play
 
 
-If you are on linux
---------------------------------------
-* Download the latest linux release from releases
-* run ```./launch.sh '/path/to/iso'``` (/path/to/iso being where you have your iso)
-* any launches after the first only require ```./launch.sh ```
 
 
 KNOWN ISSUES
 -----------------------------------------------
 1. Animations are a little jank (there's jitter, banjo's and others bones break, some of the animations are half done, and some other little ancillaries) but they do not inhibit gameplay, it's just funny to see happen.
 2. *Nutty Acres Act 5 - Humbas Mission* causes a crash. This may require a Rexglue update, for it may have something to do with how Rexglue handles certain opcodes and things like `enableflushbuffer`. (It will be worked on, but for now just don't do it. I do apologize to the completionists out there.)
-3. Water doesn't render (Atleast on linux)
 
 MAKING AN ISSUE
 --------------------------
