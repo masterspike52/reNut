@@ -6,7 +6,7 @@
 
 set -eu
 
-RENUT_REPO="https://github.com/masterspike52/reNut.git"
+RENUT_REPO="https://github.com/etonedemid/reNut.git"
 SDK_REPO="https://github.com/etonedemid/rexglue-sdk.git"
 INSTALL_DIR="$HOME/reNut"
 CMAKE_VERSION="3.27.9"
@@ -280,6 +280,8 @@ if [ -d "$BUILD_DIR" ]; then
 fi
 
 info "Configuring ($BUILD_PRESET)…"
+# Ensure pkg-config can find system .pc files (required for gtk3/pango/harfbuzz on SteamOS)
+export PKG_CONFIG_PATH="/usr/lib/pkgconfig:/usr/share/pkgconfig:${PKG_CONFIG_PATH:-}"
 cmake -S "$INSTALL_DIR" \
       -B "$BUILD_DIR" \
       -G Ninja \
