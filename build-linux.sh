@@ -97,6 +97,7 @@ install_deps_arch() {
     # Generate shims for libsystemd/libudev if missing (common on SteamOS)
     _create_pc_shim "libsystemd" "-lsystemd"
     _create_pc_shim "libudev"    "-ludev"
+    _create_pc_shim "harfbuzz"   "-lharfbuzz"
 
     if [ "$READONLY_DISABLED" -eq 1 ]; then
         info "Re-enabling SteamOS read-only filesystem."
@@ -192,7 +193,9 @@ _create_pc_shim() {
         local shim_dir="$HOME/.local/lib/pkgconfig"
         mkdir -p "$shim_dir"
         local ver
-        ver=$(pacman -Q systemd 2>/dev/null | awk '{print $2}' | cut -d- -f1 || echo "255")
+        ver=$(pacman -Q "$name" 2>/dev/null | awk '{print $2}' | cut -d- -f1 \
+              || pacman -Q systemd 2>/dev/null | awk '{print $2}' | cut -d- -f1 \
+              || echo "255")
         cat > "$shim_dir/${name}.pc" <<EOF
 prefix=/usr
 exec_prefix=\${prefix}
@@ -254,6 +257,13 @@ git_update() {
     local dir="$1" repo="$2" branch="$3"
     if [ -d "$dir/.git" ]; then
         info "$(basename "$dir") already cloned — updating…"
+        # Fix up origin URL if the repo was cloned from a different fork
+        local current_url
+        current_url=$(git -C "$dir" remote get-url origin 2>/dev/null || echo "")
+        if [ "$current_url" != "$repo" ]; then
+            warn "Remote URL changed ($current_url → $repo) — updating…"
+            git -C "$dir" remote set-url origin "$repo"
+        fi
         git -C "$dir" fetch --depth 1 origin "$branch"
         git -C "$dir" checkout "$branch" 2>/dev/null \
             || git -C "$dir" checkout -b "$branch" "origin/$branch"
