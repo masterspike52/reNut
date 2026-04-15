@@ -13,19 +13,6 @@ after_instruction = false
 jump_address_on_true = 0x824CE32C
 
 [[midasm_hook]]
-address = 0x8228A850                    # 0x823EDEC0 was this, go back if new one doesnt work and use r3
-name = "fps_hook"
-registers = ["r11"]
-after_instruction = true
-
-
-[[midasm_hook]]
-address = 0x821F8CC4
-name = "fpsCount_hook"
-registers = []
-after_instruction = false
-
-[[midasm_hook]]
 address = 0x823ED858
 name = "meGetResolutionParams_hook"
 registers = ["r5", "r6"]
@@ -94,14 +81,27 @@ registers = ["r3", "r5"]
 after_instruction = true
 jump_address_on_false = 0x8251CABC
  
+# Framerate Related Hooks
 [[midasm_hook]]
-address = 0x8246C528
-name = "klungofps"
+address = 0x8246e7a8
+name = "klungoConstruct_hook"
 registers = []
 after_instruction = false
 
 [[midasm_hook]]
-address = 0x8246c4c8
-name = "klungofps2"
+address = 0x8246f62c
+name = "klungoDestruct_hook"
+registers = []
+after_instruction = false
+
+[[midasm_hook]]
+address = 0x823edeb8                    # 0x823EDEC0 was this, go back if new one doesnt work and use r3
+name = "refreshRate_hook"
+registers = ["r3"]
+after_instruction = false
+
+[[midasm_hook]]
+address = 0x821F8CC4
+name = "fpsCount_hook"
 registers = []
 after_instruction = false

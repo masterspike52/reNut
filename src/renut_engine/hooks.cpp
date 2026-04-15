@@ -10,17 +10,26 @@
 #include <rex/logging.h>
 #include <rex/graphics/flags.h>
 
+#if defined(_MSC_VER)
+#include <stdlib.h>
+#define REX_BSWAP32(x) _byteswap_ulong(x)
+#else
+#define REX_BSWAP32(x) __builtin_bswap32(x)
+#endif
+
 
 // Name = "Showdown Town Vehicles"
 REXCVAR_DEFINE_BOOL(overworld_vehicles, false, "Nuts&Bolts/Cheats", "Enables Overworld Vehicles");
 // Name = "No Notes Spent"
 REXCVAR_DEFINE_BOOL(no_notes_spent, false, "Nuts&Bolts/Cheats", "hook created by serenity");
 // Name = "VSync Mode"
+/*
 REXCVAR_DEFINE_INT32(target_fps, 60, "Nuts&Bolts/Performance", "Target frame rate cap. 30 = original, 60 = unlocked")
 .range(30, 60)
 .validator([](std::string_view v) {
     return v == "30" || v == "60";
     });
+	*/
 // Name = "Disable LOD"
 REXCVAR_DEFINE_BOOL(disable_lod, false, "Nuts&Bolts/Graphics", "Disables LOD (Level of Detail) scaling");
 // Name = "Infinite Fuel and Ammo"
@@ -36,8 +45,6 @@ REXCVAR_DEFINE_BOOL(extended_build_range, false, "Nuts&Bolts/Cheats", "Allows yo
 // Name = "Banjo Skins"
 REXCVAR_DEFINE_STRING(banjo_skin, "default", "Nuts&Bolts/Skins", "Banjo skin override")
 .allowed({ "default", "robot", "tuxedo" });
-
-
 
 inline int bWidth = 640;
 inline int bHeight = 480;
@@ -57,12 +64,6 @@ bool no_notes_spent() {
     }
     return false;
 }
-
-    void fps_hook(PPCRegister & r11) {
-        if (REXCVAR_GET(target_fps) == 60) {
-            r11.u32 = 1; 
-        }
-    }
 
 void fpsCount_hook() {
     frame++;
@@ -149,6 +150,7 @@ bool BanjoActorOverride(PPCRegister& r3, PPCRegister& r5) {
     return true;
 }
 
+/*
 void klungofps() {
     if (REXCVAR_GET(target_fps) > 30) {
         REXCVAR_GET(target_fps) = 30;
@@ -162,4 +164,4 @@ void klungofps2() {
         return;
     }
 }
-
+*/

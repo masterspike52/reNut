@@ -46,3 +46,57 @@ longjmp_address = 0x82BB59B0
 0x822C7D08 = {name = "rex_sub_822C7D08" }
 0x82363ED0 = {name = "rex_gameFlagsSetFlag_82363ED0" }
 0x8225b4c8 = {}
+0x823edeb8 = {name = "rex_setParamInterval"}
+
+0x821fb7d8 = {name = "gameMain"}
+0x8220f3b8 = {name = "debugHookCall"}
+0x82213350 = {}
+0x822133e0 = {}
+0x82253370 = {name = "R1_Audio_AudioCueInstance_c_Tick"} # R1::Audio::AudioCueInstance_c::Tick
+0x82253958 = {name = "R1_Audio_AudioSoundSource_c_UpdatePlayingSounds"} # R1::Audio::AudioSoundSource_c::UpdatePlayingSounds
+0x82254d10 = {name = "gameAssetRefGetAid"}
+0x8225fb98 = {name = "assetManOpenParams"}
+0x8226c3d0 = {name = "appMainBoot"}
+0x822b6a38 = {name = "meLoadMovie"}
+0x822baa30 = {name = "meHandleRichPresence"}
+0x822bbfe8 = {name = "appScenePush"}
+0x822bdbd0 = {name = "assetDbBundleLoadBundle"}
+0x822bfb88 = {name = "assetDbUnifiedStorageInitPlayer"}
+0x822bfec0 = {size = 280}
+0x822ca550 = {name = "audioMainPlayHash"}
+0x822ebdd0 = {name = "scriptListInit"} # Initializes the "scriptListRegisterExecuteFunction"s, as BanjoXTesting puts it.
+0x822ebf28 = {name = "meExecuteScriptOpcode"}
+0x82364020 = {name = "meInternalAlloc"} # memory allocation function
+0x82364250 = {name = "meInternalFree"} # memory free function
+0x823cce78 = {name = "sceneScript2ActorsExecute"}
+0x823cda08 = {name = "sceneScript2FlowExecute"}
+0x824068c0 = {name = "challengeReqStart_MultiPlayerResetPlayers"}
+0x82409cc8 = {name = "challengeReqStart_ResetToGameRef"}
+0x8250bb40 = {name = "gameSaveSave"} # Saving code
+0x8250c170 = {name = "meGetAidForSlot"} # Generates three different save slot hashes for the game to use. Every. Single. Time. the game has to save.
+0x82545598 = {size = 620}
+0x82564630 = {size = 92}
+0x82564690 = {size = 376}
+0x82564808 = {name = "LoadShowdownTown"}
+0x82564898 = {name = "supportGameLoadNewScene"}
+0x82564970 = {name = "supportGameIsShowdownTownScene", size = 224}
+0x82564a50 = {size = 320}
+0x82578638 = {name = "uiSystemSfxPlayOperation", size = 76}
+0x8264df28 = {name = "Direct3D_CreateDevice"}
+0x8264e080 = {name = "Direct3DDevice_Release"} # Actually named D3DDevice_Release
+0x82657488 = {name = "D3DDevice_BlockUntilIdle"}
+0x8265a198 = {name = "D3D__UninitializeDevice"} # D3D::UninitializeDevice
+0x82655ec8 = {name = "Direct3DDevice_CreateTexture"} # Actually named D3DDevice_CreateTexture
+0x826fc410 = {name = "XACTCreateEngine"}
+0x826fc508 = {name = "XACTCreateEngineInternal"}
+0x82aecf28 = {name = "R1_Audio_AudioSystem_c_AudioSystemError"} # R1::Audio::AudioSystem_c::AudioSystemError
+0x82aed5d8 = {name = "R1_Audio_AudioSystem_c_PrintWarning"} # R1::Audio::AudioSystem_c::PrintWarning
+0x82aedd40 = {name = "R1_Audio_AudioSystem_c_GetCueInfo"} # R1::Audio::AudioSystem_c::GetCueInfo
+0x82aed568 = {name = "R1_Audio_AudioSystem_c_PrintfInfo"} # R1::Audio::AudioSystem_c::PrintfInfo
+0x82af0558 = {name = "R1_Audio_AudioSystem_c_InitXACT"} # R1::Audio::AudioSystem_c::InitXACT
+0x82af0760 = {name = "R1_Audio_AudioSystem_c_ShutDownXACT"} # R1::Audio::AudioSystem_c::ShutDownXACT
+0x82af2cb0 = {name = "R1_Audio_AudioWorkspaceManager_c_AnySoundsExist"} # R1::Audio::AudioWorkspaceManager_c::AnySoundsExist
+0x82afd670 = {name = "R1_Audio_AudioCueInstance_c_GetSliderValue"} # R1::Audio::AudioCueInstance_c::GetSliderValue
+0x82afde30 = {name = "R1_Audio_AudioCueInstance_c_Initialise"} # R1::Audio::AudioCueInstance_c::Initialise
+0x82b0ca70 = {name = "R1_Audio_AudioCueMarker_c_DeleteAudioCueMarker_c"} # R1::Audio::AudioCueMarker_c::DeleteAudioCueMarker_c
+0x82b97ec0 = {name = "assetIdGetStringHash"} # Handles creating the hashes that the game uses to find files.
