@@ -100,3 +100,4 @@ longjmp_address = 0x82BB59B0
 0x82afde30 = {name = "R1_Audio_AudioCueInstance_c_Initialise"} # R1::Audio::AudioCueInstance_c::Initialise
 0x82b0ca70 = {name = "R1_Audio_AudioCueMarker_c_DeleteAudioCueMarker_c"} # R1::Audio::AudioCueMarker_c::DeleteAudioCueMarker_c
 0x82b97ec0 = {name = "assetIdGetStringHash"} # Handles creating the hashes that the game uses to find files.
+0x824a6328 = {}

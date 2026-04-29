@@ -3,7 +3,6 @@
 #include <thread>
 #include <cstdint> // For uintptr_t
 #include <rex/cvar.h>
-#include <rex/ppc/types.h>
 #include <rex/system/kernel_state.h>
 #include "rex_macros.h"
 #include "globals.h"

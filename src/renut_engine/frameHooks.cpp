@@ -1,4 +1,4 @@
-#include <rex/ppc.h>
+#include <rex/hook.h>
 #include "rex_macros.h"
 #include <rex/cvar.h>
 #include "globals.h"

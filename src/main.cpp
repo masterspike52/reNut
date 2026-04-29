@@ -3,7 +3,6 @@
 //
 // This file is yours to edit. 'rexglue migrate' will NOT overwrite it.
 
-#include "generated/renut_config.h"
 #include "generated/renut_init.h"
 
 #include "renut_app.h"

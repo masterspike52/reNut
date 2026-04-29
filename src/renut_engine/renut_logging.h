@@ -1,8 +1,6 @@
 #pragma once
 
 #include <rex/logging.h>
-#include <rex/ppc/types.h>
-#include "generated/renut_config.h"
 #include "generated/renut_init.h"
 
 

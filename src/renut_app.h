@@ -5,7 +5,6 @@
 #pragma once
 #include <rex/rex_app.h>
 #include "renut_engine/overlays/fps_overlay_dialog.h"
-#include "renut_engine/sleep.h"
 #include "renut_engine/renut_logging.h"
 #include "renut_engine/overlays/renut_logging_overlay.h"
 
@@ -22,9 +21,5 @@ public:
     void OnCreateDialogs(rex::ui::ImGuiDrawer* drawer) override {
         drawer->AddDialog(new FpsOverlayDialog(drawer));
         drawer->AddDialog(new RenuLogOverlayDialog(drawer));
-    }
-
-    void OnShutdown() override {
-        DisableHighResTimer();
     }
 };
