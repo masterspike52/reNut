@@ -18,7 +18,7 @@
 
 
 // Name = "Showdown Town Vehicles"
-REXCVAR_DEFINE_BOOL(overworld_vehicles, false, "Nuts&Bolts/Cheats", "Enables Overworld Vehicles");
+REXCVAR_DEFINE_BOOL(change_vehicles_anywhere, false, "Nuts&Bolts/Cheats", "Enables Changing Vehicles Anywhere.");
 // Name = "No Notes Spent"
 REXCVAR_DEFINE_BOOL(no_notes_spent, false, "Nuts&Bolts/Cheats", "hook created by serenity");
 // Name = "VSync Mode"
@@ -50,11 +50,12 @@ inline int bHeight = 480;
 auto frameTime = std::chrono::system_clock::now();
 int frame = 0;
 
-bool overworld_vehicles_hook() {
-    if (REXCVAR_GET(overworld_vehicles)) {
-        return true;
+void overworld_vehicles_hook(PPCRegister& r23, PPCRegister& r26) {
+	// If true, then set r23 and r26 to 1. This will add "Change Vehicle" (r26) and "Build Vehicle" (r23) to the pause menu list.
+    if (REXCVAR_GET(change_vehicles_anywhere)) {
+		r23.u32 = 1;
+		r26.u8 = 1;
     }
-    return false;
 }
 
 bool no_notes_spent() {
