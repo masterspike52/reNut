@@ -1,4 +1,36 @@
 
+<div align="right">
+  <details>
+    <summary >🌐 Language</summary>
+    <div>
+      <div align="center">
+        <a href="https://openaitx.github.io/view.html?user=masterspike52&project=reNut&lang=en">English</a>
+        | <a href="https://openaitx.github.io/view.html?user=masterspike52&project=reNut&lang=zh-CN">简体中文</a>
+        | <a href="https://openaitx.github.io/view.html?user=masterspike52&project=reNut&lang=zh-TW">繁體中文</a>
+        | <a href="https://openaitx.github.io/view.html?user=masterspike52&project=reNut&lang=ja">日本語</a>
+        | <a href="https://openaitx.github.io/view.html?user=masterspike52&project=reNut&lang=ko">한국어</a>
+        | <a href="https://openaitx.github.io/view.html?user=masterspike52&project=reNut&lang=hi">हिन्दी</a>
+        | <a href="https://openaitx.github.io/view.html?user=masterspike52&project=reNut&lang=th">ไทย</a>
+        | <a href="https://openaitx.github.io/view.html?user=masterspike52&project=reNut&lang=fr">Français</a>
+        | <a href="https://openaitx.github.io/view.html?user=masterspike52&project=reNut&lang=de">Deutsch</a>
+        | <a href="https://openaitx.github.io/view.html?user=masterspike52&project=reNut&lang=es">Español</a>
+        | <a href="https://openaitx.github.io/view.html?user=masterspike52&project=reNut&lang=it">Italiano</a>
+        | <a href="https://openaitx.github.io/view.html?user=masterspike52&project=reNut&lang=ru">Русский</a>
+        | <a href="https://openaitx.github.io/view.html?user=masterspike52&project=reNut&lang=pt">Português</a>
+        | <a href="https://openaitx.github.io/view.html?user=masterspike52&project=reNut&lang=nl">Nederlands</a>
+        | <a href="https://openaitx.github.io/view.html?user=masterspike52&project=reNut&lang=pl">Polski</a>
+        | <a href="https://openaitx.github.io/view.html?user=masterspike52&project=reNut&lang=ar">العربية</a>
+        | <a href="https://openaitx.github.io/view.html?user=masterspike52&project=reNut&lang=fa">فارسی</a>
+        | <a href="https://openaitx.github.io/view.html?user=masterspike52&project=reNut&lang=tr">Türkçe</a>
+        | <a href="https://openaitx.github.io/view.html?user=masterspike52&project=reNut&lang=vi">Tiếng Việt</a>
+        | <a href="https://openaitx.github.io/view.html?user=masterspike52&project=reNut&lang=id">Bahasa Indonesia</a>
+        | <a href="https://openaitx.github.io/view.html?user=masterspike52&project=reNut&lang=as">অসমীয়া</
+      </div>
+    </div>
+  </details>
+</div>
+
+
 
 <img width="1920" height="1080" alt="renut logo" src="https://github.com/user-attachments/assets/273bee28-755f-4494-920f-9333af72091e" />
 
