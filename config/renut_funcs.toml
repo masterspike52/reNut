@@ -104,3 +104,5 @@ longjmp_address = 0x82BB59B0
 0x8252fb50 = {}
 0x82409630 = {}
 0x824A1278 = {}
+0x8220F210 = {name = "appMainTickPreDraw"}
+0x82222250 = {name = "appMainDraw"}

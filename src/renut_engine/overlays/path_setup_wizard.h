@@ -1,5 +1,6 @@
 #pragma once
 #include <rex/ui/imgui_dialog.h>
+#include <rex/rex_app.h>
 #include "imgui.h"
 #include "renut_engine/path_config_store.h"
 #include <filesystem>
@@ -26,7 +27,11 @@ public:
 
         // First-run check — if a valid saved config exists, skip the wizard entirely
         if (auto saved = PathConfigStore::TryLoad(app_name)) {
-            on_complete(*saved);
+            rex::PathConfig cfg;
+            cfg.game_data_root = saved->game_data_root;
+            cfg.user_data_root = saved->user_data_root;
+            cfg.update_data_root = saved->update_data_root;
+            on_complete(cfg);
             return true;
         }
 
@@ -174,7 +179,12 @@ private:
         cfg.user_data_root = std::move(user);
         cfg.update_data_root = std::move(update);
 
-        PathConfigStore::Save(app_name_, cfg);  // write renut.toml
+        PathConfigStore::SavedPaths saved;
+        saved.game_data_root = cfg.game_data_root;
+        saved.user_data_root = cfg.user_data_root;
+        saved.update_data_root = cfg.update_data_root;
+        PathConfigStore::Save(app_name_, saved);
+
         on_complete_(std::move(cfg));
     }
 

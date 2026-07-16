@@ -1,5 +1,5 @@
 [project]
-sdk_version = "0.8.1.4"
+sdk_version = "0.8.0"
 name = "renut"
 
 [entrypoint]
@@ -8,3 +8,5 @@ out_directory_path = "generated"
 includes = [
  "renut_config.toml"
 ]
+
+

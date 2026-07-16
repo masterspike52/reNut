@@ -7,7 +7,12 @@
 
 namespace PathConfigStore {
 
-    // Helpers — must be defined before use
+    struct SavedPaths {
+        std::filesystem::path game_data_root;
+        std::filesystem::path user_data_root;
+        std::filesystem::path update_data_root;
+    };
+
     inline std::string Trim(std::string s) {
         auto l = s.find_first_not_of(" \t\r\n");
         auto r = s.find_last_not_of(" \t\r\n");
@@ -29,10 +34,10 @@ namespace PathConfigStore {
         wchar_t exe_path[MAX_PATH] = {};
         GetModuleFileNameW(nullptr, exe_path, MAX_PATH);
         std::filesystem::path dir = std::filesystem::path(exe_path).parent_path();
-        return dir / (app_name + ".toml");
+        return dir / (app_name + ".cfg");
     }
 
-    inline std::optional<rex::PathConfig> TryLoad(const std::string& app_name) {
+    inline std::optional<SavedPaths> TryLoad(const std::string& app_name) {
         auto path = GetStorePath(app_name);
         if (!std::filesystem::exists(path))
             return std::nullopt;
@@ -41,7 +46,7 @@ namespace PathConfigStore {
         if (!f.is_open())
             return std::nullopt;
 
-        rex::PathConfig cfg;
+        SavedPaths cfg;
         bool has_game = false, has_user = false;
 
         std::string line;
@@ -61,7 +66,7 @@ namespace PathConfigStore {
         return cfg;
     }
 
-    inline void Save(const std::string& app_name, const rex::PathConfig& cfg) {
+    inline void Save(const std::string& app_name, const SavedPaths& cfg) {
         auto path = GetStorePath(app_name);
         std::ofstream f(path, std::ios::trunc);
         f << "# " << app_name << " path configuration\n";

@@ -4,6 +4,11 @@
 #include "renut_engine/renut_logging.h"
 #include "renut_engine/overlays/renut_logging_overlay.h"
 #include "renut_engine/overlays/path_setup_wizard.h"
+#include "renut_engine/Timer.h"
+#include "renut_engine/Fps.h"
+#include "renut_engine/hooks.h"
+#include <rex/ui/window.h>
+#include <rex/discord_rpc.h>
 #include <functional>
 #include <string>
 
@@ -17,11 +22,30 @@ public:
         return std::unique_ptr<RenutApp>(new RenutApp(ctx, "renut", PPCImageConfig));
     }
 
+
+    void OnPostSetup() override {
+        rex::discord_rpc::Presence rpc;
+
+        rpc.details_ = "";
+        rpc.state_ = "";
+        rpc.large_image_key_ = "e242d6b6-c34e-47a1-8c2a-5297fe33bce7";
+        rpc.large_image_text_ = "renut";
+
+        //rex::discord_rpc::Start(Application ID, Settings);
+        rex::discord_rpc::Start("1520303728047951892", rpc);
+
+        rex::cvar::LoadConfig("renut.toml"); 
+    }
+
     void OnCreateDialogs(rex::ui::ImGuiDrawer* drawer) override {
-        drawer->AddDialog(new FpsOverlayDialog(drawer));
+        //drawer->AddDialog(new FpsOverlayDialog(drawer));
+        fps_dialog_ = std::make_unique<FpsOverlayDialog>(drawer);
+        fps_dialog_->fpsManager = &fpsManager;
+        drawer->AddDialog(fps_dialog_.get());
         drawer->AddDialog(new RenuLogOverlayDialog(drawer));
         path_wizard_ = new PathSetupWizard(drawer);
         drawer->AddDialog(path_wizard_);
+
     }
 
     std::optional<rex::PathConfig> OnFinalizePaths(
@@ -37,4 +61,5 @@ public:
 private:
     std::string      app_name_;
     PathSetupWizard* path_wizard_ = nullptr;
+    std::unique_ptr<FpsOverlayDialog> fps_dialog_;
 };

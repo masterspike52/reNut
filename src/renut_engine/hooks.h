@@ -2,3 +2,4 @@
 
 #include <cstdint>
 
+inline FPSManager fpsManager;

@@ -44,6 +44,16 @@ REXCVAR_DEFINE_BOOL(extended_build_range, false, "Nuts&Bolts/Cheats", "Allows yo
 // Name = "Banjo Skins"
 REXCVAR_DEFINE_STRING(banjo_skin, "default", "Nuts&Bolts/Skins", "Banjo skin override")
 .allowed({ "default", "robot", "tuxedo" });
+// disable particle effects
+REXCVAR_DEFINE_BOOL(disable_particles, false, "Nuts&Bolts/Graphics", "Disables particle effects");
+// Name = "Disable Shadows"
+REXCVAR_DEFINE_BOOL(disable_shadows, false, "Nuts&Bolts/Graphics", "Disables shadows");
+// Name = "Disable Contact Shadows"
+REXCVAR_DEFINE_BOOL(disable_cao, false, "Nuts&Bolts/Graphics", "Disables the dark contact patches under characters (CAO)");
+// Name = "Disable MSAA"
+REXCVAR_DEFINE_BOOL(disable_msaa, false, "Nuts&Bolts/Graphics", "Disables MSAA on the scene render target. Matrices/aspect are unaffected. Applies on the next resolution change or restart.");
+// Name = "Disable Motion Blur"
+REXCVAR_DEFINE_BOOL(disable_motion_blur, false, "Nuts&Bolts/Graphics", "Disables the full-screen speed/camera motion blur");
 
 inline int bWidth = 640;
 inline int bHeight = 480;
@@ -65,17 +75,10 @@ bool no_notes_spent() {
     return false;
 }
 
-void fpsCount_hook() {
-    frame++;
-    auto Time = std::chrono::system_clock::now();
-    std::chrono::duration<double, std::milli> delta = Time - frameTime;
-    frameTime = Time;
-    double fpsfromMS = 1000 / delta.count();
-    if (frame >= 60) {
-        frame = 0;
-        fpsCount = fpsfromMS;
-    }
-}
+// Defined in cvar_menu.cpp: applies any deferred pause-menu list rebuild here,
+// once per frame and outside XUI's event dispatch (see cvar_menu.cpp).
+void renutCvarMenu_FrameTick();
+
 
 
 bool meGetResolutionParams_hook(PPCRegister& r5, PPCRegister& r6) {
@@ -95,6 +98,88 @@ void Optimization_Hook() {
 bool disable_lod() {
     return REXCVAR_GET(disable_lod);
 }
+
+bool disable_shadows() {
+    return REXCVAR_GET(disable_shadows);
+}
+
+bool disable_shadows_cached() {
+    return REXCVAR_GET(disable_shadows);
+}
+
+void shadows_atlas_rebuild(PPCRegister& r10) {
+    static bool prevDisabled = false;
+    static int  rebuildCallsLeft = 0;
+
+    const bool disabled = REXCVAR_GET(disable_shadows);
+    if (disabled != prevDisabled) {
+        prevDisabled = disabled;
+        rebuildCallsLeft = 20;
+    }
+
+    if (rebuildCallsLeft > 0) {
+        --rebuildCallsLeft;
+        r10.u32 = 1; // take the rebuild-all path
+    }
+}
+
+bool disable_cao() {
+    return REXCVAR_GET(disable_cao);
+}
+
+// Zero the MultiSample argument (r6) at the two scene render-target creations in
+// sub_823ED2A8, forcing D3DMULTISAMPLE_NONE for the color + depth surfaces. This
+// deliberately leaves the MSAA-mode global, the tile count and the surface
+// dimensions untouched, so predicated tiling and every projection/viewport input
+// are identical to stock -- matrices are unaffected. Both surfaces share a
+// sample count in D3D, so both calls must be zeroed together.
+void disable_msaa_color(PPCRegister& r6) {
+    if (REXCVAR_GET(disable_msaa)) {
+        r6.u32 = 0; // D3DMULTISAMPLE_NONE
+    }
+}
+
+void disable_msaa_depth(PPCRegister& r6) {
+    if (REXCVAR_GET(disable_msaa)) {
+        r6.u32 = 0; // D3DMULTISAMPLE_NONE
+    }
+}
+
+// Returning true makes the hook jump past the fullscreen blur draw in the
+// fxMotionBlur pass (sub_8229F440), so the scene is never composited with its
+// motion-blur history. The surrounding Resolves/state restore still run.
+bool disable_motion_blur() {
+    return REXCVAR_GET(disable_motion_blur);
+}
+
+// Fix the split-second black flash on heal/damage feedback.
+//
+// The a34-gated branch of the feedback overlay sub_82573650 calls the glow/bloom
+// pass sub_825740F0, which allocates a scratch surface at
+// D3DSURFACE_PARAMETERS.Base = 0 -- i.e. aliased onto EDRAM tile 0, the main
+// framebuffer -- and Clears it to black before blurring. On real Xenos that
+// EDRAM is free (the scene was already resolved out); in the recomp it maps to
+// the live framebuffer host target, so the clear blacks the whole frame for that
+// effect's frame(s). Returning true makes the hook skip the glow block
+// (0x82573A54 -> 0x82573AC8, the game's own "a34 == 0" merge point), dropping
+// only the glow so the scene + the rest of the overlay render normally.
+//
+// On by default because the effect is broken here (blacks the frame). Turn off to
+// restore the glow if the EDRAM aliasing is ever handled by the runtime.
+REXCVAR_DEFINE_BOOL(disable_screen_glow, true, "Nuts&Bolts/Graphics", "Fixes the split-second black flash on heal/damage by skipping the broken full-screen glow (it aliases EDRAM tile 0 in the recomp). Off = restore the glow.");
+
+bool disable_screen_glow() {
+    return REXCVAR_GET(disable_screen_glow);
+}
+
+
+bool disable_particles_sim()   { return REXCVAR_GET(disable_particles); }
+bool disable_particles_spawn() { return REXCVAR_GET(disable_particles); }
+
+bool disable_particles_draw0() { return REXCVAR_GET(disable_particles); }
+bool disable_particles_draw1() { return REXCVAR_GET(disable_particles); }
+bool disable_particles_draw2() { return REXCVAR_GET(disable_particles); }
+bool disable_particles_draw3() { return REXCVAR_GET(disable_particles); }
 
 void Infinite_fuel_and_ammo() {
     if (REXCVAR_GET(infinite_fuel_and_ammo)) {
@@ -149,19 +234,3 @@ bool BanjoActorOverride(PPCRegister& r3, PPCRegister& r5) {
     // "default" — let the original function run
     return true;
 }
-
-/*
-void klungofps() {
-    if (REXCVAR_GET(target_fps) > 30) {
-        REXCVAR_GET(target_fps) = 30;
-        return;
-    }
-}
-
-void klungofps2() {
-    if (REXCVAR_GET(target_fps) == 30) {
-        REXCVAR_GET(target_fps) = 60;
-        return;
-    }
-}
-*/
