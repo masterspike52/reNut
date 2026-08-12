@@ -86,21 +86,21 @@ Where everything is in Linux
 
 copy and paste the following into renut.toml
 ------------------------------------------------------
-log_level = "off"
-fullscreen = false
-disable_shadows = true
-disable_cao = true
-disable_msaa = true
-disable_motion_blur = true
-target_refreshRate = 1
-frame_cap = "Display"
-sync_shader_compile = false
-mnk_controls = true
-gpu_plugin = "xenos"
-gpu_allow_invalid_fetch_constants = true
-native_2x_msaa = false
-readback_memexport = false
-readback_memexport_fast = false
+- log_level = "off"
+- fullscreen = false
+- disable_shadows = true
+- disable_cao = true
+- disable_msaa = true
+- disable_motion_blur = true
+- target_refreshRate = 1
+- frame_cap = "Display"
+- sync_shader_compile = false
+- mnk_controls = true
+- gpu_plugin = "xenos"
+- gpu_allow_invalid_fetch_constants = true
+- native_2x_msaa = false
+- readback_memexport = false
+- readback_memexport_fast = false
 
 
 NOTICE
