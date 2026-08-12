@@ -102,6 +102,17 @@ copy and paste the following into renut.toml
 - readback_memexport = false
 - readback_memexport_fast = false
 
+How to use the texture replacement
+-------------------------------------------
+- enable dump_textures under Nuts&Bolts > Graphics
+- Go to the area you wanna replace the texture for
+- find the texture in textures > dump next to your exe
+- open the texture in a program like Gimp
+- Place the new texture on the old one as a new layer and erase the old texture
+- save the texture as the same name as the old texture keeping the .dds extension
+- in your toml insert replace_textures = true
+- in your toml also insert texture_packs = "location of texture pack" i.e. if i have a texture pack on my D drive i would use texture_packs = "D:/folder name of texture pack"
+- if you have multiple packs you insert it like so  texture_packs = "D:/folder name of texture pack;C:/name of folder with other texture pack"
 
 NOTICE
 --------------------
