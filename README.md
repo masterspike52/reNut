@@ -50,7 +50,7 @@ Requirements
 ----------------------------------------------
 the US version of Banjo-Kazooie: Nuts and Bolts (do not get the update, the recomp doesn't use it)
 
-How to play
+How to play on Linux
 ----------------------------------------------
 1. Download Goopie Launcher from https://goopie.xyz/#/downloads
 2. run goopie launcher
@@ -59,14 +59,6 @@ How to play
 5. click install (this should install the latest release which comes with the game, the dll's needed, and renut.toml)
 6. click play when the game opens itll open a gui for setting your paths, you dont have to worry about it just click continue. it was placed there for me so when i deleted builds to rebuild i didnt have to run a command line.
 
-WE HAVE LINUX SUPPORT NOW
-
-How to play Linux
--------------------------
-you have 2 ways to do this just like with windows
-
-you can either follow the How to play section for using goopie (which does work on linux)
-
 or you can do the following.
 
 - go to <a href=https://github.com/masterspike52/reNut/releases>releases</a> and download the appimage file from the latest release
@@ -74,6 +66,16 @@ or you can do the following.
 
 - when opening the appimage you will be met with a dialog box for dumping your iso's assets, selecting yes will let you select your iso for Banjo-Kazooie: Nuts and Bolts (US Version) with extract-iso.
 - if you already have your iso's assets dumped you can click no and use the in game gui that appears to set your assets folder. the dialog will only show up once
+
+How to play on Windows
+--------------------------------------------
+1. download <a href="https://github.com/etonedemid/NutStaller">NutStaller</a>
+2. open NutStaller and select Do Everything which will do things like extract your assets and download the game to your selected directory
+
+    Alternatives are
+   - use goopie
+   - download directly from releases
+   
 
 Where everything is in Linux
 --------------------------------
