@@ -78,25 +78,28 @@ or you can do the following.
 Where everything is in Linux
 --------------------------------
 - renut.toml and renut.cfg will be located in home/.config/renut/ they are written and read from here because appimages are weird about reading external stuff and renut.cfg will be specific to your locations for game_data_root and such
-- saves are located wherever you choose to set the save location in the gui (by default its home/.local/shared/renut/) 
+- saves are located wherever you choose to set the save location in the gui (by default its home/.local/shared/renut/)
+- amd users currently cannot run the linux port (its being worked on right now) if you use a nvidia card you should be fine
 
 
-recommended settings in the f4 menu 
------------------------------------------
-- Under Nuts&Bolts > Performance
-- target_refreshrate = 1 (defaults to -1 which is the default vsync action for 30fps, 1 allows it to go to 60fps)
-- frame_cap = "display" (defaults to off, display means the framerate cant go above your monitors refresh rate, if your monitors refresh rate is above 60hz please use 60 instead)
+copy and paste the following into renut.toml
+------------------------------------------------------
+log_level = "off"
+fullscreen = false
+disable_shadows = true
+disable_cao = true
+disable_msaa = true
+disable_motion_blur = true
+target_refreshRate = 1
+frame_cap = "Display"
+sync_shader_compile = false
+mnk_controls = true
+gpu_plugin = "xenos"
+gpu_allow_invalid_fetch_constants = true
+native_2x_msaa = false
+readback_memexport = false
+readback_memexport_fast = false
 
-- Under Nuts&Bolts > Graphics check the follow boxes
-- disable_shadows
-- disable_msaa
-- disable_cao
-- disable_motion_blur
-  
-uncheck the following under the same section
-- sync_shader_compile
-
-this is also recommended in windows (however the toml that comes with the windows version should already have these set)
 
 NOTICE
 --------------------
