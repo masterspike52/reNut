@@ -56,6 +56,7 @@ REXCVAR_DEFINE_BOOL(disable_msaa, false, "Nuts&Bolts/Graphics", "Disables MSAA o
 REXCVAR_DEFINE_BOOL(disable_motion_blur, false, "Nuts&Bolts/Graphics", "Disables the full-screen speed/camera motion blur");
 // Name = "Max Acquired Parts Access"
 REXCVAR_DEFINE_BOOL(max_acquired_parts_access, false, "Nuts&Bolts/Cheats", "Allows max acquired vehicle parts");
+REXCVAR_DEFINE_BOOL(disable_tessellated_draw, true, "Nuts&Bolts/Graphics", "Skips hardware-tessellated draws (character-model smoothing) to avoid a GPU hang seen on Linux/RADV. Off = restore tessellation once the underlying SDK bug is fixed.");
 
 
 inline int bWidth = 640;
@@ -153,6 +154,10 @@ void disable_msaa_depth(PPCRegister& r6) {
 // motion-blur history. The surrounding Resolves/state restore still run.
 bool disable_motion_blur() {
     return REXCVAR_GET(disable_motion_blur);
+}
+
+bool disable_tessellated_draw() {
+    return REXCVAR_GET(disable_tessellated_draw);
 }
 
 // Fix the split-second black flash on heal/damage feedback.

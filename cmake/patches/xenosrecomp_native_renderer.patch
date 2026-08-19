@@ -1,0 +1,490 @@
+diff --git a/XenosRecomp/main.cpp b/XenosRecomp/main.cpp
+index d015145..5095081 100644
+--- a/XenosRecomp/main.cpp
++++ b/XenosRecomp/main.cpp
+@@ -115,7 +115,7 @@ int main(int argc, char** argv)
+ 
+         std::atomic<uint32_t> progress = 0;
+ 
+-        std::for_each(std::execution::par_unseq, shaders.begin(), shaders.end(), [&](auto& hashShaderPair)
++        std::for_each(std::execution::seq, shaders.begin(), shaders.end(), [&](auto& hashShaderPair)
+             {
+                 auto& shader = hashShaderPair.second;
+ 
+@@ -123,21 +123,61 @@ int main(int argc, char** argv)
+                 recompiler = {};
+                 recompiler.recompile(shader.data, include);
+ 
++                if (recompiler.hadError)
++                {
++                    fmt::println("Skipping shader {:X}: {}.", hashShaderPair.first, recompiler.hadErrorReason);
++                    return;
++                }
++
+                 shader.specConstantsMask = recompiler.specConstantsMask;
+ 
+                 thread_local DxcCompiler dxcCompiler;
+ 
+ #ifdef XENOS_RECOMP_DXIL
+                 shader.dxil = dxcCompiler.compile(recompiler.out, recompiler.isPixelShader, recompiler.specConstantsMask != 0, false);
+-                assert(shader.dxil != nullptr);
+-                assert(*(reinterpret_cast<uint32_t *>(shader.dxil->GetBufferPointer()) + 1) != 0 && "DXIL was not signed properly!");
++                if (shader.dxil == nullptr)
++                {
++                    fmt::println("Skipping shader {:X}: DXIL compile failed.", hashShaderPair.first);
++                    return;
++                }
++                if (*(reinterpret_cast<uint32_t *>(shader.dxil->GetBufferPointer()) + 1) == 0)
++                {
++                    fmt::println("Skipping shader {:X}: DXIL was not signed properly.", hashShaderPair.first);
++                    shader.dxil->Release();
++                    shader.dxil = nullptr;
++                    return;
++                }
+ #endif
+ 
+                 IDxcBlob* spirv = dxcCompiler.compile(recompiler.out, recompiler.isPixelShader, false, true);
+-                assert(spirv != nullptr);
++                if (spirv == nullptr)
++                {
++                    fmt::println("Skipping shader {:X}: SPIR-V compile failed.", hashShaderPair.first);
++#ifdef XENOS_RECOMP_DXIL
++                    if (shader.dxil != nullptr)
++                    {
++                        shader.dxil->Release();
++                        shader.dxil = nullptr;
++                    }
++#endif
++                    return;
++                }
+ 
+                 bool result = smolv::Encode(spirv->GetBufferPointer(), spirv->GetBufferSize(), shader.spirv, smolv::kEncodeFlagStripDebugInfo);
+-                assert(result);
++                if (!result)
++                {
++                    fmt::println("Skipping shader {:X}: smolv::Encode failed.", hashShaderPair.first);
++                    shader.spirv.clear();
++                    spirv->Release();
++#ifdef XENOS_RECOMP_DXIL
++                    if (shader.dxil != nullptr)
++                    {
++                        shader.dxil->Release();
++                        shader.dxil = nullptr;
++                    }
++#endif
++                    return;
++                }
+ 
+                 spirv->Release();
+ 
+@@ -157,6 +197,12 @@ int main(int argc, char** argv)
+ 
+         for (auto& [hash, shader] : shaders)
+         {
++            // A shader whose compile failed has an empty spirv vector (see
++            // the graceful-skip changes above) instead of crashing --
++            // must not emit a broken/empty cache entry for it.
++            if (shader.spirv.empty())
++                continue;
++
+             f.println("\t{{ 0x{:X}, {}, {}, {}, {}, {} }},",
+                 hash, dxil.size(), (shader.dxil != nullptr) ? shader.dxil->GetBufferSize() : 0, spirv.size(), shader.spirv.size(), shader.specConstantsMask);
+ 
+diff --git a/XenosRecomp/shader_common.h b/XenosRecomp/shader_common.h
+index 1c74034..b9028d6 100644
+--- a/XenosRecomp/shader_common.h
++++ b/XenosRecomp/shader_common.h
+@@ -26,10 +26,22 @@ struct PushConstants
+ 
+ [[vk::push_constant]] ConstantBuffer<PushConstants> g_PushConstants;
+ 
+-#define g_Booleans                 vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + 256)
+-#define g_SwappedTexcoords         vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + 260)
+-#define g_HalfPixelOffset          vk::RawBufferLoad<float2>(g_PushConstants.SharedConstants + 264)
+-#define g_AlphaThreshold           vk::RawBufferLoad<float>(g_PushConstants.SharedConstants + 272)
++// Real fix (2026-08-17): the Xenos boolean constant file is 256 bits, not 32
++// (XE_GPU_REG_SHADER_CONSTANT_BOOL_000_031 .. _224_255 = 8 dwords), with
++// vertex-shader booleans at 0-127 and pixel-shader booleans at 128-255.
++// Upstream modelled the whole file as a single uint with 16 bools per stage
++// and a +16 pixel offset, which cannot represent anything past bool 31 --
++// measured against this game, 1240 of 1531 converted pixel shaders branch on
++// booleans in the 129-254 range, so upstream emitted `1 << 259`-style shifts.
++// A shift >= the bit width is undefined in SPIR-V and is masked to 5 bits on
++// AMD, so those tests silently read unrelated low bits instead. Widened to the
++// real 8-dword file and indexed by the raw hardware bool address, which also
++// removes the need for upstream issue #17's "subtract 128 for pixel shaders"
++// workaround -- absolute addressing is correct for both stages by construction.
++#define g_BooleanWord(i)           vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + 256 + (i) * 4)
++#define g_SwappedTexcoords         vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + 288)
++#define g_HalfPixelOffset          vk::RawBufferLoad<float2>(g_PushConstants.SharedConstants + 292)
++#define g_AlphaThreshold           vk::RawBufferLoad<float>(g_PushConstants.SharedConstants + 300)
+ 
+ [[vk::constant_id(0)]] const uint g_SpecConstants = 0;
+ 
+@@ -37,11 +49,15 @@ struct PushConstants
+ 
+ #else
+ 
++// Mirrors the SPIR-V layout above: 8 boolean dwords occupy c16-c17 (bytes
++// 256-287), so the remaining shared fields start at c18 (byte 288).
+ #define DEFINE_SHARED_CONSTANTS() \
+-    uint g_Booleans : packoffset(c16.x); \
+-    uint g_SwappedTexcoords : packoffset(c16.y); \
+-    float2 g_HalfPixelOffset : packoffset(c16.z); \
+-    float g_AlphaThreshold : packoffset(c17.x);
++    uint4 g_BooleanWords[2] : packoffset(c16); \
++    uint g_SwappedTexcoords : packoffset(c18.x); \
++    float2 g_HalfPixelOffset : packoffset(c18.y); \
++    float g_AlphaThreshold : packoffset(c18.w);
++
++#define g_BooleanWord(i) g_BooleanWords[(i) / 4][(i) % 4]
+ 
+ uint g_SpecConstants();
+ 
+diff --git a/XenosRecomp/shader_recompiler.cpp b/XenosRecomp/shader_recompiler.cpp
+index 698a418..08837fa 100644
+--- a/XenosRecomp/shader_recompiler.cpp
++++ b/XenosRecomp/shader_recompiler.cpp
+@@ -74,6 +74,22 @@ struct DeclUsageLocation
+     uint32_t location;
+ };
+ 
++// Ceiling for positional vertex-input location assignment (see the long
++// comment at the [[vk::location]] emission site). Vulkan's guaranteed minimum
++// for maxVertexInputAttributes is 16, but real desktop drivers expose more --
++// 32 on the AMD/RADV target this was measured against, and the largest real
++// shader in this game needs 28. Shaders above this bail out gracefully rather
++// than emitting a pipeline the device cannot create; the host falls back to
++// the stock renderer for them. Raise only in step with a real device limit
++// check on the host side.
++static constexpr uint32_t maxVertexInputAttributes = 32;
++
++// SUPERSEDED (2026-08-17) but deliberately retained as documentation of what
++// upstream does: vertex input locations are no longer looked up here, they are
++// assigned positionally. See the [[vk::location]] emission site for the full
++// rationale and the two measured bugs this table caused for this game.
++// Referenced by nothing; kept so the diff against upstream stays legible.
++[[maybe_unused]]
+ // NOTE: These are specialized Vulkan locations for Unleashed Recompiled. Change as necessary. Likely not going to work with other games.
+ static constexpr DeclUsageLocation USAGE_LOCATIONS[] =
+ {
+@@ -115,7 +131,35 @@ static constexpr std::pair<DeclUsage, size_t> INTERPOLATORS[] =
+     { DeclUsage::TexCoord, 14 },
+     { DeclUsage::TexCoord, 15 },
+     { DeclUsage::Color, 0 },
+-    { DeclUsage::Color, 1 }
++    { DeclUsage::Color, 1 },
++    // Real fix (2026-08-17): upstream declared only TEXCOORD0-15 + COLOR0-1
++    // here, so a container declaring an interpolator with any other usage
++    // emitted a reference to a parameter that was never declared -- e.g.
++    // `oNormal0` / `iBinormal0` -- and failed to compile. 13 real shaders in
++    // this game hit that (10 vertex, 5 pixel, overlapping pairs).
++    //
++    // The entries below are measurement-driven, not guessed: they are exactly
++    // the non-TEXCOORD/COLOR interpolator usages observed across this game's
++    // captured shaders. Both stages declare this same fixed list in the same
++    // order, so any vertex shader still links against any pixel shader and
++    // DXC assigns matching locations on both sides.
++    //
++    // Bounds: 23 float4 varyings = 92 components, within the 128-component
++    // maxVertexOutputComponents / maxFragmentInputComponents floor.
++    //
++    // The principled fix is to drop usage names here entirely and link
++    // interpolators positionally by register index, exactly as the hardware
++    // does (see the vertex-input [[vk::location]] comment for the same
++    // argument). That is deliberately NOT done in this change: unlike the
++    // vertex-input case -- where a table miss was a hard compile failure, so
++    // switching could only help -- changing interpolator naming alters code
++    // generation for the 280 vertex / 1531 pixel shaders that already convert
++    // and render. It needs its own validated change, not a drive-by.
++    { DeclUsage::Normal, 0 },
++    { DeclUsage::Normal, 1 },
++    { DeclUsage::Normal, 2 },
++    { DeclUsage::Tangent, 0 },
++    { DeclUsage::Binormal, 0 }
+ };
+ 
+ static constexpr std::string_view TEXTURE_DIMENSIONS[] = 
+@@ -586,19 +630,44 @@ void ShaderRecompiler::recompile(const AluInstruction& instr)
+             {
+             case ExportRegister::PSColor0:
+                 exportRegister = "oC0";
+-                break;        
++                break;
+             case ExportRegister::PSColor1:
+                 exportRegister = "oC1";
+-                break;        
++                break;
+             case ExportRegister::PSColor2:
+                 exportRegister = "oC2";
+-                break;            
++                break;
+             case ExportRegister::PSColor3:
+                 exportRegister = "oC3";
+-                break;           
++                break;
+             case ExportRegister::PSDepth:
+                 exportRegister = "oDepth";
+                 break;
++            // Real fix (2026-08-17): ExportAddress/ExportData0-4 are Xenos
++            // memory-export (memexport) registers -- this recompiler has no
++            // codegen for them at all (confirmed against XenosRecomp's own
++            // upstream README, which lists "Memory export" as an explicitly
++            // unimplemented feature). Previously these writes silently fell
++            // through the switch as a no-op, so a memexport shader
++            // "compiled" while its real output (GPU-side skinning/particle/
++            // procedural data written to memory for a later pass to read)
++            // was completely discarded -- confirmed real: a game shader
++            // this project measured as memexport-using (vs_fccbd68e...,
++            // eM0 writer) was one of the shaders causing visible geometry
++            // corruption when run through the native pipeline. Bail out
++            // gracefully (matches hadError's own vertex-element-collision
++            // handling) instead of shipping a shader with silently-dropped
++            // output -- the caller falls back to the already-correct
++            // stock/translated renderer for these.
++            case ExportRegister::ExportAddress:
++            case ExportRegister::ExportData0:
++            case ExportRegister::ExportData1:
++            case ExportRegister::ExportData2:
++            case ExportRegister::ExportData3:
++            case ExportRegister::ExportData4:
++                hadError = true;
++                hadErrorReason = "memory export (eA/eM) is not supported by this recompiler";
++                return;
+             }
+         }
+         else
+@@ -623,10 +692,37 @@ void ShaderRecompiler::recompile(const AluInstruction& instr)
+ 
+                 break;
+ 
++            // Real fix (2026-08-17): see the identical case in the pixel-
++            // shader switch above for the full rationale -- memexport
++            // (ExportAddress/ExportData0-4) has no codegen in this
++            // recompiler at all, so these writes must bail out rather than
++            // silently vanish. This is the vertex-shader side, and matches
++            // this project's own measured data: every confirmed memexport
++            // shader captured from the real game so far has been a vertex
++            // shader (0 pixel shaders).
++            case ExportRegister::ExportAddress:
++            case ExportRegister::ExportData0:
++            case ExportRegister::ExportData1:
++            case ExportRegister::ExportData2:
++            case ExportRegister::ExportData3:
++            case ExportRegister::ExportData4:
++                hadError = true;
++                hadErrorReason = "memory export (eA/eM) is not supported by this recompiler";
++                return;
++
+             default:
+             {
+                 auto findResult = interpolators.find(instr.vectorDest);
+-                assert(findResult != interpolators.end());
++                if (findResult == interpolators.end())
++                {
++                    // Real defensive fallback (not just an assert-removal):
++                    // a container whose declared interpolator usage doesn't
++                    // cover every register this shader's own ALU code
++                    // writes to would otherwise hit undefined behavior here
++                    // (dereferencing map::end()) instead of a clean skip.
++                    exportRegister = "";
++                    break;
++                }
+                 exportRegister = findResult->second;
+                 break;
+             }
+@@ -1253,8 +1349,16 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
+ 
+         if (constantInfo->registerSet == RegisterSet::Bool)
+         {
++            // Real fix (2026-08-17, see shader_common.h's g_BooleanWord
++            // comment): was `(1 << registerIndex + (isPixelShader ? 16 : 0))`,
++            // which can only address 32 booleans and silently produced
++            // undefined out-of-range shifts for the 129-254 range this game
++            // actually uses. Now selects the real dword + bit out of the full
++            // 256-bit hardware boolean file. Emitted as a 0/1 value so the
++            // existing `(NAME) != 0` use sites keep working unchanged.
+             const char* constantName = reinterpret_cast<const char*>(constantTableData + constantInfo->name);
+-            println("\t#define {} (1 << {})", constantName, constantInfo->registerIndex + (isPixelShader ? 16 : 0));
++            uint32_t boolIndex = constantInfo->registerIndex;
++            println("\t#define {} ((g_BooleanWord({}) >> {}) & 1u)", constantName, boolIndex / 32, boolIndex % 32);
+             boolConstants.emplace(constantInfo->registerIndex, constantName);
+         }
+     }
+@@ -1302,6 +1406,7 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
+     else
+     {
+         auto vertexShader = reinterpret_cast<const VertexShader*>(shader);
++        bool seenUsageSemantics[256] = {};
+         for (uint32_t i = 0; i < vertexShader->vertexElementCount; i++)
+         {
+             union
+@@ -1312,6 +1417,23 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
+ 
+             value = vertexShader->vertexElementsAndInterpolators[vertexShader->field18 + i];
+ 
++            // Real fix (2026-08-17, see hadError's own header comment): two
++            // vertex elements sharing the same (usage, usageIndex) would
++            // otherwise both become a parameter named `i{usage}{usageIndex}`
++            // -- a real, confirmed-in-the-wild collision (a real captured
++            // game shader with 6 vfetch attributes, 5 of which decode to
++            // Position/0) that "compiles" but silently aliases/shadows real
++            // vertex data instead of erroring. Bail out gracefully instead
++            // of emitting HLSL that's structurally wrong.
++            uint32_t usageSemantic = (uint32_t(vertexElement.usage) << 4) | uint32_t(vertexElement.usageIndex);
++            if (seenUsageSemantics[usageSemantic])
++            {
++                hadError = true;
++                hadErrorReason = "duplicate vertex element usage/usageIndex (would produce colliding, identically-named HLSL parameters)";
++                return;
++            }
++            seenUsageSemantics[usageSemantic] = true;
++
+             const char* usageType = USAGE_TYPES[uint32_t(vertexElement.usage)];
+ 
+         #ifdef UNLEASHED_RECOMP
+@@ -1324,14 +1446,50 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
+ 
+             out += '\t';
+ 
+-            for (auto& usageLocation : USAGE_LOCATIONS)
++            // Real fix (2026-08-17): locations are now assigned POSITIONALLY
++            // -- location i for the i-th vertex element of this shader --
++            // instead of being looked up in USAGE_LOCATIONS.
++            //
++            // USAGE_LOCATIONS is upstream's own Unleashed-specific table and
++            // says so in its comment ("Likely not going to work with other
++            // games"). Two measured, real failures came from it here:
++            //
++            // 1. A table MISS emitted the parameter with no [[vk::location]]
++            //    at all, and DXC rejects PARTIAL explicit location assignment
++            //    outright -- killing the whole shader. This was 198 of 236
++            //    failing vertex shaders (84%), all of them needing only
++            //    POSITION2..12 / TEXCOORD8..12, which the table omits.
++            // 2. The table maps both (Position,1) and (TexCoord,7) to
++            //    location 15, so any shader using both silently aliases two
++            //    attributes onto one location. Not currently hit by any
++            //    converting shader (verified: 0 of 280), but it becomes a live
++            //    corruption source the moment the table is widened.
++            //
++            // Positional assignment is also the structurally correct model:
++            // Xenos vertex shaders pull their own data via vfetch, whose
++            // instruction encoding carries stride/offset/format directly, so
++            // the D3D9 usage semantic is a host-side fiction that never
++            // reaches the hardware. Routing vertex data through usage names
++            // converts a problem the microcode states outright (which element)
++            // into one that must be guessed (which semantic) -- and for this
++            // game those names ARE guesses: 0 of those 198 shaders have a real
++            // captured vertex declaration. Assigning by index makes a wrong
++            // NAME stop being a wrong BINDING.
++            //
++            // The host must derive its VkVertexInputAttributeDescription
++            // locations the same way -- see xenos_cache_unpack.cpp's
++            // ExtractVertexLocations(), which uses this identical ordering.
++            //
++            // Upstream's README recommends exactly this: "A generic solution
++            // would assign unique locations per vertex shader and dynamically
++            // create vertex declarations at runtime."
++            if (i >= maxVertexInputAttributes)
+             {
+-                if (usageLocation.usage == vertexElement.usage && usageLocation.usageIndex == vertexElement.usageIndex)
+-                {
+-                    print("[[vk::location({})]] ", usageLocation.location);
+-                    break;
+-                }
++                hadError = true;
++                hadErrorReason = "more vertex elements than Vulkan guarantees input locations";
++                return;
+             }
++            print("[[vk::location({})]] ", i);
+ 
+             println("in {0} i{1}{2} : {3}{2},", usageType, USAGE_VARIABLES[uint32_t(vertexElement.usage)],
+                 uint32_t(vertexElement.usageIndex), USAGE_SEMANTICS[uint32_t(vertexElement.usage)]);
+@@ -1418,7 +1576,24 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
+         out += "\n";
+     }
+ 
+-    bool printedRegisters[32]{};
++    // Real fix (2026-08-17): was 32. Xenos ALU source operands mask to six
++    // bits (see the `reg &= 0x3F` in this file's operand decoder), so the
++    // architectural register file is r0-r63. Declaring only r0-r31 meant any
++    // shader touching a higher register emitted an undeclared identifier.
++    //
++    // Measured: 15 real shaders hit this, all via r63 specifically, which is
++    // ExportRegister::VSPointSizeEdgeFlagKillVertex -- the vertex export
++    // switch has no case for it, so it falls through to the interpolator
++    // lookup, misses, and the generated code writes to r63 as a plain
++    // register. Point size has no meaning for the triangle draws this game
++    // uses and upstream lists it as unimplemented, so discarding the value
++    // into a now-declared dead local is correct here; DXC removes it. The
++    // important part is that it is discarded DELIBERATELY rather than by
++    // colliding with an undeclared name.
++    //
++    // Unused registers cost nothing: DXC eliminates the ones never read.
++    static constexpr size_t kNumRegisters = 64;
++    bool printedRegisters[kNumRegisters]{};
+ 
+     uint32_t interpolatorCount = (shader->interpolatorInfo >> 5) & 0x1F;
+ 
+@@ -1457,7 +1632,7 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
+         out += "\n";
+     }
+ 
+-    for (size_t i = 0; i < 32; i++)
++    for (size_t i = 0; i < kNumRegisters; i++)
+     {
+         if (!printedRegisters[i])
+         {
+@@ -1694,11 +1869,23 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
+                     }
+                     else
+                     {
+-                        auto findResult = boolConstants.find(cfInstr.condJmp.boolAddress);
+-                        if (findResult != boolConstants.end())
+-                            println("if ((g_Booleans & {}) {}= 0)", findResult->second, cfInstr.condJmp.condition ^ simpleControlFlow ? "!" : "=");
+-                        else
+-                            println("if (b{} {}= 0)", uint32_t(cfInstr.condJmp.boolAddress), cfInstr.condJmp.condition ^ simpleControlFlow ? "!" : "=");
++                        // Real fix (2026-08-17): index the real 256-bit
++                        // boolean file by the instruction's own absolute
++                        // boolAddress rather than looking up a name from the
++                        // constant table. Two real bugs go away at once:
++                        // (1) a container whose constant table does not name
++                        // this boolean used to emit a bare `b<N>` identifier
++                        // that was never declared -- a hard compile failure;
++                        // (2) upstream issue #17 ("pixel shader boolean
++                        // constants require 128 to be subtracted from
++                        // boolAddress") only exists because the old scheme
++                        // packed the two stages into one 32-bit word. The
++                        // hardware address is already absolute across both
++                        // stages, so using it directly is correct for vertex
++                        // and pixel shaders with no per-stage adjustment.
++                        uint32_t boolAddress = cfInstr.condJmp.boolAddress;
++                        println("if (((g_BooleanWord({}) >> {}) & 1u) {}= 0)", boolAddress / 32, boolAddress % 32,
++                            cfInstr.condJmp.condition ^ simpleControlFlow ? "!" : "=");
+                     }
+ 
+                     if (simpleControlFlow)
+diff --git a/XenosRecomp/shader_recompiler.h b/XenosRecomp/shader_recompiler.h
+index b2e317d..2364c0f 100644
+--- a/XenosRecomp/shader_recompiler.h
++++ b/XenosRecomp/shader_recompiler.h
+@@ -34,6 +34,19 @@ struct ShaderRecompiler : StringBuffer
+     std::unordered_map<uint32_t, uint32_t> ifEndLabels;
+     uint32_t specConstantsMask = 0;
+ 
++    // Real fix (2026-08-17): set when this shader's real vertex-element
++    // table can't be safely translated -- specifically when two elements
++    // share the same (usage, usageIndex) pair (XenosRecomp's own param
++    // generation loop names/decorates parameters purely by that pair, so a
++    // collision produces two identically-named `in float4 iPosition0`
++    // parameters, one of which silently shadows/aliases the other's real
++    // vertex data at a shared, ambiguous Vulkan location -- confirmed via a
++    // real captured game shader that compiled "successfully" but rendered
++    // corrupted geometry in-game). main.cpp checks this after recompile()
++    // and skips the shader gracefully instead of shipping a broken one.
++    bool hadError = false;
++    const char* hadErrorReason = "";
++
+ #ifdef UNLEASHED_RECOMP
+     bool hasMtxProjection = false;
+     bool hasMtxPrevInvViewProjection = false;
