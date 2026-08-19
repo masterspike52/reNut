@@ -9,13 +9,23 @@
 #include "renut_engine/Timer.h"
 #include "renut_engine/Fps.h"
 #include "renut_engine/hooks.h"
+#include <rex/cvar.h>
 #include <rex/ui/window.h>
-//#include <rex/discord_rpc.h>
+#ifdef _WIN32
+#include <rex/discord_rpc.h>
+#endif
 #include <functional>
 #include <string>
 
+// DebugHubOverlayDialog (Performance/A-B-benchmark/Native-shader tabs) --
+// cross-platform (Windows/Linux/macOS): its plugin-symbol lookups go through
+// dl_compat.h's dlopen/dlsym shim, which resolves to GetModuleHandle/
+// GetProcAddress on Windows and dlopen/dlsym elsewhere. Every tab degrades
+// gracefully (shows "not available") when its data source -- a patched SDK,
+// or the nativevk plugin -- isn't present, rather than failing to build.
+#include "renut_engine/overlays/debug_hub_overlay.h"
+
 #ifndef _WIN32
-#include <rex/cvar.h>
 #include "renut_engine/linuxfixes/xdg_paths.h"
 
 // Defined in the SDK (src/core/logging.cpp) at global scope. When non-empty it
@@ -63,19 +73,24 @@ public:
     }
 #endif
 
-    // void OnPostSetup() override {
-    //     rex::discord_rpc::Presence rpc;
+    void OnPostSetup() override {
+    #ifdef _WIN32
+        rex::discord_rpc::Presence rpc;
 
-    //     rpc.details_ = "";
-    //     rpc.state_ = "";
-    //     rpc.large_image_key_ = "e242d6b6-c34e-47a1-8c2a-5297fe33bce7";
-    //     rpc.large_image_text_ = "renut";
+        rpc.details_ = "";
+        rpc.state_ = "";
+        rpc.large_image_key_ = "e242d6b6-c34e-47a1-8c2a-5297fe33bce7";
+        rpc.large_image_text_ = "renut";
 
-    //     //rex::discord_rpc::Start(Application ID, Settings);
-    //     rex::discord_rpc::Start("1520303728047951892", rpc);
+        //rex::discord_rpc::Start(Application ID, Settings);
+        rex::discord_rpc::Start("1520303728047951892", rpc);
 
-    //     rex::cvar::LoadConfig("renut.toml"); 
-    // }
+        rex::cvar::LoadConfig("renut.toml");
+    #endif
+        rex::cvar::SetFlagByName("gpu_allow_invalid_fetch_constants", "true");
+        rex::cvar::SetFlagByName("readback_resolve", "none");
+        rex::cvar::SetFlagByName("readback_memexport", "false");
+    }
 
     void OnCreateDialogs(rex::ui::ImGuiDrawer* drawer) override {
         //drawer->AddDialog(new FpsOverlayDialog(drawer));
@@ -83,6 +98,7 @@ public:
         fps_dialog_->fpsManager = &fpsManager;
         drawer->AddDialog(fps_dialog_.get());
         drawer->AddDialog(new RenuLogOverlayDialog(drawer));
+        drawer->AddDialog(new DebugHubOverlayDialog(drawer));
         path_wizard_ = new PathSetupWizard(drawer);
         drawer->AddDialog(path_wizard_);
 
@@ -101,6 +117,12 @@ public:
         const rex::PathConfig& defaults,
         std::function<void(rex::PathConfig)> resume) override
     {
+        if (!path_wizard_) {
+            RNUT_WARN("path setup wizard unavailable (no graphics/ImGui surface); "
+                      "using default paths");
+            return defaults;
+        }
+
         path_wizard_->Init(app_name_, defaults, [resume](rex::PathConfig resolved) {
             resume(resolved);
             });

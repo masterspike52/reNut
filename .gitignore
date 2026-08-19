@@ -1,2 +1,25 @@
-/assets
-/generated
+# Build trees. out/ holds both the host build and the container build, including
+# a ~187 MB renut binary -- past GitHub's 100 MB per-file hard limit, so this is
+# not merely noise: leaving it in gets the push rejected.
+out/
+dist/
+
+# Recompiler output. Regenerate with:
+#   cmake --build out/build/<preset> --target renut_codegen
+generated/
+
+# Game data from the disc image. Not redistributable, and 6.2 GB besides.
+assets/
+
+# Editor and backup noise.
+*.bak
+__pycache__/
+
+# Local Claude Code project settings.
+.claude/
+
+# Working/planning docs -- local reference only, not for the fork.
+docs/ai/archive/deferred-vfetch-flush.md
+docs/ai/archive/native-renderer-plan.md
+docs/ai/archive/native-renderer-rewrite-plan.md
+docs/ai/archive/pr-description-renderer.md
