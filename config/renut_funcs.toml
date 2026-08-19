@@ -32297,3 +32297,55 @@ longjmp_address = 0x82BB59B0
 0x8224339c = {}
 0x823edf0c = {}
 0x823edf40 = {}
+
+# ---------------------------------------------------------------------------
+# CRT functions. These are ordinary recompiled guest functions -- they are
+# NOT mapped through [rexcrt] (see the note in renut_config.toml), so the
+# original PPC code is kept and used. Declared here so they still get real
+# names; override individually with REX_HOOK if you want native versions.
+# ---------------------------------------------------------------------------
+0x821e7f10 = {name = "rex_strncpy"}  # strncpy
+0x821f4bc0 = {name = "rex_strcpy_s"}  # strcpy_s
+0x8223f478 = {name = "rex_RtlAllocateHeap"}  # RtlAllocateHeap
+0x8223fd48 = {name = "rex_RtlFreeHeap"}  # RtlFreeHeap
+0x82240200 = {name = "rex_RtlSizeHeap"}  # RtlSizeHeap
+0x8224b658 = {name = "rex_XMemSet"}  # XMemSet
+0x82257b18 = {name = "rex_XMemSet128"}  # XMemSet128
+0x82261560 = {name = "rex_wcscmp"}  # wcscmp
+0x822a2930 = {name = "rex_XMemCpy"}  # XMemCpy
+0x82714358 = {name = "rex_CloseHandle"}  # CloseHandle
+0x827152e8 = {name = "rex_FindFirstFileA"}  # FindFirstFileA
+0x82715378 = {name = "rex_CreateFileA"}  # CreateFileA
+0x82715570 = {name = "rex_SetFilePointer"}  # SetFilePointer
+0x827156e0 = {name = "rex_ReadFile"}  # ReadFile
+0x82715868 = {name = "rex_FindNextFileA"}  # FindNextFileA
+0x82715a20 = {name = "rex_GetFileSize"}  # GetFileSize
+0x82715bf0 = {name = "rex_GetDiskFreeSpaceExA"}  # GetDiskFreeSpaceExA
+0x82715da8 = {name = "rex_SetEndOfFile"}  # SetEndOfFile
+0x82715e50 = {name = "rex_WriteFile"}  # WriteFile
+0x82715ff8 = {name = "rex_GetFileAttributesA"}  # GetFileAttributesA
+0x82717428 = {name = "rex_RtlReAllocateHeap"}  # RtlReAllocateHeap
+0x827182b0 = {name = "rex_CompareFileTime"}  # CompareFileTime
+0x827190f8 = {name = "rex_GetFileSizeEx"}  # GetFileSizeEx
+0x82bb0dc0 = {name = "rex_strchr"}  # strchr
+0x82bb0e00 = {name = "rex_memcpy_s"}  # memcpy_s
+0x82bb0ed8 = {name = "rex_memmove_s"}  # memmove_s
+0x82bb12d0 = {name = "rex_strncmp"}  # strncmp
+0x82bb1798 = {name = "rex_wcslen"}  # wcslen
+0x82bb1d20 = {name = "rex_memchr"}  # memchr
+0x82bb1d60 = {name = "rex_strstr"}  # strstr
+0x82bb2c70 = {name = "rex_memmove"}  # memmove
+0x82bb3508 = {name = "rex_wcsstr"}  # wcsstr
+0x82bb3960 = {name = "rex_wcsncmp"}  # wcsncmp
+0x82bb4028 = {name = "rex_wcschr"}  # wcschr
+0x82bb4068 = {name = "rex_wcsncpy"}  # wcsncpy
+0x82bb4510 = {name = "rex_memcpy"}  # memcpy
+0x82bb4a40 = {name = "rex_memset"}  # memset
+0x82bb61c0 = {name = "rex_strrchr"}  # strrchr
+0x82bcd0c8 = {name = "rex_DeleteFileA"}  # DeleteFileA
+0x82bcd260 = {name = "rex_lstrcmpiA"}  # lstrcmpiA
+0x82bcd2f0 = {name = "rex_lstrlenA"}  # lstrlenA
+0x82bcd3a8 = {name = "rex_GetFileAttributesExA"}  # GetFileAttributesExA
+0x82bcd9e0 = {name = "rex_FlushFileBuffers"}  # FlushFileBuffers
+0x82bcda20 = {name = "rex_CreateDirectoryA"}  # CreateDirectoryA
+0x82bcdd68 = {name = "rex_SetFileAttributesA"}  # SetFileAttributesA

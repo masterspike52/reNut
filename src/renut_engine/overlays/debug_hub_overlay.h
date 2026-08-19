@@ -7,14 +7,15 @@
 #include "renut_engine/game_activity_stats.h"
 #include "renut_engine/overlays/ab_benchmark_overlay.h"
 #include "renut_engine/overlays/dl_compat.h"
+#include "renut_engine/overlays/nativevk_debug_overlay.h"
 #include "renut_engine/overlays/render_stats_overlay.h"
 
-// One F5 window hosting the three renderer debug panels (Renderer
-// performance, A/B benchmark, Native shader debug) as tabs, instead of three
-// separately-toggled/always-on windows scattered around the screen. The
-// native-shader tab's content lives in the GPU plugin (only rexgpu-nativevk
-// has one) and is pulled in with dl_compat.h's dlsym-equivalent, the same
-// cross-module pattern ab_benchmark_overlay.h already used for renut_ab_*.
+// One F5 window hosting four renderer debug panels (Performance, A/B
+// Benchmark, NativeVK Debug, Native Shaders) as tabs, instead of separately-
+// toggled/always-on windows scattered around the screen. The Native Shaders
+// tab's content lives in the GPU plugin (only rexgpu-nativevk has one) and
+// is pulled in with dl_compat.h's dlsym-equivalent, the same cross-module
+// pattern ab_benchmark_overlay.h already used for renut_ab_*.
 // Available on Windows too (see dl_compat.h) as of 2026-08-19 -- previously
 // this whole dialog, including the Performance tab (which needs no plugin
 // symbol lookup at all), was compiled out of Windows builds entirely because
@@ -23,7 +24,7 @@ class DebugHubOverlayDialog : public rex::ui::ImGuiDialog {
 public:
     explicit DebugHubOverlayDialog(rex::ui::ImGuiDrawer* drawer) : rex::ui::ImGuiDialog(drawer) {
         rex::ui::RegisterBind("bind_renut_debug_hub", "F5",
-            "Toggle renderer debug panels (performance / A-B benchmark / native shaders)", [this] {
+            "Toggle renderer debug panels (performance / A-B benchmark / nativevk debug / native shaders)", [this] {
                 visible_ = !visible_;
                 renut::game_activity_stats::SetEnabled(visible_);
             });
@@ -52,6 +53,10 @@ public:
             }
             if (ImGui::BeginTabItem("A/B Benchmark")) {
                 renut::overlays::ab_benchmark::DrawContent();
+                ImGui::EndTabItem();
+            }
+            if (ImGui::BeginTabItem("NativeVK Debug")) {
+                renut::overlays::nativevk_debug::DrawContent();
                 ImGui::EndTabItem();
             }
             if (ImGui::BeginTabItem("Native Shaders")) {

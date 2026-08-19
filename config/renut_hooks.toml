@@ -137,10 +137,15 @@ registers = []
 after_instruction = false
 jump_address_on_true = 0x8222BD64
 
-
+# Same handle-vs-pointer correlation as
+# dumpVertexDeclaration_hook/dumpVertexDeclarationCreated_hook, but for
+# vertex shaders -- sub_8264E8B0 (this same address) allocates a handle
+# object and returns it in r3; SetVertexShader (0x8222A0A8) receives that
+# handle, not the raw blob pointer. Capture the pointer here (entry)
+# and pair it with the handle at the function's return point below.
 [[midasm_hook]]
 address = 0x8264E8B0
-name = "dumpVertexShader_hook"
+name = "dumpVertexShaderCreate_hook"
 registers = ["r3"]
 after_instruction = false
 
@@ -203,7 +208,7 @@ name = "BanjoActorOverride"
 registers = ["r3", "r5"]
 after_instruction = true
 jump_address_on_false = 0x8251CABC
- 
+
 [[midasm_hook]]
 address = 0x8246e7a8
 name = "klungoConstruct_hook"
@@ -259,10 +264,65 @@ name = "Max_Acquired_Parts_Access_hook_3"
 registers = ["r9"]
 after_instruction = true
 
-# Debug hub / Performance tab: per-frame game-activity timing
-# (src/renut_engine/game_activity_stats.cpp). Each pair brackets one real
-# guest activity (animation streaming, body-blend, actor script, actor
-# generation) so the overlay can show live per-frame + session counts.
+# --- Merged from reNut linux-work (native-renderer/shader-capture hooks) ---
+
+[[midasm_hook]]
+address = 0x82230848
+name = "disable_tessellated_draw"
+registers = []
+after_instruction = false
+jump_address_on_true = 0x82230E10
+
+[[midasm_hook]]
+address = 0x8264E998
+name = "dumpVertexShaderCreated_hook"
+registers = ["r3"]
+after_instruction = false
+
+[[midasm_hook]]
+address = 0x8264EA90
+name = "dumpVertexDeclaration_hook"
+registers = ["r3", "r4", "r5", "r6", "r7", "r8", "r9", "r10"]
+after_instruction = false
+
+# sub_8264EA90's return point (confirmed via recompiled-code inspection --
+# both its success and failure paths converge here, at "addi r1,r1,112",
+# with r3 already holding the just-allocated vertex-declaration handle, or
+# 0 on failure). Needed to correlate the elements-array pointer captured at
+# entry (dumpVertexDeclaration_hook, above) with the handle
+# SetVertexDeclaration (0x82205700) later receives -- see
+# g_declHandleToElements in shader_dump.cpp for the full story.
+[[midasm_hook]]
+address = 0x8264EAFC
+name = "dumpVertexDeclarationCreated_hook"
+registers = ["r3"]
+after_instruction = false
+
+[[midasm_hook]]
+address = 0x8222A0A8
+name = "dumpVertexShaderSet_hook"
+registers = ["r3", "r4"]
+after_instruction = false
+
+[[midasm_hook]]
+address = 0x82205700
+name = "dumpVertexDeclarationSet_hook"
+registers = ["r3", "r4"]
+after_instruction = false
+
+# Phase 0 of the SDK-independent native renderer rewrite (see
+# docs/ai/archive/native-renderer-rewrite-plan.md and nativevk_phase0.cpp)
+# used to register its own midasm_hook entries here, at the same four D3D9
+# draw addresses as d3d9Draw*_hook below and the same SetVertexShader
+# address as dumpVertexShaderSet_hook above. Removed 2026-08-19: confirmed
+# via a full sweep of this file that codegen only keeps the LAST-defined
+# midasm_hook when two entries share an (address, after_instruction) pair,
+# so those duplicates were silently killing dumpVertexShaderSet_hook and
+# (once d3d9Draw*_hook was added below) d3d9Draw*_hook's own predecessors,
+# not coexisting with them. Phase 0's counters are now driven directly from
+# dumpVertexShaderSet_hook (shader_dump.cpp) and d3d9Draw*_hook
+# (d3d9_draw_stats.cpp) instead -- see those files' own comments.
+
 [[midasm_hook]]
 address = 0x822469D0
 name = "gameActivityAnimationStream"
@@ -311,20 +371,32 @@ name = "gameActivityActorGenerationEnd"
 registers = ["r3", "r4", "r5"]
 after_instruction = false
 
-# appMainDraw's own entry point (config/renut_funcs.toml) -- fires once per
-# real call into appMainDraw (~62% of real frames in practice, not fully
-# understood why, but real and working). FPS.cpp's appMainDrawend() calls
-# game_activity_stats::EndFrame() here, the only thing that refreshes the
-# snapshot the Performance tab's "Game activity" section reads.
+[[midasm_hook]]
+address = 0x82222250
+name = "appMainDrawStart"
+after_instruction = false
+
 [[midasm_hook]]
 address = 0x82222250
 name = "appMainDrawend"
 after_instruction = true
 
+[[midasm_hook]]
+address = 0x8220F210
+name = "appMainTickPreDrawStart"
+after_instruction = false
+
+[[midasm_hook]]
+address = 0x8220F210
+name = "appMainTickPreDrawend"
+after_instruction = true
+
 # d3d9_draw_stats.cpp: "connect the values" (draws/depthonly/nopixelshader/
-# color_draws in the F5 Performance tab) without requiring a patched SDK --
-# read-only, sourced purely from D3D9 guest hooks (config/renut_gpu_funcs.toml),
-# so it works with any GPU plugin.
+# color_draws in the F5 Performance tab) without requiring the native-
+# renderer SDK patch -- read-only, sourced purely from D3D9 guest hooks, so
+# it works with any GPU plugin. Independent of nativevk_phase0's own draw
+# hooks (config/renut_gpu_funcs.toml addresses) -- confirmed elsewhere in
+# this file that multiple midasm_hooks at the same address are supported.
 [[midasm_hook]]
 address = 0x82226730
 name = "d3d9SetPixelShader_hook"
@@ -352,5 +424,14 @@ after_instruction = false
 [[midasm_hook]]
 address = 0x82656728
 name = "d3d9DrawIndexedVerticesUP_hook"
+registers = []
+after_instruction = false
+
+# Fifth real D3D9 draw entry point, found while verifying Phase 0's coverage
+# number -- see d3d9_draw_stats.cpp's own comment on
+# d3d9DrawIndexedTessellatedVertices_hook for why this was missing.
+[[midasm_hook]]
+address = 0x82230838
+name = "d3d9DrawIndexedTessellatedVertices_hook"
 registers = []
 after_instruction = false
