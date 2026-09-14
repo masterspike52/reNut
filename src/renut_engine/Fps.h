@@ -1,17 +1,16 @@
 #pragma once
+#include <rex/cvar.h>
 #include <rex/ui/imgui_dialog.h>
+#include <rex/ui/keybinds.h>
 #include "imgui.h"
 #include <chrono>
 #include <memory>
 #include <vector>
 #include <string>
-#include "Timer.h"
 
 inline double cpuMS;
 inline double gpuMS;
 inline int flock;
-inline Timer CPUTimer;
-inline Timer GPUTimer;
 
 class FPSCounter {
 public:
@@ -43,7 +42,15 @@ public:
 
 class FpsOverlayDialog : public rex::ui::ImGuiDialog {
 public:
-    explicit FpsOverlayDialog(rex::ui::ImGuiDrawer* drawer) : rex::ui::ImGuiDialog(drawer) {}
+    explicit FpsOverlayDialog(rex::ui::ImGuiDrawer* drawer) : rex::ui::ImGuiDialog(drawer) {
+        rex::ui::RegisterBind("bind_fps_overlay", "F1", "Toggle FPS overlay", [this] {
+            if (fpsManager) fpsManager->showFPS = !fpsManager->showFPS;
+            });
+    }
+
+    ~FpsOverlayDialog() {
+        rex::ui::UnregisterBind("bind_fps_overlay");
+    }
 
     FPSManager* fpsManager = nullptr;
 
@@ -72,6 +79,17 @@ public:
             ImGui::TextColored(color, "%.0f FPS", fps);
             ImGui::TextColored(color,"cpu: %.1fms", cpuMS);
             ImGui::TextColored(color,"gpu: %.1fms", gpuMS);
+        }
+
+        float hostFps = static_cast<float>(rex::cvar::Query<double>("present_host_fps"));
+        if (hostFps > 0.5f) {
+            ImGui::TextColored(ImVec4(0.65f, 0.4f, 1.0f, 1.0f), "%.0f FPS (host)", hostFps);
+        }
+
+        float generatedFps = static_cast<float>(rex::cvar::Query<double>("present_fsr3_generated_fps"));
+        if (generatedFps > 0.5f) {
+            ImGui::TextColored(ImVec4(1.0f, 0.45f, 0.85f, 1.0f), "%.0f FPS (generated)",
+                               generatedFps);
         }
 
         ImGui::End();

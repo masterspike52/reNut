@@ -4,8 +4,15 @@
 
 includes = [
 "config/renut_funcs.toml",
-"config/renut_hooks.toml"
+"config/renut_hooks.toml",
 ]
+
+# NOTE: config/renut_crt.toml is deliberately NOT included. Adding it swaps the
+# guest heap (RtlAllocateHeap/RtlFreeHeap/...) and the guest CRT over to the
+# SDK's native rexcrt implementations -- the codegen *strips* the original PPC
+# code for every mapped address. That is a large runtime behaviour change, not a
+# naming tweak. Enable it deliberately, one group at a time, and test:
+# "config/renut_crt.toml"
 
 project_name = "renut"
 file_path = "assets/default.xex"

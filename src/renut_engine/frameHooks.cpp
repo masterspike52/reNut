@@ -1,9 +1,6 @@
-#define WIN32_LEAN_AND_MEAN
-#define NOMINMAX
 #include <windows.h>
 
 #include <rex/hook.h>
-#include "rex_macros.h"
 #include <rex/cvar.h>
 #include "globals.h"
 
@@ -14,12 +11,8 @@
 
 REXCVAR_DEFINE_INT32(target_refreshRate, -1, "Nuts&Bolts/Performance", "The index for a given VSync setting. Options are: \n\t-1 = Unaffected\n\t0 = Immediate (Uncapped)\n\t1 = 60Hz\n\t2 = 30Hz (No Threshold)\n\t3 = 20Hz\n\t4 - 9 = Variants of 30Hz.").range(-1, 9);
 
-// Declare the original generated implementation
-REX_PPC_EXTERN_IMPORT(setParamInterval); // sub_823edeb8
-
-static void setParamInterval(int idx) {
-	REX_PPC_INVOKE(setParamInterval, idx);
-}
+// Typed import of the original generated implementation at sub_823edeb8.
+REX_IMPORT(__imp__rex_setParamInterval, setParamInterval, void(int));
 
 static std::once_flag g_refreshRateCallbackSet_once;
 bool isInKlungoGame = false;

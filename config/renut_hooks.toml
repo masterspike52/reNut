@@ -1,31 +1,21 @@
-# Hooks while initializing the item entries for the pause menu.
 [[midasm_hook]]
 address = 0x825a8bf8
 name = "overworld_vehicles_hook"
 registers = ["r23", "r26"]
 after_instruction = false
 
-# reNut Cvar Menu: inject item count/entries at LABEL_52 of the pause-menu
-# builder (after the game has filled the item array, before the XUI tail
-# consumes it). Adds a "reNut Cheats" row (normal menu) or sets the cvar
-# submenu row count (cvar mode).
 [[midasm_hook]]
 address = 0x825a8c88
 name = "pauseMenu_InjectItems"
 registers = []
 after_instruction = false
 
-# reNut Cvar Menu: override the builder's hard-coded "select row 0" so a toggle
-# can keep the cursor on the same row (r4 = selection index passed to
-# XuiContainerSetCurSel).
 [[midasm_hook]]
 address = 0x825a8d18
 name = "pauseMenu_RestoreSel"
 registers = ["r4"]
 after_instruction = false
 
-# reNut Settings section: append our section id to the tab strip at the end of
-# the strip builder (sub_825A6708), after dword_82FA32C0 (count) is finalized.
 [[midasm_hook]]
 address = 0x825a6b98
 name = "pauseSection_InjectTab"
@@ -40,13 +30,6 @@ after_instruction = false
 jump_address_on_true = 0x824CE32C
 
 [[midasm_hook]]
-address = 0x823ED858
-name = "meGetResolutionParams_hook"
-registers = ["r5", "r6"]
-after_instruction = true
-jump_address_on_true = 0x823ED950
-
-[[midasm_hook]]
 address = 0x8228F610
 name = "Optimization_Hook"
 registers = []
@@ -59,14 +42,6 @@ registers = []
 after_instruction = false
 jump_address_on_true = 0x82B68110
 
-# Disable Shadows: skip the caster draw in both shadow map passes. They are the
-# only two passes that bind a null color target (depth-only). In each, the
-# hooked address is `bl sub_823B0698` (draw caster) and the jump target is the
-# loop decrement -- already the target of that pass's own "skip this caster"
-# branches. The Clear-to-1.0 and Resolve still run, so the map resolves empty
-# and nothing is shadowed.
-
-# Per-viewport dynamic shadow map (sub_823B3598)
 [[midasm_hook]]
 address = 0x823B38B8
 name = "disable_shadows"
@@ -74,7 +49,6 @@ registers = []
 after_instruction = false
 jump_address_on_true = 0x823B38BC
 
-# Cached shadow map, 512 tile -> 2048 R16F atlas (sub_823B3CE0)
 [[midasm_hook]]
 address = 0x823B3EF4
 name = "disable_shadows_cached"
@@ -82,22 +56,12 @@ registers = []
 after_instruction = false
 jump_address_on_true = 0x823B3EF8
 
-# Force a full shadow atlas rebuild after disable_shadows is toggled, so stale
-# tiles don't keep showing old shadows that drift with the camera.
-# 0x821FF490 is `lwz r10, 0x8F8(r11)` -- the rebuild-all gate in the atlas
-# scheduler (sub_821FF478). The hook runs after the load and overwrites r10, so
-# the pass takes its own rebuild path and walks all 16 tiles.
 [[midasm_hook]]
 address = 0x821FF490
 name = "shadows_atlas_rebuild"
 registers = ["r10"]
 after_instruction = true
 
-# Disable Contact Shadows (CAO): skip the per-blob draw in the fxCAO pass
-# (sub_82330088 -- SrcBlend=0/DestBlend=4 darkening under characters).
-# 0x823302AC is `bl sub_82330388`; 0x823302B0 is the list-advance, already the
-# target of the loop's own "skip this blob" branch. The pass still restores the
-# blend/depth-bias state it saved, so nothing leaks into the rest of the frame.
 [[midasm_hook]]
 address = 0x823302AC
 name = "disable_cao"
@@ -105,39 +69,18 @@ registers = []
 after_instruction = false
 jump_address_on_true = 0x823302B0
 
-# Disable MSAA: zero only the MultiSample argument (r6) at the two scene
-# render-target creations in sub_823ED2A8, so the color + depth surfaces are
-# built single-sampled. Crucially this does NOT touch the MSAA-mode global
-# (dword_82F9EC18), the tile count (sub_8222A990) or the surface dimensions
-# (dword_82F9EBD0/D4) -- those still compute exactly as stock, so predicated
-# tiling and every projection/viewport input are unchanged and matrices stay
-# correct. Both surfaces must match sample count, so both calls are hooked.
-# Takes effect on the next device reset (resolution change / restart).
-# See disable_msaa_color()/disable_msaa_depth() in hooks.cpp.
-
-# Color scene surface: bl D3DDevice_CreateSurface (r6 = MultiSample).
 [[midasm_hook]]
 address = 0x823ED594
 name = "disable_msaa_color"
 registers = ["r6"]
 after_instruction = false
 
-# Depth scene surface: bl D3DDevice_CreateSurface (r6 = MultiSample).
 [[midasm_hook]]
 address = 0x823ED6E4
 name = "disable_msaa_depth"
 registers = ["r6"]
 after_instruction = false
 
-# Fix the split-second black flash on heal/damage feedback. The a34-gated branch
-# of the feedback overlay (sub_82573650) calls the glow/bloom pass sub_825740F0,
-# which allocates a scratch surface at D3DSURFACE_PARAMETERS.Base = 0 -- aliased
-# onto EDRAM tile 0, the main framebuffer -- and Clears it to black. On real
-# Xenos that EDRAM is free (scene already resolved out); in the recomp it maps to
-# the live framebuffer, so the clear blacks the whole frame for that effect's
-# frame(s). 0x82573A54 is the first instruction of the glow block; jumping to
-# 0x82573AC8 (the game's own "a34 == 0" merge point) drops only the glow and
-# leaves the scene + the rest of the overlay intact. See disable_screen_glow().
 [[midasm_hook]]
 address = 0x82573A54
 name = "disable_screen_glow"
@@ -145,12 +88,6 @@ registers = []
 after_instruction = false
 jump_address_on_true = 0x82573AC8
 
-# Disable Motion Blur: skip the full-screen blur composite in the fxMotionBlur
-# pass (sub_8229F440). 0x8229F8A0 is `bl D3DDevice_DrawVerticesUP` -- the
-# RECTLIST fullscreen quad that mixes the current scene with the motion-blur
-# history texture. 0x8229F8A4 is the state-restore that follows it, so skipping
-# only the draw leaves the surrounding Resolves and render-state fixups intact;
-# the scene simply passes through un-blurred.
 [[midasm_hook]]
 address = 0x8229F8A0
 name = "disable_motion_blur"
@@ -158,13 +95,6 @@ registers = []
 after_instruction = false
 jump_address_on_true = 0x8229F8A4
 
-# Disable Particles: cut the particle system at all three stages so it costs
-# nothing rather than just being invisible. See hooks.cpp for the reasoning.
-# Each hook skips one `bl` and lands on the instruction after it, leaving the
-# list walks and the emitter-retire branch intact.
-
-# Per-emitter CPU update + memexport sim draw (sub_82229748 -> sub_82226BD0).
-# This is where the CPU saving comes from. 0x822297E8 advances the emitter list.
 [[midasm_hook]]
 address = 0x822297E4
 name = "disable_particles_sim"
@@ -172,9 +102,6 @@ registers = []
 after_instruction = false
 jump_address_on_true = 0x822297E8
 
-# Spawn/generation memexport pass (sub_82229748 -> sub_82229888).
-# 0x8222985C advances the spawn list and is already the target of the loop's own
-# "skip empty slot" branch.
 [[midasm_hook]]
 address = 0x82229858
 name = "disable_particles_spawn"
@@ -182,10 +109,6 @@ registers = []
 after_instruction = false
 jump_address_on_true = 0x8222985C
 
-# The four point-sprite draws in the render (sub_8222ADA0). Each address is
-# `bl D3DDevice_DrawVertices`; it returns void and the next instruction reloads
-# its own operands, so nothing depends on the call. Draws 0/1 are the predicated
-# path, 2/3 the non-predicated one -- all four must be skipped.
 [[midasm_hook]]
 address = 0x8222BCBC
 name = "disable_particles_draw0"
@@ -213,6 +136,26 @@ name = "disable_particles_draw3"
 registers = []
 after_instruction = false
 jump_address_on_true = 0x8222BD64
+
+
+[[midasm_hook]]
+address = 0x8264E8B0
+name = "dumpVertexShader_hook"
+registers = ["r3"]
+after_instruction = false
+
+[[midasm_hook]]
+address = 0x8264E6A8
+name = "dumpPixelShader_hook"
+registers = ["r3"]
+after_instruction = false
+
+# D3DDevice_SetTexture -- r5 = pTexture. Texture dumping and replacement.
+[[midasm_hook]]
+address = 0x8222F410
+name = "textureTools_SetTexture_hook"
+registers = ["r5"]
+after_instruction = false
 
 [[midasm_hook]]
 address = 0x82278380
@@ -261,7 +204,6 @@ registers = ["r3", "r5"]
 after_instruction = true
 jump_address_on_false = 0x8251CABC
  
-# Framerate Related Hooks
 [[midasm_hook]]
 address = 0x8246e7a8
 name = "klungoConstruct_hook"
@@ -275,27 +217,44 @@ registers = []
 after_instruction = false
 
 [[midasm_hook]]
-address = 0x823edeb8                    # 0x823EDEC0 was this, go back if new one doesnt work and use r3
+address = 0x823edeb8                  
 name = "refreshRate_hook"
 registers = ["r3"]
 after_instruction = false
 
+
 [[midasm_hook]]
-address = 0x82222250
-name = "appMainDrawStart"
+address = 0x8239fc6c
+name = "renutMnk_PadConnectMask"
+registers = []
 after_instruction = false
 
 [[midasm_hook]]
-address = 0x82222250
-name = "appMainDrawend"
+address = 0x8239fc84
+name = "renutMnk_PadPollResult"
+registers = ["r1", "r3", "r29"]
+after_instruction = false
+
+[[midasm_hook]]
+address = 0x823a00a4
+name = "renutMnk_ApplyPadState"
+registers = ["r3", "r4"]
+after_instruction = false
+
+[[midasm_hook]]
+address = 0x8251D438
+name = "Max_Acquired_Parts_Access_hook_1"
+registers = ["r7"]
+after_instruction = false
+
+[[midasm_hook]]
+address = 0x8251DCCC
+name = "Max_Acquired_Parts_Access_hook_2"
+registers = ["r10"]
 after_instruction = true
 
 [[midasm_hook]]
-address = 0x8220F210
-name = "appMainTickPreDrawStart"
-after_instruction = false
-
-[[midasm_hook]]
-address = 0x8220F210
-name = "appMainTickPreDrawend"
+address = 0x8255ed1c
+name = "Max_Acquired_Parts_Access_hook_3"
+registers = ["r9"]
 after_instruction = true

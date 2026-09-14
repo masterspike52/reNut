@@ -1,46 +1,53 @@
 [rexcrt]
-# heap
-RtlAllocateHeap = 0x8223F478
-RtlFreeHeap = 0x8223FD48
+
+#Heap
+RtlAllocateHeap = 0x8223f478
+RtlFreeHeap = 0x8223fd48 
 RtlSizeHeap = 0x82240200
-RtlReAllocateHeap = 0x82717428
+RtlReAllocateHeap = 0x82717428 
 
-# file/io
-# CreateFileA = 0x82715378
-# ReadFile = 0x827156E0
-# WriteFile = 0x82715E50
-# SetFilePointer = 0x82715570
-# GetFileSize = 0x82715A20
-# GetFileSizeEx = 0x827190F8
- SetEndOfFile = 0x82715DA8
-# FlushFileBuffers = 0x82BCD9E0
- DeleteFileA = 0x82BCD0C8
- CloseHandle = 0x82714358
- FindFirstFileA = 0x827152E8
- FindNextFileA = 0x82715868
- CreateDirectoryA = 0x82BCDA20
- SetFileAttributesA = 0x82BCDD68
- GetFileAttributesA = 0x82715FF8
- GetFileAttributesExA = 0x82BCD3A8
- CompareFileTime = 0x827182B0
+#Memory
+XMemSet = 0x8224b658 
+XMemSet128 = 0x82257b18 
+XMemCpy = 0x822a2930
+memcpy_s = 0x82bb0e00 
+memmove_s = 0x82bb0ed8 
+memchr = 0x82bb1d20 
+memmove = 0x82bb2c70 
+memcpy = 0x82bb4510 
+memset = 0x82bb4a40 
 
-# memory
-memcpy = 0x82BB4510
-memmove = 0x82BB2C70
-memset = 0x82BB4A40
-memchr = 0x82BB1D20
-XMemCpy = 0x822A2930
-XMemSet = 0x8224B658
-XMemSet128 = 0x82257B18
-memcpy_s = 0x82BB0E00
-memmove_s = 0x82BB0ED8
+#String
+wcscmp = 0x82261560 
+strchr = 0x82bb0dc0 
+strncmp = 0x82bb12d0 
+wcslen = 0x82bb1798 
+strstr = 0x82bb1d60 
+wcsstr = 0x82bb3508 
+wcsncmp = 0x82bb3960
+wcschr = 0x82bb4028 
+wcsncpy = 0x82bb4068 
+strrchr = 0x82bb61c0 
+lstrcmpiA = 0x82bcd260 
+lstrlenA = 0x82bcd2f0 
+strncpy = 0x821e7f10
+strcpy_s = 0x821f4bc0
 
-# string
-strncmp = 0x82BB12D0
-strncpy = 0x821E7F10
-strchr = 0x82BB0DC0
-strstr = 0x82BB1D60
-strrchr = 0x82BB61C0
-strcpy_s = 0x821F4BC0
-lstrlenA = 0x82BCD2F0
-lstrcmpiA = 0x82BCD260
+#I/O file
+CloseHandle = 0x82714358 
+FindFirstFileA = 0x827152e8 
+CreateFileA = 0x82715378 
+SetFilePointer = 0x82715570 
+ReadFile = 0x827156e0
+FindNextFileA = 0x82715868
+GetFileSize = 0x82715a20 
+SetEndOfFile = 0x82715da8
+WriteFile = 0x82715e50 
+GetFileAttributesA = 0x82715ff8 
+CompareFileTime = 0x827182b0 
+GetFileSizeEx = 0x827190f8 
+DeleteFileA = 0x82bcd0c8 
+GetFileAttributesExA = 0x82bcd3a8 
+FlushFileBuffers = 0x82bcd9e0 
+CreateDirectoryA = 0x82bcda20 
+SetFileAttributesA = 0x82bcdd68 

@@ -1,37 +1,3 @@
-// =============================================================================
-// cvar_menu.cpp
-//
-// Lets you edit every reNut cvar from inside the game's pause menu (selectable
-// ON/OFF or value next to each), instead of the F4 overlay. It adds a dedicated
-// "reNut Settings" tab/section to the pause section strip; its content is a
-// categorized, collapsible list ("[-]/[+] Category" headers + indented cvars).
-//
-// How it plugs into the game's XUI pause menu (all addresses from IDA):
-//   Content list (the rows within a section):
-//   * sub_825A89B0  - content-list builder. Fills dword_82FA32F8[] with item
-//                     type-IDs and dword_82FA32F4 with the count, then the tail
-//                     inserts that many XUI list rows.
-//   * sub_825A96C8  - per-item label callback.
-//   * sub_825A8D68  - selection/dispatch callback.
-//   * sub_825A76E0  - pause input handler; its "activate item" dispatch is a
-//                     jump table bounded to modes 0..7.
-//   Section strip (the tabs):
-//   * sub_825A6708  - strip builder. Fills dword_82FA32C4[] (section ids) +
-//                     dword_82FA32C0 (count).
-//   * sub_825A8110  - per-tab icon callback (off_82E51538[2*id]).
-//   * sub_825A7CF0  - selected-section title text (off_82E5153C[2*id]).
-//   * sub_825A7D90  - section switch / setMode(obj, id); jump table id<=7.
-//
-// In cvar mode we NEVER store rows in the guest item array: the injection hook
-// writes only the COUNT, and the label/dispatch overrides source everything
-// from the host-side model (g_cats -> g_rows). Section id 8 = "reNut Settings"
-// (game uses 0..7); its icon reuses section 0's. Because sub_825A76E0's activate
-// dispatch is bounded to modes 0..7, we present mode 0 while our section is
-// active so A-press routes to sub_825A8D68 (our toggle).
-//
-// See: https://github.com/rexglue/rexglue-sdk/wiki/Function-Overrides
-// =============================================================================
-
 #include <rex/hook.h>
 #include <rex/cvar.h>
 #include <rex/logging.h>
@@ -381,7 +347,9 @@ static std::string TrimWs(const std::string& s) {
   return s.substr(b, e - b + 1);
 }
 
-static void RenutSaveConfig() {
+// Not static: the controls overlay (overlays/mnk_controls_dialog.h) persists
+// rebinds through this too.
+void RenutSaveConfig() {
   // desired[name] = formatted TOML value, for every value cvar != its default.
   // managed = every value-cvar name, so we can update or drop its existing line.
   std::unordered_map<std::string, std::string> desired;
