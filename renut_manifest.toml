@@ -1,5 +1,5 @@
 [project]
-sdk_version = "0.8.0"
+sdk_version = "0.10.0"
 name = "renut"
 
 [entrypoint]

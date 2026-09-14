@@ -54,6 +54,9 @@ REXCVAR_DEFINE_BOOL(disable_cao, false, "Nuts&Bolts/Graphics", "Disables the dar
 REXCVAR_DEFINE_BOOL(disable_msaa, false, "Nuts&Bolts/Graphics", "Disables MSAA on the scene render target. Matrices/aspect are unaffected. Applies on the next resolution change or restart.");
 // Name = "Disable Motion Blur"
 REXCVAR_DEFINE_BOOL(disable_motion_blur, false, "Nuts&Bolts/Graphics", "Disables the full-screen speed/camera motion blur");
+// Name = "Max Acquired Parts Access"
+REXCVAR_DEFINE_BOOL(max_acquired_parts_access, false, "Nuts&Bolts/Cheats", "Allows max acquired vehicle parts");
+
 
 inline int bWidth = 640;
 inline int bHeight = 480;
@@ -233,4 +236,22 @@ bool BanjoActorOverride(PPCRegister& r3, PPCRegister& r5) {
 
     // "default" — let the original function run
     return true;
+}
+
+void Max_Acquired_Parts_Access_hook_1(PPCRegister& r7) {
+    if (REXCVAR_GET(max_acquired_parts_access)) {
+        r7.u32 = 255;
+    }
+}
+
+void Max_Acquired_Parts_Access_hook_2(PPCRegister& r10) {
+    if (REXCVAR_GET(max_acquired_parts_access)) {
+        r10.u32 = 255;
+    }
+}
+
+void Max_Acquired_Parts_Access_hook_3(PPCRegister& r9) {
+    if (REXCVAR_GET(max_acquired_parts_access)) {
+        r9.u32 = 255;
+    }
 }

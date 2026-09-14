@@ -1,3 +1,4 @@
+#include <rex/logging.h>
 #include "Fps.h"
 #include <renut_engine/hooks.h>
 #include <renut_engine/Timer.h>
@@ -21,6 +22,10 @@ void renutApplyShaderCompileMode(); // frameHooks.cpp: sync-compile toggle (blac
 
 REX_EXTERN(__imp__appMainDraw);
 REX_HOOK_RAW(appMainDraw){
+    static uint32_t drawTicks = 0;
+    if (++drawTicks <= 6 || (drawTicks % 300) == 0) {
+        REXLOG_INFO("game: appMainDraw tick {}", drawTicks);
+    }
     // Keep the engine's shader-compile mode in sync with our toggle (cheap; only
     // touches the engine cvar when the toggle actually changes).
     renutApplyShaderCompileMode();
@@ -53,14 +58,3 @@ void FPSCounter::Tick(){
     averageFps = 1000.0f / averageMs;
 }
 
-void appMainDrawStart() {
-}
-
-void appMainDrawend() {
-}
-
-void appMainTickPreDrawStart() {
-}
-
-void appMainTickPreDrawend() {
-}
