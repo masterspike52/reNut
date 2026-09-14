@@ -1,10 +1,10 @@
 #include <atomic>
 #include <chrono>
 #include <thread>
-#include <cstdint> // For uintptr_t
+#include <cstdint> 
 #include <rex/cvar.h>
 #include <rex/system/kernel_state.h>
-#include "rex_macros.h"
+#include <rex/hook.h>
 #include "globals.h"
 #include <rex/logging.h>
 #include <rex/graphics/flags.h>
@@ -21,14 +21,6 @@
 REXCVAR_DEFINE_BOOL(change_vehicles_anywhere, false, "Nuts&Bolts/Cheats", "Enables Changing Vehicles Anywhere.");
 // Name = "No Notes Spent"
 REXCVAR_DEFINE_BOOL(no_notes_spent, false, "Nuts&Bolts/Cheats", "hook created by serenity");
-// Name = "VSync Mode"
-/*
-REXCVAR_DEFINE_INT32(target_fps, 60, "Nuts&Bolts/Performance", "Target frame rate cap. 30 = original, 60 = unlocked")
-.range(30, 60)
-.validator([](std::string_view v) {
-    return v == "30" || v == "60";
-    });
-	*/
 // Name = "Disable LOD"
 REXCVAR_DEFINE_BOOL(disable_lod, false, "Nuts&Bolts/Graphics", "Disables LOD (Level of Detail) scaling");
 // Name = "Infinite Fuel and Ammo"
@@ -56,6 +48,8 @@ REXCVAR_DEFINE_BOOL(disable_msaa, false, "Nuts&Bolts/Graphics", "Disables MSAA o
 REXCVAR_DEFINE_BOOL(disable_motion_blur, false, "Nuts&Bolts/Graphics", "Disables the full-screen speed/camera motion blur");
 // Name = "Max Acquired Parts Access"
 REXCVAR_DEFINE_BOOL(max_acquired_parts_access, false, "Nuts&Bolts/Cheats", "Allows max acquired vehicle parts");
+// Name = "Disable Screen Glow"
+REXCVAR_DEFINE_BOOL(disable_screen_glow, true, "Nuts&Bolts/Graphics", "Fixes the split-second black flash on heal/damage by skipping the broken full-screen glow (it aliases EDRAM tile 0 in the recomp). Off = restore the glow.");
 
 
 inline int bWidth = 640;
@@ -78,9 +72,6 @@ bool no_notes_spent() {
     return false;
 }
 
-// Defined in cvar_menu.cpp: applies any deferred pause-menu list rebuild here,
-// once per frame and outside XUI's event dispatch (see cvar_menu.cpp).
-void renutCvarMenu_FrameTick();
 
 
 
@@ -130,46 +121,22 @@ bool disable_cao() {
     return REXCVAR_GET(disable_cao);
 }
 
-// Zero the MultiSample argument (r6) at the two scene render-target creations in
-// sub_823ED2A8, forcing D3DMULTISAMPLE_NONE for the color + depth surfaces. This
-// deliberately leaves the MSAA-mode global, the tile count and the surface
-// dimensions untouched, so predicated tiling and every projection/viewport input
-// are identical to stock -- matrices are unaffected. Both surfaces share a
-// sample count in D3D, so both calls must be zeroed together.
 void disable_msaa_color(PPCRegister& r6) {
     if (REXCVAR_GET(disable_msaa)) {
-        r6.u32 = 0; // D3DMULTISAMPLE_NONE
+        r6.u32 = 0; 
     }
 }
 
 void disable_msaa_depth(PPCRegister& r6) {
     if (REXCVAR_GET(disable_msaa)) {
-        r6.u32 = 0; // D3DMULTISAMPLE_NONE
+        r6.u32 = 0; 
     }
 }
 
-// Returning true makes the hook jump past the fullscreen blur draw in the
-// fxMotionBlur pass (sub_8229F440), so the scene is never composited with its
-// motion-blur history. The surrounding Resolves/state restore still run.
+
 bool disable_motion_blur() {
     return REXCVAR_GET(disable_motion_blur);
 }
-
-// Fix the split-second black flash on heal/damage feedback.
-//
-// The a34-gated branch of the feedback overlay sub_82573650 calls the glow/bloom
-// pass sub_825740F0, which allocates a scratch surface at
-// D3DSURFACE_PARAMETERS.Base = 0 -- i.e. aliased onto EDRAM tile 0, the main
-// framebuffer -- and Clears it to black before blurring. On real Xenos that
-// EDRAM is free (the scene was already resolved out); in the recomp it maps to
-// the live framebuffer host target, so the clear blacks the whole frame for that
-// effect's frame(s). Returning true makes the hook skip the glow block
-// (0x82573A54 -> 0x82573AC8, the game's own "a34 == 0" merge point), dropping
-// only the glow so the scene + the rest of the overlay render normally.
-//
-// On by default because the effect is broken here (blacks the frame). Turn off to
-// restore the glow if the EDRAM aliasing is ever handled by the runtime.
-REXCVAR_DEFINE_BOOL(disable_screen_glow, true, "Nuts&Bolts/Graphics", "Fixes the split-second black flash on heal/damage by skipping the broken full-screen glow (it aliases EDRAM tile 0 in the recomp). Off = restore the glow.");
 
 bool disable_screen_glow() {
     return REXCVAR_GET(disable_screen_glow);

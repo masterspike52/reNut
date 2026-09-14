@@ -19,9 +19,7 @@ set(RENUT_SOURCES
     src/renut_engine/StopNSwap.cpp
 	src/renut_engine/frameHooks.cpp
     #src/renut_engine/fixes/mullhwucrash.cpp
-	src/renut_engine/cvar_menu.cpp
 	src/renut_engine/FPS.cpp
-	src/renut_engine/shader_dump.cpp
 	src/renut_engine/texture_tools.cpp
 	src/renut_engine/frontend_debug_menu.cpp
 	src/renut_engine/townsfolk.cpp

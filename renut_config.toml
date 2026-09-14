@@ -5,6 +5,7 @@
 includes = [
 "config/renut_funcs.toml",
 "config/renut_hooks.toml",
+"config/renut_gpu_funcs.toml"
 ]
 
 # NOTE: config/renut_crt.toml is deliberately NOT included. Adding it swaps the

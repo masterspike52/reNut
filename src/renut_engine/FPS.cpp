@@ -17,8 +17,8 @@ REX_HOOK_RAW(appMainTickPreDraw){
 }
 
 //GPU Time
-void renutFrameLimit();             // frameHooks.cpp: our low-overhead frame cap ("vsync")
-void renutApplyShaderCompileMode(); // frameHooks.cpp: sync-compile toggle (black-flash fix)
+void renutFrameLimit();             
+void renutApplyShaderCompileMode(); 
 
 REX_EXTERN(__imp__appMainDraw);
 REX_HOOK_RAW(appMainDraw){
@@ -26,8 +26,6 @@ REX_HOOK_RAW(appMainDraw){
     if (++drawTicks <= 6 || (drawTicks % 300) == 0) {
         REXLOG_INFO("game: appMainDraw tick {}", drawTicks);
     }
-    // Keep the engine's shader-compile mode in sync with our toggle (cheap; only
-    // touches the engine cvar when the toggle actually changes).
     renutApplyShaderCompileMode();
 
     Timer timer;
@@ -35,9 +33,6 @@ REX_HOOK_RAW(appMainDraw){
     __imp__appMainDraw(ctx, base);
     timer.stop();
     gpuMS = timer.elapsedMilliseconds();
-
-    // Pace the frame after the draw is submitted so the GPU renders fewer frames
-    // instead of running uncapped. No-op while frame_cap is "Off".
     renutFrameLimit();
 }
 

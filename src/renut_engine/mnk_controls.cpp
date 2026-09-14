@@ -45,18 +45,6 @@
 #define RENUT_BSWAP32(x) __builtin_bswap32(x)
 #endif
 
-// =============================================================================
-// Bind table
-//
-// One entry per bindable action. The macro drives three things that must stay
-// in step: the cvar definitions, the enum used to index them, and the list the
-// overlay renders.
-//
-// Values are key names as understood by rex::ui::ParseVirtualKey ("W", "Shift",
-// "LMB", "Up", ...). A bind may list several keys separated by ',' or '|', so
-// one action can sit on more than one physical input (e.g. "LMB,Space").
-// =============================================================================
-// clang-format off
 #define RENUT_MNK_BINDS(X)                                                                        \
   X(mnk_bind_forward,     "W",      "Move forward",              "Movement")                      \
   X(mnk_bind_back,        "S",      "Move back",                 "Movement")                      \
@@ -83,37 +71,24 @@
   X(mnk_bind_dpad_right,  "Right",  "D-pad right",               "D-pad")                         \
   X(mnk_bind_start,       "Escape", "Start (pause menu)",        "System")                        \
   X(mnk_bind_select,      "Tab",    "Back button",               "System")
-// clang-format on
 
-// -----------------------------------------------------------------------------
-// cvars
-// -----------------------------------------------------------------------------
-REXCVAR_DEFINE_BOOL(mnk_controls, false, "Nuts&Bolts/Controls",
-                    "Drive movement and camera from the keyboard and mouse. Writes straight into "
-                    "the game's own movement input, so there is no controller emulation, no "
-                    "deadzone and no stick ramp in the way. A connected pad keeps working.");
+REXCVAR_DEFINE_BOOL(mnk_controls, false, "Nuts&Bolts/Controls", "Drive movement and camera from the keyboard and mouse. Writes straight into " "the game's own movement input, so there is no controller emulation, no " "deadzone and no stick ramp in the way. A connected pad keeps working.");
 
 // rexglue signs exactly one profile in, on slot 0, and XamInputGetState reports
 // every other slot as disconnected, so in practice this is always 0 today. It
 // stays a knob for the day a second profile can sign in.
-REXCVAR_DEFINE_INT32(mnk_pad_slot, 0, "Nuts&Bolts/Controls",
-                     "Which player slot the keyboard and mouse drive (0 = player one).")
-    .range(0, 3);
+REXCVAR_DEFINE_INT32(mnk_pad_slot, 0, "Nuts&Bolts/Controls", "Which player slot the keyboard and mouse drive (0 = player one).")
+.range(0, 3);
 
-REXCVAR_DEFINE_INT32(mnk_look_sensitivity, 50, "Nuts&Bolts/Controls",
-                     "Mouse look sensitivity. 50 = 1.0x; every step is 2%.")
-    .range(1, 400);
+REXCVAR_DEFINE_INT32(mnk_look_sensitivity, 50, "Nuts&Bolts/Controls", "Mouse look sensitivity. 50 = 1.0x; every step is 2%.")
+.range(1, 400);
 
-REXCVAR_DEFINE_BOOL(mnk_invert_look, false, "Nuts&Bolts/Controls",
-                    "Invert the mouse look Y axis.");
+REXCVAR_DEFINE_BOOL(mnk_invert_look, false, "Nuts&Bolts/Controls", "Invert the mouse look Y axis.");
 
-REXCVAR_DEFINE_INT32(mnk_walk_scale, 45, "Nuts&Bolts/Controls",
-                     "Movement speed while the walk bind is held, as a percentage of full tilt.")
-    .range(5, 100);
+REXCVAR_DEFINE_INT32(mnk_walk_scale, 45, "Nuts&Bolts/Controls", "Movement speed while the walk bind is held, as a percentage of full tilt.")
+.range(5, 100);
 
-REXCVAR_DEFINE_BOOL(mnk_lock_cursor, true, "Nuts&Bolts/Controls",
-                    "Hide the cursor and lock it to the window while the game has input. Turn off "
-                    "if you want the cursor free (mouse look stops working).");
+REXCVAR_DEFINE_BOOL(mnk_lock_cursor, true, "Nuts&Bolts/Controls", "Hide the cursor and lock it to the window while the game has input. Turn off " "if you want the cursor free (mouse look stops working).");
 
 #define RENUT_MNK_DEFINE_BIND(name, def, label, section) \
   REXCVAR_DEFINE_STRING(name, def, "Nuts&Bolts/Controls", label);
@@ -146,11 +121,6 @@ const renut::mnk::BindInfo kBindInfo[kBindCount] = {
 #undef RENUT_MNK_BIND_INFO
 };
 
-// -----------------------------------------------------------------------------
-// Xbox pad button bits, as the game's own button word uses them. sub_8239FF20
-// takes XINPUT_GAMEPAD.wButtons verbatim and adds two synthetic bits for the
-// triggers past their threshold, so our word has to use the same layout.
-// -----------------------------------------------------------------------------
 constexpr uint32_t kBtnDpadUp = 0x0001;
 constexpr uint32_t kBtnDpadDown = 0x0002;
 constexpr uint32_t kBtnDpadLeft = 0x0004;
@@ -167,22 +137,9 @@ constexpr uint32_t kBtnX = 0x4000;
 constexpr uint32_t kBtnY = 0x8000;
 constexpr uint32_t kBtnLTrigger = 0x10000;  // synthetic, set by sub_8239FF20
 constexpr uint32_t kBtnRTrigger = 0x20000;  // synthetic, set by sub_8239FF20
-
-// Mouse pixels per frame that reach full stick tilt at 1.0x sensitivity.
 constexpr float kPixelsFullTilt = 25.0f;
-// Mouse motion past full tilt is carried into the next frame instead of being
-// dropped, so a fast flick still turns the whole way. Capped so a single huge
-// jump (alt-tab, cursor warp) can't keep the camera spinning.
 constexpr float kMaxLookCarry = 3.0f;
 
-// =============================================================================
-// Host-side keyboard/mouse state.
-//
-// Written on the UI thread from window events, read on the guest thread from
-// the pad hook, hence the mutex. We never mark events handled -- the ImGui
-// drawer sits above us at z-order 64 and gets first refusal already, and
-// swallowing events here would break the SDK's own binds.
-// =============================================================================
 class HostInput final : public rex::ui::WindowInputListener, public rex::ui::WindowListener {
  public:
   void Attach(rex::ui::Window* window) {
@@ -207,7 +164,6 @@ class HostInput final : public rex::ui::WindowInputListener, public rex::ui::Win
     window_ = nullptr;
   }
 
-  // ---- guest-thread reads ---------------------------------------------------
 
   bool IsBindHeld(BindId id) const {
     const std::string& text = kBindGetters[id]();
@@ -250,7 +206,7 @@ class HostInput final : public rex::ui::WindowInputListener, public rex::ui::Win
 
   bool attached() const { return window_ != nullptr; }
 
-  // ---- rebind capture -------------------------------------------------------
+
 
   void BeginCapture() {
     std::lock_guard lock(mutex_);
@@ -279,7 +235,7 @@ class HostInput final : public rex::ui::WindowInputListener, public rex::ui::Win
     return true;
   }
 
-  // ---- cursor lock ----------------------------------------------------------
+
 
   void SetCursorLocked(bool locked) {
     if (!window_ || locked == cursor_locked_) {
@@ -300,7 +256,6 @@ class HostInput final : public rex::ui::WindowInputListener, public rex::ui::Win
 
   bool cursor_locked() const { return cursor_locked_; }
 
-  // ---- WindowInputListener --------------------------------------------------
 
   void OnKeyDown(rex::ui::KeyEvent& e) override { SetKey(e.virtual_key(), true); }
   void OnKeyUp(rex::ui::KeyEvent& e) override { SetKey(e.virtual_key(), false); }
@@ -312,9 +267,6 @@ class HostInput final : public rex::ui::WindowInputListener, public rex::ui::Win
     if (!cursor_locked_ || !window_) {
       return;
     }
-    // Locked: measure how far the cursor drifted from the window centre, then
-    // put it back. The recentre generates another move event with a zero
-    // delta, so this doesn't feed back on itself.
     const int32_t cx = static_cast<int32_t>(window_->GetActualLogicalWidth() / 2);
     const int32_t cy = static_cast<int32_t>(window_->GetActualLogicalHeight() / 2);
     const int32_t dx = e.x() - cx;
@@ -330,7 +282,6 @@ class HostInput final : public rex::ui::WindowInputListener, public rex::ui::Win
     CenterCursor(cx, cy);
   }
 
-  // ---- WindowListener -------------------------------------------------------
 
   void OnLostFocus(rex::ui::UISetupEvent&) override {
     {
@@ -362,8 +313,6 @@ class HostInput final : public rex::ui::WindowInputListener, public rex::ui::Win
     }
   }
 
-  // Walk the ',' / '|' separated key list in a bind's cvar value. `fn` returns
-  // true to stop early.
   template <typename Fn>
   static void ForEachKey(const std::string& text, Fn&& fn) {
     size_t i = 0;
@@ -392,8 +341,6 @@ class HostInput final : public rex::ui::WindowInputListener, public rex::ui::Win
     }
     std::lock_guard lock(mutex_);
     if (capturing_) {
-      // Swallow the press for the rebind dialog. Escape cancels; the key is
-      // still released normally so nothing sticks.
       if (down) {
         if (vk == VirtualKey::kEscape) {
           capturing_ = false;
@@ -439,34 +386,19 @@ class HostInput final : public rex::ui::WindowInputListener, public rex::ui::Win
 
 HostInput g_input;
 
-// Mouse motion that didn't fit in one frame's stick deflection, carried over.
 float g_look_carry_x = 0.0f;
 float g_look_carry_y = 0.0f;
 
-// True while the game (not an overlay) owns input.
-//
-// rex::input::InputSystem exposes no getter for this. SetActiveCallback pushes a
-// predicate down into each InputDriver and only the drivers read it back, via
-// InputDriver::is_active(). Rather than replace that callback -- there is one
-// slot, so overriding it would disable the SDK's own overlay gating -- ask ImGui
-// the same question the SDK's callback in rex_app.cpp asks.
 bool GameOwnsInput() {
-  // Before the drawer is up there is no context, and the game has input.
   if (!ImGui::GetCurrentContext()) {
     return true;
   }
   const ImGuiIO& io = ImGui::GetIO();
-  // Keyboard as well as mouse, unlike the SDK's callback: these are mouse and
-  // keyboard controls, so typing into a console must not also drive the game.
   return !io.WantCaptureMouse && !io.WantCaptureKeyboard;
 }
 
 // Set while reNut's controls overlay is up.
 bool g_overlay_open = false;
-
-// Set by renutMnk_PadConnectMask each frame: true when the XInputGetState(0..3)
-// scan found no physical pad at all, which is the only case where we stand in
-// for one. Read by renutMnk_PadPollResult later in the same sweep.
 bool g_no_physical_pad = false;
 
 bool ControlsActive() {
@@ -479,10 +411,7 @@ bool ControlsActive() {
 
   const bool active = enabled && attached && focused && no_overlay && not_capturing && game_owns;
 
-  // Every one of these terms fails the same silent way from the outside: the
-  // controls simply do nothing. Log which combination is in force, but only when
-  // it changes -- the guest thread calls this on every pad poll, so logging
-  // unconditionally would flood the file.
+
   static std::atomic<uint32_t> last_state{~0u};
   const uint32_t state = (enabled ? 1u : 0u) | (attached ? 2u : 0u) | (focused ? 4u : 0u) |
                          (no_overlay ? 8u : 0u) | (not_capturing ? 16u : 0u) |
@@ -500,7 +429,6 @@ uint32_t PadSlot() {
   return static_cast<uint32_t>(std::clamp(REXCVAR_GET(mnk_pad_slot), 0, 3));
 }
 
-// ---- guest memory (big-endian) ----------------------------------------------
 
 uint8_t* GuestBase() {
   auto* ks = rex::system::kernel_state();
@@ -521,21 +449,7 @@ inline void WrBEF32(uint8_t* base, uint32_t addr, float value) {
   WrBE32(base, addr, bits);
 }
 
-// -----------------------------------------------------------------------------
-// One frame of pad state, as sub_8239FF20 lays it out on the stack before
-// handing it to sub_821FBD90:
-//
-//   +0x00 u32   buttons pressed this frame (new & ~old)
-//   +0x04 u32   buttons released this frame (old & ~new)
-//   +0x08 u32   buttons held (new & old)
-//   +0x0C u32   buttons raw (new)
-//   +0x10 f32   left stick X    -1..1
-//   +0x14 f32   left stick Y    -1..1
-//   +0x18 f32   right stick X   -1..1
-//   +0x1C f32   right stick Y   -1..1
-//   +0x20 f32   left trigger     0..1
-//   +0x24 f32   right trigger    0..1
-// -----------------------------------------------------------------------------
+
 constexpr uint32_t kBlkPressed = 0x00;
 constexpr uint32_t kBlkReleased = 0x04;
 constexpr uint32_t kBlkHeld = 0x08;
@@ -546,35 +460,14 @@ constexpr uint32_t kBlkRStickX = 0x18;
 constexpr uint32_t kBlkRStickY = 0x1C;
 constexpr uint32_t kBlkLTrigger = 0x20;
 constexpr uint32_t kBlkRTrigger = 0x24;
-
-// Pad-state object layout (the `padObject + 0x34` the game passes around):
-//   +0x00 u32   index of the frame currently committed (ring of 2)
-//   +0x04 + 0x28 * index   the frame block above
 constexpr uint32_t kPadStateOff = 0x34;   // padObject -> pad state
 constexpr uint32_t kFrameStride = 0x28;
 constexpr uint32_t kFrameBase = 0x04;
 
-// =============================================================================
-// Keystrokes
-//
-// The pad state above drives gameplay, but it isn't what the front end runs on:
-// every XUI screen (the main menu, the pause menu, the file select) navigates
-// off XInputGetKeystroke, which is an edge-triggered queue of VK_PAD_* codes and
-// a completely separate path from the analog state. Feeding one and not the
-// other is exactly why the game boots to the "press start" screen -- polled
-// state -- and then goes deaf at the main menu.
-//
-// So we keep our own queue: one entry per press, release and auto-repeat of a
-// bound action, plus the left stick's eight-way direction, which is what menu
-// lists actually scroll on.
-// =============================================================================
 using rex::input::X_INPUT_KEYSTROKE_KEYDOWN;
 using rex::input::X_INPUT_KEYSTROKE_KEYUP;
 using rex::input::X_INPUT_KEYSTROKE_REPEAT;
 
-// Roughly the dashboard's own feel: a beat before a held direction starts
-// repeating, then steady. Fast enough to scroll a long list, slow enough that a
-// single tap never moves two rows.
 constexpr auto kRepeatDelay = std::chrono::milliseconds(400);
 constexpr auto kRepeatRate = std::chrono::milliseconds(110);
 
@@ -629,8 +522,7 @@ void UpdateEdge(PadIdx idx, uint16_t vk, bool down,
   }
 }
 
-// The stick reports as one of eight directions; changing direction releases the
-// old one and presses the new, which is what list navigation expects.
+
 void UpdateStickDir(uint16_t dir, std::chrono::steady_clock::time_point now) {
   auto& s = g_pad_states[kPadLStick];
   if (dir == s.vk) {
@@ -696,8 +588,7 @@ void UpdateKeystrokes(bool up, bool down, bool left, bool right) {
   }
 }
 
-// Drop everything and release anything held, so a key still down when the game
-// stops owning input doesn't leave a phantom press queued behind it.
+
 void ResetKeystrokes() {
   std::lock_guard lock(g_keystroke_mutex);
   g_keystrokes.clear();
@@ -719,9 +610,6 @@ bool PopKeystroke(Keystroke& out) {
 
 }  // namespace
 
-// =============================================================================
-// Public interface
-// =============================================================================
 namespace renut::mnk {
 
 void AttachWindow(rex::ui::Window* window) { g_input.Attach(window); }
@@ -747,21 +635,7 @@ const BindInfo* BindList(std::size_t& out_count) {
 
 }  // namespace renut::mnk
 
-// =============================================================================
-// Midasm hook: stand in for a pad when there isn't one (sub_8239FC08, guest
-// 0x8239FC6C -- right after the XInputGetState(0..3) scan finishes filling
-// dword_82F9DFEC and before the disconnect sweep runs).
-//
-// Playing on keyboard alone with no pad plugged in otherwise leaves every slot
-// reading as empty and the game sits in its "reconnect controller" state.
-// dword_8212A96C is the per-slot mask table and holds {1, 2, 4, 8}.
-//
-// This only ever fills in for a *missing* pad: if the scan found any real one we
-// leave the mask exactly as it is. Presenting a second pad alongside a real one
-// makes rexglue titles decide nobody is signed in, and that breaks considerably
-// more than it fixes. With a pad connected the keyboard just rides along on the
-// slot mnk_pad_slot names, which needs no phantom device.
-// =============================================================================
+
 void renutMnk_PadConnectMask() {
   g_no_physical_pad = false;
   if (!REXCVAR_GET(mnk_controls)) {
@@ -779,17 +653,7 @@ void renutMnk_PadConnectMask() {
   WrBE32(base, kConnectedMask, 1u << PadSlot());
 }
 
-// =============================================================================
-// Midasm hook: make the per-pad poll succeed (sub_8239FC08, guest 0x8239FC84 --
-// on the `cmplwi r3, 0` that tests the XInputGetState result).
-//
-// r29 points at the pad object, whose first word is its user index; r1+0x50 is
-// the XINPUT_STATE the call filled in. When our slot has no physical pad the
-// call returns ERROR_DEVICE_NOT_CONNECTED and sub_8239FF20 is skipped entirely,
-// so we hand it a zeroed but "successful" state and let the state builder run.
-// renutMnk_ApplyPadState then fills that empty frame in with the real
-// keyboard/mouse input.
-// =============================================================================
+
 void renutMnk_PadPollResult(PPCRegister& r1, PPCRegister& r3, PPCRegister& r29) {
   if (r3.u32 == 0) {
     return;  // a real pad answered; nothing to fake
@@ -808,28 +672,8 @@ void renutMnk_PadPollResult(PPCRegister& r1, PPCRegister& r3, PPCRegister& r29) 
   r3.u32 = 0;                                // ERROR_SUCCESS
 }
 
-// =============================================================================
-// Midasm hook: write our movement into the frame the game is about to commit
-// (sub_8239FF20, guest 0x823A00A4 -- on the `bl sub_821FBD90` handoff).
-//
-// r3 = pad state object (padObject + 0x34), r4 = the 0x28-byte frame block.
-//
-// Everything the game reads for avatar movement, camera and button presses this
-// frame comes out of this block, so this is the one place worth touching: no
-// XInput round trip, no stick response curve, and the values land at full float
-// precision instead of being quantised to a 16-bit stick axis.
-//
-// We merge rather than replace, so a physical pad plugged in at the same slot
-// still drives the game: buttons are OR'd, and each stick keeps the pad's
-// vector when we have nothing to say for it.
-// =============================================================================
 void renutMnk_ApplyPadState(PPCRegister& r3, PPCRegister& r4) {
   const bool active = ControlsActive();
-
-  // This is the game's own once-per-frame pad poll, so the cursor lock rides
-  // along with it rather than needing a tick of its own. Dropping held keys on
-  // the way out matters: the ImGui overlays sit above us and mark their key
-  // events handled, so a key still down when F4 opens never sees its key-up.
   static bool was_active = false;
   if (was_active && !active) {
     g_input.ClearKeys();
@@ -885,8 +729,6 @@ void renutMnk_ApplyPadState(PPCRegister& r3, PPCRegister& r4) {
     buttons |= kBtnRTrigger;
   }
 
-  // Re-derive the edges from the merged word against the frame the game itself
-  // used as "old", so pressed/released stay consistent with its bookkeeping.
   const uint32_t old_raw =
       RdBE32(base, pad_state + kFrameBase + kFrameStride * RdBE32(base, pad_state) + kBlkRaw);
   const uint32_t new_raw = RdBE32(base, blk + kBlkRaw) | buttons;
@@ -909,8 +751,6 @@ void renutMnk_ApplyPadState(PPCRegister& r3, PPCRegister& r4) {
   const bool move_fwd = g_input.IsBindHeld(kBind_mnk_bind_forward);
   const bool move_back = g_input.IsBindHeld(kBind_mnk_bind_back);
 
-  // The front end runs on keystrokes, not on any of the above, so feed that
-  // queue from the same bind state (see UpdateKeystrokes).
   UpdateKeystrokes(move_fwd, move_back, move_left, move_right);
 
   float mx = 0.0f;
@@ -946,7 +786,6 @@ void renutMnk_ApplyPadState(PPCRegister& r3, PPCRegister& r4) {
   float lx = g_look_carry_x + dx * per_pixel;
   float ly = g_look_carry_y + (-dy) * per_pixel;  // mouse up = look up
 
-  // Keyboard look binds, for anyone who wants them, are full tilt.
   if (g_input.IsBindHeld(kBind_mnk_bind_look_right)) lx += 1.0f;
   if (g_input.IsBindHeld(kBind_mnk_bind_look_left)) lx -= 1.0f;
   if (g_input.IsBindHeld(kBind_mnk_bind_look_up)) ly += 1.0f;
@@ -954,10 +793,6 @@ void renutMnk_ApplyPadState(PPCRegister& r3, PPCRegister& r4) {
 
   const float rx = std::clamp(lx, -1.0f, 1.0f);
   const float ry = std::clamp(ly, -1.0f, 1.0f);
-
-  // Whatever the stick couldn't express this frame rides along to the next one,
-  // so a flick faster than one frame of full tilt still turns the whole way.
-  // Carried in un-inverted space; invert only ever touches what we write out.
   g_look_carry_x = std::clamp(lx - rx, -kMaxLookCarry, kMaxLookCarry);
   g_look_carry_y = std::clamp(ly - ry, -kMaxLookCarry, kMaxLookCarry);
 
@@ -967,23 +802,8 @@ void renutMnk_ApplyPadState(PPCRegister& r3, PPCRegister& r4) {
   }
 }
 
-// =============================================================================
-// Override: XInputGetKeystroke (guest 0x821FD318).
-//
-// The XUI front end -- main menu, pause menu, file select -- navigates off this
-// and never looks at the analog pad state, so injecting movement alone gets you
-// as far as the "press start" screen and no further.
-//
-// r3 = dwUserIndex, r4 = dwFlags, r5 = pKeystroke (guest X_INPUT_KEYSTROKE).
-//
-// When we have something queued we answer it ourselves. Otherwise the original
-// runs, and if it comes back DEVICE_NOT_CONNECTED while we're standing in for a
-// missing pad we soften that to EMPTY: "no keystroke waiting" keeps the menu
-// alive, "no controller" makes it stop listening.
-// =============================================================================
 REX_EXTERN(__imp__rex_XInputGetKeystroke);
 
-// The X_ERROR_* macros expand to a cast through rex::X_RESULT.
 using rex::X_RESULT;
 
 REX_HOOK_RAW(rex_XInputGetKeystroke) {

@@ -3,24 +3,7 @@ address = 0x825a8bf8
 name = "overworld_vehicles_hook"
 registers = ["r23", "r26"]
 after_instruction = false
-
-[[midasm_hook]]
-address = 0x825a8c88
-name = "pauseMenu_InjectItems"
-registers = []
-after_instruction = false
-
-[[midasm_hook]]
-address = 0x825a8d18
-name = "pauseMenu_RestoreSel"
-registers = ["r4"]
-after_instruction = false
-
-[[midasm_hook]]
-address = 0x825a6b98
-name = "pauseSection_InjectTab"
-registers = []
-after_instruction = false
+ 
 
 [[midasm_hook]]
 address = 0x824CE324
@@ -138,19 +121,6 @@ after_instruction = false
 jump_address_on_true = 0x8222BD64
 
 
-[[midasm_hook]]
-address = 0x8264E8B0
-name = "dumpVertexShader_hook"
-registers = ["r3"]
-after_instruction = false
-
-[[midasm_hook]]
-address = 0x8264E6A8
-name = "dumpPixelShader_hook"
-registers = ["r3"]
-after_instruction = false
-
-# D3DDevice_SetTexture -- r5 = pTexture. Texture dumping and replacement.
 [[midasm_hook]]
 address = 0x8222F410
 name = "textureTools_SetTexture_hook"

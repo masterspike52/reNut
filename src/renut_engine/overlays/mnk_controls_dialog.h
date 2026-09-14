@@ -18,8 +18,6 @@
 #include <cstring>
 #include <string>
 
-// cvar_menu.cpp: merge the current cvar values into renut.toml.
-void RenutSaveConfig();
 
 class MnkControlsDialog : public rex::ui::ImGuiDialog {
  public:
@@ -45,7 +43,6 @@ class MnkControlsDialog : public rex::ui::ImGuiDialog {
     if (renut::mnk::TakeCaptured(captured) && !capturing_.empty()) {
       rex::cvar::SetFlagByName(capturing_, captured);
       capturing_.clear();
-      RenutSaveConfig();
     } else if (!capturing_.empty() && !renut::mnk::IsCapturing()) {
       capturing_.clear();  // cancelled with Escape
     }
@@ -81,7 +78,6 @@ class MnkControlsDialog : public rex::ui::ImGuiDialog {
 
   void SetAndSave(const char* name, const std::string& value) {
     rex::cvar::SetFlagByName(name, value);
-    RenutSaveConfig();
   }
 
   void DrawSettings() {

@@ -31,3 +31,5 @@
 0x8264EA90 = { name = "D3DDevice_CreateVertexDeclaration" }
 0x8264E8B0 = { name = "D3DDevice_CreateVertexShader" }
 0x8264E6A8 = { name = "D3DDevice_CreatePixelShader" }
+
+
