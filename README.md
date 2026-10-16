@@ -109,21 +109,19 @@ if you have any issues please make an issue after ensuring you have covered thin
 
 Credits
 ------------------------------------------------
-<a href="https://github.com/rexglue/rexglue-sdk">Rexglue team</a> for creating Rexglue-SDK
+* <a href="https://github.com/rexglue/rexglue-sdk">Rexglue team</a> for creating Rexglue-SDK
 <br>
-the <a href="https://discord.gg/ksm4vVbBf">Rexglue SDK discord</a> for helping with any info they have
+* the <a href="https://discord.gg/ksm4vVbBf">Rexglue SDK discord</a> for helping with any info they have
 <br>
-SolarCookies for a handful of midasm hooks 
+* SolarCookies for a handful of midasm hooks 
 <br>
-ValcomDrifty for the renut logo
+* ValcomDrifty for the renut logo
 <br>
-OlieGamerTV for the information and documentations made for nuts and bolts specifically as well as a multitude of other things as well as assisting with other things about nuts and bolts
+* OlieGamerTV for the information and documentations made for nuts and bolts specifically as well as a multitude of other things as well as assisting with other things about nuts and bolts
 <br>
-XephyrCraft for helping test mods made with his tool as well as testing the game
+* XephyrCraft for helping test mods made with his tool as well as testing the game
 <br>
-Leia and eli for testing renut (as well as anyone else who tested renut on windows)
-<br>
-.
+* Leia and eli for testing renut (as well as anyone else who tested renut on windows)
 <br>
 .
 <br>
@@ -131,4 +129,6 @@ Leia and eli for testing renut (as well as anyone else who tested renut on windo
 <br>
 .
 <br>
-you, the player?
+.
+<br>
+* you, the player?
