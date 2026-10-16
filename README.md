@@ -58,6 +58,8 @@ Online play
 * pressing F6 opens the friends list and displays your online id (also known as a machine id)
 
 * to add friends you press F6 and send them your friend id or they can send you theirs in which you can copy paste it into the online id box and click send friend request
+  <img width="640" height="147" alt="image" src="https://github.com/user-attachments/assets/c19c2008-c676-4e24-a7ae-90945446aafd" />
+
 
 * the friend will see an invite in the F6 imgui that they can accept their new friend
 
