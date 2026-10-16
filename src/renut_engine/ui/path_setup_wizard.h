@@ -10,6 +10,12 @@
 #include <cstring>
 #include <shobjidl.h>
 #include <windows.h>
+#else
+#include <memory>
+#include <mutex>
+#include <SDL3/SDL_dialog.h>
+#include <SDL3/SDL_error.h>
+#include "renut_engine/gpu/backend/native_window.h"
 #endif
 
 class PathSetupWizard : public renut::gpu::overlay::Dialog {
@@ -55,6 +61,9 @@ public:
     void Draw() override {
         const ImGuiIO& io = ImGui::GetIO();
         if (!visible_) return;
+#if !defined(_WIN32)
+        TakeBrowseResult();
+#endif
 
         ImGui::SetNextWindowSize(ImVec2(580, 230), ImGuiCond_Always);
         ImGui::SetNextWindowPos(
@@ -111,8 +120,69 @@ private:
                 buf.resize(kBufSize, '\0');
             }
         }
+#else
+        // SDL's folder picker (the desktop's file chooser portal, or zenity).
+        ImGui::SameLine();
+        std::string btn_id = std::string("Browse##") + id;
+        const bool open = browse_target_ != nullptr;
+        if (open) ImGui::BeginDisabled();
+        if (ImGui::Button(btn_id.c_str(), ImVec2(70, 0))) {
+            browse_target_ = &buf;
+            SDL_ShowOpenFolderDialog(OnFolderPicked, new std::shared_ptr<BrowseState>(browse_),
+                renut::gpu::GetGameSdlWindow(), buf[0] ? buf.c_str() : nullptr, false);
+        }
+        if (open) ImGui::EndDisabled();
 #endif
     }
+
+#if !defined(_WIN32)
+    // The picker answers later, maybe from another thread: the answer waits
+    // here for the next Draw.
+    struct BrowseState {
+        std::mutex mutex;
+        bool answered = false;
+        std::string path;   // empty when cancelled
+        std::string error;  // no picker
+    };
+
+    static void SDLCALL OnFolderPicked(void* userdata, const char* const* filelist, int) {
+        auto* holder = static_cast<std::shared_ptr<BrowseState>*>(userdata);
+        {
+            BrowseState& state = **holder;
+            std::lock_guard lock(state.mutex);
+            state.answered = true;
+            state.path.clear();
+            state.error.clear();
+            if (!filelist)
+                state.error = SDL_GetError();
+            else if (filelist[0])
+                state.path = filelist[0];
+        }
+        delete holder;
+    }
+
+    void TakeBrowseResult() {
+        std::string path, error;
+        {
+            std::lock_guard lock(browse_->mutex);
+            if (!browse_->answered)
+                return;
+            browse_->answered = false;
+            path = std::move(browse_->path);
+            error = std::move(browse_->error);
+        }
+        if (browse_target_ && !path.empty()) {
+            *browse_target_ = path;
+            browse_target_->resize(kBufSize, '\0');
+        }
+        if (!error.empty())
+            error_ = "No folder picker (" + error + "): type the path in.";
+        browse_target_ = nullptr;
+    }
+
+    std::shared_ptr<BrowseState> browse_ = std::make_shared<BrowseState>();
+    std::string* browse_target_ = nullptr;  // the field a picker is open for
+#endif
 
 #if defined(_WIN32)
     static std::string BrowseForFolder(const char* default_path) {

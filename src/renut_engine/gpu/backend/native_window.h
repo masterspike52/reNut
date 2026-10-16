@@ -8,6 +8,10 @@
 
 #include <plume_render_interface.h>
 
+#if !defined(_WIN32)
+struct SDL_Window;
+#endif
+
 namespace renut::gpu {
 
 // Windows: the HWND of this process's game window (the SDK's SDL window).
@@ -17,5 +21,10 @@ bool GetNativeRenderWindow(plume::RenderWindow &out);
 
 // The game window's client area, in pixels.
 bool GetRenderWindowPixelSize(uint32_t &width, uint32_t &height);
+
+#if !defined(_WIN32)
+// The SDK's SDL window (the app owns one), or nullptr before it exists.
+SDL_Window *GetGameSdlWindow();
+#endif
 
 } // namespace renut::gpu

@@ -71,6 +71,13 @@ void LatchResolutionScaleLocked();
 // needed. nullptr for 0 or when the target cannot be created.
 HostSurface *GetHostSurfaceLocked(u32 surface_va);
 
+// Grows the target of 'surface' so its host size is at least host_width x
+// host_height, keeping what it held (copied into the top-left corner). For
+// Vulkan, whose framebuffer takes the first color target's size and needs every
+// attachment to cover it; the console and D3D12 render a pass within the
+// smallest one. Uses the open command list; Vulkan only (a partial depth copy).
+void CoverHostExtentLocked(HostSurface *surface, uint32_t host_width, uint32_t host_height);
+
 // Only if one exists already.
 HostSurface *FindHostSurfaceLocked(u32 surface_va);
 

@@ -301,6 +301,71 @@ HostSurface *GetHostSurfaceLocked(u32 surface_va) {
   return slot.get();
 }
 
+void CoverHostExtentLocked(HostSurface *surface, uint32_t host_width, uint32_t host_height) {
+  if (!surface || !surface->texture)
+    return;
+  // The guest size, at the target's own scale, whose host size covers 'host'.
+  const auto covering = [surface](uint32_t host, uint32_t guest) {
+    guest = std::max(guest, uint32_t(float(host) / surface->scale.Factor()));
+    while (surface->scale.Size(guest) < host)
+      ++guest;
+    return guest;
+  };
+  const uint32_t width = covering(host_width, surface->width);
+  const uint32_t height = covering(host_height, surface->height);
+  if (width == surface->width && height == surface->height)
+    return;
+
+  const plume::RenderMultisampling multisampling(surface->samples);
+  const uint32_t new_width = surface->scale.Size(width);
+  const uint32_t new_height = surface->scale.Size(height);
+  plume::RenderDevice *device = Video::Device();
+  std::unique_ptr<plume::RenderTexture> texture =
+      surface->depth ? device->createTexture(plume::RenderTextureDesc::DepthTarget(
+                           new_width, new_height, surface->format, multisampling))
+                     : device->createTexture(plume::RenderTextureDesc::ColorTarget(
+                           new_width, new_height, surface->format, multisampling));
+  if (!TextureCreated(texture.get())) {
+    if (!ReportDeviceLost(device)) {
+      RGPU_ERROR("Surface {:08X}: growing the {} target to {}x{} failed", surface->guest_va,
+                 surface->depth ? "depth" : "color", new_width, new_height);
+    }
+    return;
+  }
+  texture->setName(surface->depth ? "renut depth surface" : "renut color surface");
+  RGPU_DEBUG("Surface {:08X}: {}x{} grown to {}x{} to cover a framebuffer of {}x{}",
+             surface->guest_va, surface->width, surface->height, width, height, host_width,
+             host_height);
+
+  // What it held stays in the corner it covered. (A depth copy of part of a
+  // subresource: Vulkan's image copies allow it; this runs on Vulkan only.)
+  plume::RenderCommandList *cmd = Video::CommandListLocked();
+  if (cmd && surface->layout != plume::RenderTextureLayout::UNKNOWN) {
+    TransitionSurfaceLocked(surface, plume::RenderTextureLayout::COPY_SOURCE);
+    cmd->barriers(plume::RenderBarrierStage::COPY,
+                  plume::RenderTextureBarrier(texture.get(), plume::RenderTextureLayout::COPY_DEST));
+    const plume::RenderBox box(0, 0, int32_t(surface->scale.Size(surface->width)),
+                               int32_t(surface->scale.Size(surface->height)));
+    cmd->copyTextureRegion(plume::RenderTextureCopyLocation::Subresource(texture.get()),
+                           plume::RenderTextureCopyLocation::Subresource(surface->texture.get()),
+                           0, 0, 0, &box);
+    surface->layout = plume::RenderTextureLayout::COPY_DEST;
+  } else {
+    surface->layout = plume::RenderTextureLayout::UNKNOWN;
+  }
+
+  ForgetFramebuffers(surface);
+  if (surface->sample_slot != UINT32_MAX)
+    Video::FreeTextureSlotLocked(surface->sample_slot);
+  surface->sample_slot = UINT32_MAX;
+  Video::RetireLocked(std::move(surface->sample_view));
+  Video::RetireLocked(std::move(surface->texture));
+  surface->texture = std::move(texture);
+  surface->width = width;
+  surface->height = height;
+  surface->generation = g_next_generation++;
+}
+
 void SurfaceMemoryLocked(size_t &targets, uint64_t &bytes) {
   targets = 0;
   bytes = 0;

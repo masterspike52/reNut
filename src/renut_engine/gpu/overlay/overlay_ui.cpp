@@ -29,6 +29,12 @@
 
 #include <windows.h>
 #include <windowsx.h>
+#else
+#include <string>
+
+#include <SDL3/SDL_events.h>
+#include <SDL3/SDL_keyboard.h>
+#include <SDL3/SDL_video.h>
 #endif
 
 namespace renut::gpu::overlay {
@@ -342,7 +348,148 @@ void BuildOnUIThread() {
 
 #else
 
-void ApplyQueuedInput(ImGuiIO &) {}
+// --- Window input and the build pump (SDL: Linux) ----------------------------
+//
+// The SDK's window is an SDL window; an event watch sees its events as SDL
+// queues them, before the SDK handles them, as the window procedure does on
+// Windows. Without the overlay nothing of reNut's (the first-run path setup
+// included) could be seen or used.
+
+SDL_Window *g_sdl_window = nullptr;
+UIThreadRunner g_run_on_ui;
+std::atomic<bool> g_build_pending{false};
+std::atomic<bool> g_stop{true};
+std::thread g_pump;
+
+// An event the overlay's ImGui takes, as it arrived. A text event's string is
+// SDL's for the moment only: it is copied.
+struct InputEvent {
+  SDL_Event event;
+  std::string text;
+};
+constexpr size_t kMaxQueuedInput = 4096;
+std::mutex g_input_mutex;
+std::vector<InputEvent> g_input;
+
+ImGuiKey KeyFromKeycode(SDL_Keycode key) {
+  if (key >= SDLK_A && key <= SDLK_Z)
+    return ImGuiKey(ImGuiKey_A + (key - SDLK_A));
+  if (key >= SDLK_0 && key <= SDLK_9)
+    return ImGuiKey(ImGuiKey_0 + (key - SDLK_0));
+  if (key >= SDLK_F1 && key <= SDLK_F12)
+    return ImGuiKey(ImGuiKey_F1 + (key - SDLK_F1));
+  switch (key) {
+  case SDLK_TAB: return ImGuiKey_Tab;
+  case SDLK_LEFT: return ImGuiKey_LeftArrow;
+  case SDLK_RIGHT: return ImGuiKey_RightArrow;
+  case SDLK_UP: return ImGuiKey_UpArrow;
+  case SDLK_DOWN: return ImGuiKey_DownArrow;
+  case SDLK_PAGEUP: return ImGuiKey_PageUp;
+  case SDLK_PAGEDOWN: return ImGuiKey_PageDown;
+  case SDLK_HOME: return ImGuiKey_Home;
+  case SDLK_END: return ImGuiKey_End;
+  case SDLK_INSERT: return ImGuiKey_Insert;
+  case SDLK_DELETE: return ImGuiKey_Delete;
+  case SDLK_BACKSPACE: return ImGuiKey_Backspace;
+  case SDLK_SPACE: return ImGuiKey_Space;
+  case SDLK_RETURN: return ImGuiKey_Enter;
+  case SDLK_ESCAPE: return ImGuiKey_Escape;
+  default: return ImGuiKey_None;
+  }
+}
+
+bool IsInputEvent(Uint32 type) {
+  switch (type) {
+  case SDL_EVENT_MOUSE_MOTION:
+  case SDL_EVENT_MOUSE_BUTTON_DOWN:
+  case SDL_EVENT_MOUSE_BUTTON_UP:
+  case SDL_EVENT_MOUSE_WHEEL:
+  case SDL_EVENT_KEY_DOWN:
+  case SDL_EVENT_KEY_UP:
+  case SDL_EVENT_TEXT_INPUT:
+  case SDL_EVENT_WINDOW_FOCUS_GAINED:
+  case SDL_EVENT_WINDOW_FOCUS_LOST:
+    return true;
+  default:
+    return false;
+  }
+}
+
+// Mouse positions are in window coordinates; the overlay is in pixels.
+void ApplyInput(ImGuiIO &io, const InputEvent &input, float pixel_density) {
+  const SDL_Event &e = input.event;
+  switch (e.type) {
+  case SDL_EVENT_MOUSE_MOTION:
+    io.AddMousePosEvent(e.motion.x * pixel_density, e.motion.y * pixel_density);
+    break;
+  case SDL_EVENT_MOUSE_BUTTON_DOWN:
+  case SDL_EVENT_MOUSE_BUTTON_UP: {
+    const int button = e.button.button == SDL_BUTTON_LEFT    ? 0
+                       : e.button.button == SDL_BUTTON_RIGHT ? 1
+                       : e.button.button == SDL_BUTTON_MIDDLE ? 2
+                                                              : -1;
+    io.AddMousePosEvent(e.button.x * pixel_density, e.button.y * pixel_density);
+    if (button >= 0)
+      io.AddMouseButtonEvent(button, e.type == SDL_EVENT_MOUSE_BUTTON_DOWN);
+    break;
+  }
+  case SDL_EVENT_MOUSE_WHEEL:
+    io.AddMouseWheelEvent(-e.wheel.x, e.wheel.y);
+    break;
+  case SDL_EVENT_KEY_DOWN:
+  case SDL_EVENT_KEY_UP: {
+    io.AddKeyEvent(ImGuiMod_Ctrl, (e.key.mod & SDL_KMOD_CTRL) != 0);
+    io.AddKeyEvent(ImGuiMod_Shift, (e.key.mod & SDL_KMOD_SHIFT) != 0);
+    io.AddKeyEvent(ImGuiMod_Alt, (e.key.mod & SDL_KMOD_ALT) != 0);
+    const ImGuiKey key = KeyFromKeycode(e.key.key);
+    if (key != ImGuiKey_None)
+      io.AddKeyEvent(key, e.type == SDL_EVENT_KEY_DOWN);
+    break;
+  }
+  case SDL_EVENT_TEXT_INPUT:
+    io.AddInputCharactersUTF8(input.text.c_str());
+    break;
+  case SDL_EVENT_WINDOW_FOCUS_GAINED:
+  case SDL_EVENT_WINDOW_FOCUS_LOST:
+    io.AddFocusEvent(e.type == SDL_EVENT_WINDOW_FOCUS_GAINED);
+    break;
+  default:
+    break;
+  }
+}
+
+// Sees the events first: the overlay's input is queued for the next build,
+// and every event goes on to the SDK.
+bool SDLCALL OverlayEventWatch(void *, SDL_Event *event) {
+  if (event && IsInputEvent(event->type)) {
+    InputEvent input{*event, {}};
+    if (event->type == SDL_EVENT_TEXT_INPUT && event->text.text)
+      input.text = event->text.text;
+    std::lock_guard lock(g_input_mutex);
+    if (g_input.size() < kMaxQueuedInput)
+      g_input.push_back(std::move(input));
+  }
+  return true;
+}
+
+void ApplyQueuedInput(ImGuiIO &io) {
+  std::vector<InputEvent> input;
+  {
+    std::lock_guard lock(g_input_mutex);
+    input.swap(g_input);
+  }
+  const float density = g_sdl_window ? SDL_GetWindowPixelDensity(g_sdl_window) : 1.0f;
+  for (const InputEvent &event : input)
+    ApplyInput(io, event, density > 0.0f ? density : 1.0f);
+}
+
+// The pump's call, on the UI thread.
+void BuildOnUIThread() {
+  uint32_t width = 0, height = 0;
+  GetRenderWindowPixelSize(width, height);
+  BuildFrame(float(width), float(height));
+  g_build_pending.store(false, std::memory_order_release);
+}
 
 #endif
 
@@ -453,34 +600,25 @@ void RemoveDialog(Dialog *dialog) {
   std::erase(g_dialogs, dialog);
 }
 
-bool Start(UIThreadRunner run_on_ui_thread) {
-#if defined(_WIN32)
-  if (g_context)
-    return true;
-  plume::RenderWindow window{};
-  if (!run_on_ui_thread || !GetNativeRenderWindow(window))
-    return false;
-  g_window = static_cast<HWND>(window);
-  g_run_on_ui = std::move(run_on_ui_thread);
+namespace {
 
-  // CreateContext leaves any context that was current current.
+// The overlay's ImGui context. CreateContext leaves any context that was
+// current current.
+void CreateOverlayContext() {
   g_context = ImGui::CreateContext();
-  {
-    ContextScope scope;
-    ImGuiIO &io = ImGui::GetIO();
-    io.IniFilename = nullptr;
-    io.LogFilename = nullptr;
-    io.BackendPlatformName = "renut";
-    io.BackendRendererName = "renut";
-    io.BackendFlags |= ImGuiBackendFlags_RendererHasVtxOffset | ImGuiBackendFlags_RendererHasTextures;
-    ImGui::StyleColorsDark();
-  }
+  ContextScope scope;
+  ImGuiIO &io = ImGui::GetIO();
+  io.IniFilename = nullptr;
+  io.LogFilename = nullptr;
+  io.BackendPlatformName = "renut";
+  io.BackendRendererName = "renut";
+  io.BackendFlags |= ImGuiBackendFlags_RendererHasVtxOffset | ImGuiBackendFlags_RendererHasTextures;
+  ImGui::StyleColorsDark();
+}
+
+// A frame every 16 ms, on the UI thread; one queued at a time.
+void StartPump() {
   g_last_build = std::chrono::steady_clock::now();
-
-  g_original_proc = reinterpret_cast<WNDPROC>(
-      SetWindowLongPtrW(g_window, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(OverlayWindowProc)));
-
-  // A frame every 16 ms, on the UI thread; one queued at a time.
   g_stop.store(false, std::memory_order_release);
   g_pump = std::thread([] {
     while (!g_stop.load(std::memory_order_acquire)) {
@@ -489,22 +627,53 @@ bool Start(UIThreadRunner run_on_ui_thread) {
       std::this_thread::sleep_for(std::chrono::milliseconds(16));
     }
   });
-  return true;
-#else
-  (void)run_on_ui_thread;
-  return false;
-#endif
 }
 
-void Stop() {
-#if defined(_WIN32)
+void StopPump() {
   g_stop.store(true, std::memory_order_release);
   if (g_pump.joinable())
     g_pump.join();
+}
+
+} // namespace
+
+bool Start(UIThreadRunner run_on_ui_thread) {
+  if (g_context)
+    return true;
+#if defined(_WIN32)
+  plume::RenderWindow window{};
+  if (!run_on_ui_thread || !GetNativeRenderWindow(window))
+    return false;
+  g_window = static_cast<HWND>(window);
+  g_run_on_ui = std::move(run_on_ui_thread);
+  CreateOverlayContext();
+  g_original_proc = reinterpret_cast<WNDPROC>(
+      SetWindowLongPtrW(g_window, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(OverlayWindowProc)));
+#else
+  g_sdl_window = GetGameSdlWindow();
+  if (!run_on_ui_thread || !g_sdl_window)
+    return false;
+  g_run_on_ui = std::move(run_on_ui_thread);
+  CreateOverlayContext();
+  SDL_AddEventWatch(OverlayEventWatch, nullptr);
+  // Text fields get typed characters only while SDL's text input is on; SDL
+  // wants that switched on from its video thread, the UI thread.
+  g_run_on_ui([] { SDL_StartTextInput(g_sdl_window); });
+#endif
+  StartPump();
+  return true;
+}
+
+void Stop() {
+  StopPump();
+#if defined(_WIN32)
   if (g_window && g_original_proc &&
       GetWindowLongPtrW(g_window, GWLP_WNDPROC) == reinterpret_cast<LONG_PTR>(OverlayWindowProc)) {
     SetWindowLongPtrW(g_window, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(g_original_proc));
   }
+#else
+  if (g_sdl_window)
+    SDL_RemoveEventWatch(OverlayEventWatch, nullptr);
 #endif
 }
 

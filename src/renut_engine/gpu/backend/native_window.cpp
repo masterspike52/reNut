@@ -120,6 +120,10 @@ bool GetRenderWindowPixelSize(uint32_t &width, uint32_t &height) {
   return true;
 }
 
+SDL_Window *GetGameSdlWindow() {
+  return FindGameSdlWindow();
+}
+
 #endif
 
 } // namespace renut::gpu

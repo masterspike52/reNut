@@ -102,6 +102,9 @@ struct PushConstants
 // 1336: host pixels per guest pixel on each axis (the render targets are that multiple of their
 // guest size; g_ViewportSize and the screen-space values are in guest pixels).
 #define g_ResolutionScale          vk::RawBufferLoad<float>(g_PushConstants.SharedConstants + 1336)
+// 1344: in guest pixels, the corner of the tile a draw predicated to one tile renders to; the
+// pixel position is relative to it, as the GPU's is to the EDRAM a tile renders in.
+#define g_PixelOrigin              vk::RawBufferLoad<float2>(g_PushConstants.SharedConstants + 1344)
 #define g_AlphaThreshold           vk::RawBufferLoad<float>(g_PushConstants.SharedConstants + 552)
 #define g_AlphaTestFunc            vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + 556)
 // 64-bit loads through a physical pointer need their alignment stated (the default is 4).
@@ -156,7 +159,8 @@ struct PushConstants
     uint4 g_Tessellation : packoffset(c65); \
     uint4 g_BoundFetchArr[16] : packoffset(c66); \
     float2 g_ViewportSize : packoffset(c83.x); \
-    float g_ResolutionScale : packoffset(c83.z);
+    float g_ResolutionScale : packoffset(c83.z); \
+    float2 g_PixelOrigin : packoffset(c84.x);
 
 #define g_Booleans(i) (g_BooleansArr[(i) / 4][(i) % 4])
 #define g_VertexFetchSlot(i) (g_VertexFetchSlotsArr[(i) / 4][(i) % 4])

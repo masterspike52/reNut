@@ -2392,8 +2392,9 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
             {
                 // xy the pixel position (x negated on back faces), zw the point sprite coordinate.
                 // The position is in guest pixels: the host targets are g_ResolutionScale times
-                // the guest's size, so a host pixel is a fraction of one.
-                out += "float4((iPos.xy / g_ResolutionScale - 0.5) * float2(iFace ? 1.0 : -1.0, 1.0), iPointCoord);\n";
+                // the guest's size, so a host pixel is a fraction of one. While tiling it is
+                // relative to the draw's tile (g_PixelOrigin), as the EDRAM position is.
+                out += "float4((iPos.xy / g_ResolutionScale - 0.5 - g_PixelOrigin) * float2(iFace ? 1.0 : -1.0, 1.0), iPointCoord);\n";
             }
         #else
             if (isPixelShader && i == ((shader->fieldC >> 8) & 0xFF))

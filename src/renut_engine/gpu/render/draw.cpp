@@ -101,6 +101,10 @@ struct SharedConstants {
   float viewport_size[2];
   float resolution_scale;  // 1336: of the render targets (ResolutionScale)
   float pad_1340;
+  // 1344: in guest pixels, what the pixel position is relative to: a draw
+  // predicated to one tile has the tile's corner (ViewportState::pixel_origin).
+  float pixel_origin[2];
+  float pad_1352[2];
 };
 static_assert(offsetof(SharedConstants, sampler_indices) == 384);
 static_assert(offsetof(SharedConstants, booleans) == 512);
@@ -117,7 +121,8 @@ static_assert(offsetof(SharedConstants, bound_fetch) == 1056);
 static_assert(offsetof(SharedConstants, point_state) == 1312);
 static_assert(offsetof(SharedConstants, viewport_size) == 1328);
 static_assert(offsetof(SharedConstants, resolution_scale) == 1336);
-static_assert(sizeof(SharedConstants) == 1344);
+static_assert(offsetof(SharedConstants, pixel_origin) == 1344);
+static_assert(sizeof(SharedConstants) == 1360);
 
 // The guest D3DDevice a draw reads its state from: the live device, or a
 // recorded copy of its first kDeviceSnapshotSize bytes.
@@ -778,6 +783,19 @@ bool GatherTargets(const GuestDevice &device, Targets &t) {
   if (!t.color_count && !t.depth)
     return false;
   const HostSurface *first = t.color_count ? t.colors[0] : t.depth;
+  // plume's Vulkan framebuffer is the size of the first color target, and its
+  // render pass loads and stores every attachment over all of it: one smaller
+  // than that is written past its end and the device is lost. N&B binds such
+  // sets (the garage's vehicle database: a 320x288 color target over a 288x180
+  // depth surface) and draws within the smaller one, which the console and
+  // D3D12 allow. Those attachments are grown to cover it.
+  if (IsVulkan() && t.color_count) {
+    const uint32_t host_width = first->scale.Size(first->width);
+    const uint32_t host_height = first->scale.Size(first->height);
+    for (uint32_t i = 1; i < t.color_count; ++i)
+      CoverHostExtentLocked(t.colors[i], host_width, host_height);
+    CoverHostExtentLocked(t.depth, host_width, host_height);
+  }
   t.width = first->width;
   t.height = first->height;
   t.scale = first->scale;
@@ -849,6 +867,13 @@ struct ViewportState {
   bool screen_space = false;
   float screen_scale[2] = {1.0f, 1.0f};
   float screen_offset[2] = {0.0f, 0.0f};
+  // Guest pixels: the pixel position (VPOS) the GPU gives the pixel shader is
+  // in the coordinates of the EDRAM it renders to. While tiling that is one
+  // tile, and N&B adds the tile's corner back from a per-tile constant (the
+  // deferred shadow pass, vs_f6965212d74a7552 / ps_d86a35e4f2b956b3: c0.x =
+  // 384 in the lower tile). The host renders every tile into one target, so a
+  // draw predicated to one tile has its position made relative to that tile.
+  float pixel_origin[2] = {0.0f, 0.0f};
 };
 
 // The screen rect of the one tile a draw is predicated to while tiling
@@ -914,6 +939,10 @@ ViewportState ComputeViewport(const GuestDevice &device, const Targets &t) {
   yo += float(ty);
 
   ViewportState vs;
+  if (one_tile) {
+    vs.pixel_origin[0] = float(tile_rect.x1);
+    vs.pixel_origin[1] = float(tile_rect.y1);
+  }
   const float min_z = std::clamp(zo, 0.0f, 1.0f), max_z = std::clamp(zo + zs, 0.0f, 1.0f);
   // SetViewport's rectangle back from its scale and offset: x = offset - scale
   // and width = 2 * scale; y = offset + scale and height = -2 * scale (the
@@ -2769,6 +2798,7 @@ bool DrawStateLocked(const u8 *device_state, const DrawCall &call, const ReplayC
   sc.viewport_size[0] = viewport.guest_size[0];
   sc.viewport_size[1] = viewport.guest_size[1];
   sc.resolution_scale = targets.scale.Factor();
+  std::memcpy(sc.pixel_origin, viewport.pixel_origin, sizeof(sc.pixel_origin));
   if (call.primitive == kPointList) {
     // PA_SU_POINT_SIZE: height 0-15, width 16-31, half the size in 12.4 fixed
     // point (SetRenderState_PointSize 0x8264C6C0 stores the size * 8);
