@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=reNut
+Comment=Banjo-Kazooie: Nuts & Bolts, recompiled
+Exec=renut
+Icon=renut
+Categories=Game;
+Terminal=false

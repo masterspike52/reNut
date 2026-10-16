@@ -1,2 +1,84 @@
-/assets
-/generated
+# ---------------------------------------------------------------------------
+# Secrets: never commit
+# ---------------------------------------------------------------------------
+# The EOS product's IDs, with its client secret (CMakeLists.txt).
+cmake/eos_credentials.cmake
+# Account recovery codes (move this file out of the project folder entirely).
+*Two-Factor*
+*backup codes*
+
+# ---------------------------------------------------------------------------
+# The game's data and what is made from it (copyrighted; each user supplies
+# their own default.xex and bundles)
+# ---------------------------------------------------------------------------
+/assets/
+# rexglue codegen output, regenerated from assets/default.xex.
+/generated/
+# Dumped game shaders (the build re-dumps them from assets/) and their
+# decompiles.
+/shaders/
+/shaders_hlsl/
+/shadersbackup/
+# IDA databases, wherever they are.
+*.i64
+*.idb
+*.id0
+*.id1
+*.id2
+*.nam
+*.til
+
+# ---------------------------------------------------------------------------
+# Proprietary SDKs (download them yourself; see docs/BUILDING.md)
+# ---------------------------------------------------------------------------
+/thirdparty/EOS-SDK-*/
+/thirdparty/steamworks_sdk_*/
+
+# ---------------------------------------------------------------------------
+# Build output and binaries
+# ---------------------------------------------------------------------------
+/out/
+*.exe
+*.dll
+*.pdb
+*.lib
+*.so
+*.AppImage
+# ...except the shader compiler XenosRecomp builds with.
+!/thirdparty/reblue-XenosRecomp/thirdparty/dxc-bin/**
+
+# ---------------------------------------------------------------------------
+# docs/: only the documentation itself
+# ---------------------------------------------------------------------------
+/docs/*
+!/docs/*.md
+
+# ---------------------------------------------------------------------------
+# Local tools, captures, traces and other people's projects
+# ---------------------------------------------------------------------------
+/renderdoc/
+/renders/
+/trace/
+/reference/
+/NB-Multiplayer Editions/
+/friends logs/
+*.rdc
+*.etl
+*.dmp
+*.log
+/xperf.toml
+/things that reblue hooks.toml
+
+# ---------------------------------------------------------------------------
+# Editor, OS and Python leftovers
+# ---------------------------------------------------------------------------
+*.bak
+*.orig
+__pycache__/
+*.pyc
+.vs/
+.vscode/
+.idea/
+Thumbs.db
+desktop.ini
+.DS_Store

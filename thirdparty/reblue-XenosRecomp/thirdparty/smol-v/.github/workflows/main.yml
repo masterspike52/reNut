@@ -1,0 +1,50 @@
+name: build_and_test
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  windows:
+    runs-on: windows-2022
+    strategy:
+      fail-fast: false
+    steps:
+    - uses: actions/checkout@v1
+    - name: Windows VS2022
+      run: |
+        mkdir out && cd out
+        cmake -DCMAKE_BUILD_TYPE=Release ..
+        cd ..
+        cmake --build out --config Release
+        "out/Release/smol-v-test.exe"
+      shell: cmd
+
+  mac:
+    runs-on: macOS-latest
+    strategy:
+      fail-fast: false
+    steps:
+    - uses: actions/checkout@v1
+    - name: macOS Xcode 15
+      run: |
+        mkdir out && cd out
+        cmake -DCMAKE_BUILD_TYPE=Release ..
+        cd ..
+        cmake --build out --config Release
+        "out/smol-v-test"
+
+  linux:
+    runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: false
+    steps:
+    - uses: actions/checkout@v1
+    - name: Ubuntu22 Gcc11
+      run: |
+        mkdir out && cd out
+        cmake -DCMAKE_BUILD_TYPE=Release ..
+        cd ..
+        cmake --build out --config Release
+        "out/smol-v-test"
+
