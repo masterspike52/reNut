@@ -240,6 +240,14 @@ void Video::PresentOverlayOnly() {
   // The last guest frame stays up while the guest stalls.
   const PresentImage image =
       s.guest_ready && s.last_front_buffer ? FrontBufferImageLocked(s.last_front_buffer) : PresentImage{};
+  if (s.guest_ready) {
+    static uint32_t logged = 0;
+    if (logged++ < 32) {
+      RGPU_WARN("Present: the game has not presented for {} ms; the UI presents {}",
+                now - s.last_guest_present_ms.load(std::memory_order_acquire),
+                image.texture ? "its last frame" : "black (no last frame)");
+    }
+  }
   PresentLocked(s, image.texture ? &image : nullptr);
 }
 

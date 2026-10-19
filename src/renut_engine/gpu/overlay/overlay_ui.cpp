@@ -15,6 +15,7 @@
 #include <vector>
 
 #include "imgui.h"
+#include "imgui_internal.h"
 
 #include "renut_engine/gpu/backend/backend.h"
 #include "renut_engine/gpu/log.h"
@@ -32,8 +33,10 @@
 #else
 #include <string>
 
+#include <SDL3/SDL_clipboard.h>
 #include <SDL3/SDL_events.h>
 #include <SDL3/SDL_keyboard.h>
+#include <SDL3/SDL_stdinc.h>
 #include <SDL3/SDL_video.h>
 #endif
 
@@ -139,6 +142,24 @@ void TakeTextureRequests(ImDrawData *data) {
 // The window input queued since the last build, into the overlay's ImGui.
 void ApplyQueuedInput(ImGuiIO &io);
 
+// Whether the last built frame showed a window that takes input (WantsCursor).
+std::atomic<bool> g_wants_cursor{false};
+
+// A shown top-level window that takes input; display-only ones (the FPS
+// overlay, NoInputs) and ImGui's implicit fallback window don't count.
+bool AnyInputWindowShown() {
+  for (const ImGuiWindow *window : ImGui::GetCurrentContext()->Windows) {
+    if (!window->WasActive || window->Hidden ||
+        (window->Flags & (ImGuiWindowFlags_NoInputs | ImGuiWindowFlags_ChildWindow |
+                          ImGuiWindowFlags_Tooltip | ImGuiWindowFlags_Popup)) ||
+        std::strncmp(window->Name, "Debug##Default", 14) == 0) {
+      continue;
+    }
+    return true;
+  }
+  return false;
+}
+
 // One overlay frame: the dialogs' widgets, turned into the frame the renderer
 // draws. On the UI thread.
 void BuildFrame(float width, float height) {
@@ -160,6 +181,7 @@ void BuildFrame(float width, float height) {
   }
   ImGui::Render();
   ImDrawData *data = ImGui::GetDrawData();
+  g_wants_cursor.store(AnyInputWindowShown(), std::memory_order_relaxed);
 
   std::lock_guard lock(g_frame_mutex);
   // Texture ids first: the commands name their textures by them.
@@ -600,6 +622,10 @@ void RemoveDialog(Dialog *dialog) {
   std::erase(g_dialogs, dialog);
 }
 
+bool WantsCursor() {
+  return g_wants_cursor.load(std::memory_order_relaxed);
+}
+
 namespace {
 
 // The overlay's ImGui context. CreateContext leaves any context that was
@@ -613,6 +639,22 @@ void CreateOverlayContext() {
   io.BackendPlatformName = "renut";
   io.BackendRendererName = "renut";
   io.BackendFlags |= ImGuiBackendFlags_RendererHasVtxOffset | ImGuiBackendFlags_RendererHasTextures;
+#if !defined(_WIN32)
+  // ImGui has a clipboard of its own on Windows only; elsewhere it is SDL's
+  // (the friend codes' Copy and Paste, and Ctrl+C / Ctrl+V in text fields).
+  // Called while building, on the UI thread, SDL's video thread.
+  ImGuiPlatformIO &platform = ImGui::GetPlatformIO();
+  platform.Platform_SetClipboardTextFn = [](ImGuiContext *, const char *text) {
+    SDL_SetClipboardText(text ? text : "");
+  };
+  platform.Platform_GetClipboardTextFn = [](ImGuiContext *) -> const char * {
+    static std::string text;  // ImGui keeps the pointer until the next call
+    char *clipboard = SDL_GetClipboardText();
+    text = clipboard ? clipboard : "";
+    SDL_free(clipboard);
+    return text.c_str();
+  };
+#endif
   ImGui::StyleColorsDark();
 }
 

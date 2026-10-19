@@ -218,17 +218,19 @@ uint renutDescriptor(uint resourceDescriptorIndex)
 
 // Host texels per guest texel, by the host's RenderScale code (render_scale.h): 1x, 2/3 (480p),
 // 1.5 (1080p), 2 (1440p), 3 (4K), 4, 6 and 4/3 (shadow maps and ambient occlusion rendered finer).
+// The literals are float: unsuffixed, DXC keeps this chain in double precision, and a shader using
+// doubles draws wrong on GPUs without them (Intel Arc).
 float renutTextureScale(uint resourceDescriptorIndex)
 {
     const uint code = (resourceDescriptorIndex >> RENUT_RESOLUTION_SCALE_SHIFT) & 7u;
-    return code == 1u ? 2.0 / 3.0
-         : code == 2u ? 1.5
-         : code == 3u ? 2.0
-         : code == 4u ? 3.0
-         : code == 5u ? 4.0
-         : code == 6u ? 6.0
-         : code == 7u ? 4.0 / 3.0
-         : 1.0;
+    return code == 1u ? 2.0f / 3.0f
+         : code == 2u ? 1.5f
+         : code == 3u ? 2.0f
+         : code == 4u ? 3.0f
+         : code == 5u ? 4.0f
+         : code == 6u ? 6.0f
+         : code == 7u ? 4.0f / 3.0f
+         : 1.0f;
 }
 
 // A scaled texture's guest width and height from its host ones.

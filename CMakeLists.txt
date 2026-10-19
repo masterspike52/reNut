@@ -23,6 +23,13 @@ set(RENUT_SOURCES
 	src/renut_engine/game/controllers.cpp
 	src/renut_engine/game/thread_slots.cpp
 	src/renut_engine/game/lod.cpp
+	src/renut_engine/game/mouse_camera.cpp
+	src/renut_engine/game/keyboard_input.cpp
+	src/renut_engine/game/custom_parts.cpp
+	src/renut_engine/game/part_classes.cpp
+	src/renut_engine/game/part_scripts.cpp
+	src/renut_engine/game/effect_log.cpp
+	src/renut_engine/game/mod_bundles.cpp
 	src/renut_engine/online/identity.cpp
 	src/renut_engine/online/trace.cpp
 	src/renut_engine/online/eos.cpp
@@ -31,6 +38,7 @@ set(RENUT_SOURCES
 	src/renut_engine/online/qos.cpp
 	src/renut_engine/online/transport.cpp
 	src/renut_engine/app/crash_dump.cpp
+	src/renut_engine/mods/custom_parts.cpp
 	src/renut_engine/mods/json.cpp
 	src/renut_engine/mods/mod_device.cpp
 	src/renut_engine/mods/mod_loader.cpp
@@ -49,6 +57,22 @@ else()
 endif()
 
 rexglue_setup_target(renut)
+
+# Lua 5.4 (thirdparty/lua-5.4.7, lua.org, MIT) for mods' part scripts
+# (src/renut_engine/game/part_scripts.cpp). Built as C++: script errors unwind
+# with exceptions rather than longjmp across reNut's C++ frames.
+set(RENUT_LUA_DIR "${CMAKE_SOURCE_DIR}/thirdparty/lua-5.4.7/src")
+file(GLOB renut_lua_sources "${RENUT_LUA_DIR}/*.c")
+list(REMOVE_ITEM renut_lua_sources "${RENUT_LUA_DIR}/lua.c" "${RENUT_LUA_DIR}/luac.c")
+set_source_files_properties(${renut_lua_sources} PROPERTIES LANGUAGE CXX)
+add_library(renut_lua STATIC ${renut_lua_sources})
+target_include_directories(renut_lua PUBLIC "${RENUT_LUA_DIR}")
+if(MSVC)
+    target_compile_options(renut_lua PRIVATE /W0 /TP)
+else()
+    target_compile_options(renut_lua PRIVATE -w -x c++)
+endif()
+target_link_libraries(renut PRIVATE renut_lua)
 
 # Online play runs on Epic Online Services (src/renut_engine/online/eos.cpp):
 # sign-in by Device ID and peer-to-peer traffic. The EOS SDK comes from the Epic

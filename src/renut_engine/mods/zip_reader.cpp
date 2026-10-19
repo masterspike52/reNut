@@ -365,6 +365,8 @@ bool ZipReader::Open(const std::filesystem::path &path, std::string *error) {
         e.size = Le32(&cd[p + 24]);
         e.local_header_offset = Le32(&cd[p + 42]);
         e.name.assign(reinterpret_cast<const char *>(&cd[p + 46]), name_len);
+        // Some Windows zip tools write '\' between folders; names are '/' here.
+        std::replace(e.name.begin(), e.name.end(), '\\', '/');
         entries_.push_back(std::move(e));
         p += 46 + size_t(name_len) + extra_len + comment_len;
     }
@@ -372,8 +374,10 @@ bool ZipReader::Open(const std::filesystem::path &path, std::string *error) {
 }
 
 const ZipReader::EntryInfo *ZipReader::Find(std::string_view name) const {
+    std::string wanted(name);
+    std::replace(wanted.begin(), wanted.end(), '\\', '/');
     for (const EntryInfo &e : entries_)
-        if (e.name == name)
+        if (e.name == wanted)
             return &e;
     return nullptr;
 }

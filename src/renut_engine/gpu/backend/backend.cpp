@@ -407,6 +407,18 @@ bool SetBlendConstant(plume::RenderCommandList *cmd, const float rgba[4]) {
   return true;
 }
 
+void SetStencilReference(plume::RenderCommandList *cmd, uint32_t reference) {
+#if defined(_WIN32)
+  if (!IsVulkan()) {
+    if (ID3D12GraphicsCommandList *d3d = static_cast<plume::D3D12CommandList *>(cmd)->d3d)
+      d3d->OMSetStencilRef(reference);
+  }
+#else
+  (void)cmd;
+  (void)reference;
+#endif
+}
+
 bool GraphicsPipelineCreated(const plume::RenderPipeline *pipeline) {
   if (!pipeline)
     return false;

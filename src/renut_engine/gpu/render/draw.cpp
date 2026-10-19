@@ -26,6 +26,7 @@
 #include "renut_engine/gpu/guest/command_buffers.h"
 #include "renut_engine/gpu/d3d/d3d.h"
 #include "renut_engine/gpu/render/format.h"
+#include "renut_engine/gpu/render/graphics_options.h"
 #include "renut_engine/gpu/guest/guest_memory.h"
 #include "renut_engine/gpu/guest/guest_records.h"
 #include "renut_engine/gpu/log.h"
@@ -171,6 +172,9 @@ struct Bound {
   ConstantUpload vs_constants, ps_constants;
   bool blend_constant_set = false;
   float blend_constant[4] = {};
+  // D3D12's stencil reference on the list (SetStencilReference); a new list
+  // starts at 0.
+  uint32_t stencil_reference = 0;
 
   // State as the draws last set it on the list, which most draws in a row
   // share (the viewport, the zero stream, the memexport buffer): setting it
@@ -1135,6 +1139,39 @@ UploadAllocation UploadFloatConstants(const FloatConstants &constants, const u32
   last.replay = constants.replay;
   if (constants.replay)
     *constants.dirty = 0;
+  return alloc;
+}
+
+// The fog object's composite (sub_82217628), with its depth of field in the
+// pixel shader: blur = min(saturate(distance outside the focus range * c192.x
+// (near) or c192.y (far)), c194.w).
+constexpr uint64_t kFogCompositeVertexShader = 0x950F5CA8B083FA7Cull;
+constexpr u32 kDepthOfFieldScales = 192;
+constexpr u32 kDepthOfFieldMaxBlur = 194;
+
+bool IsDepthOfFieldDraw(uint64_t vs_hash, const u32 ps_used[8]) {
+  const u32 word = kDepthOfFieldScales / 32;
+  const u32 bits = (1u << (kDepthOfFieldScales % 32)) | (1u << (kDepthOfFieldMaxBlur % 32));
+  return vs_hash == kFogCompositeVertexShader && (ps_used[word] & bits) == bits;
+}
+
+// renut_depth_of_field: a copy of the upload UploadFloatConstants just made or
+// reused ('last' holds its registers) with the blur scaled by 'strength'.
+// 'last' keeps the game's values, for the draws after.
+UploadAllocation ScaleDepthOfField(const ConstantUpload &last, float strength) {
+  UploadAllocation alloc = Video::UploadsLocked().Allocate(256 * 16, 256);
+  if (!alloc)
+    return alloc;
+  u32 lanes[256 * 4];
+  std::memcpy(lanes, last.bytes, sizeof(lanes));
+  for (u32 &lane : lanes)
+    lane = std::byteswap(lane);
+  float values[256 * 4];
+  std::memcpy(values, lanes, sizeof(values));
+  values[kDepthOfFieldScales * 4 + 0] *= strength;
+  values[kDepthOfFieldScales * 4 + 1] *= strength;
+  values[kDepthOfFieldMaxBlur * 4 + 3] *= strength;
+  std::memcpy(alloc.cpu, values, sizeof(values));
   return alloc;
 }
 
@@ -2836,6 +2873,8 @@ bool DrawStateLocked(const u8 *device_state, const DrawCall &call, const ReplayC
   const u32 *ps_used = !ps ? kNoRegisters : ps->entry ? ps->entry->floatConstants : kAllRegisters;
   UploadAllocation vs_alloc = UploadFloatConstants(vs_constants, vs_used, g_bound.vs_constants);
   UploadAllocation ps_alloc = UploadFloatConstants(ps_constants, ps_used, g_bound.ps_constants);
+  if (ps_alloc && ps && DepthOfFieldStrength() != 1.0f && IsDepthOfFieldDraw(vs->hash, ps_used))
+    ps_alloc = ScaleDepthOfField(g_bound.ps_constants, DepthOfFieldStrength());
   MemExportStream exports[kMaxMemExportStreams];
   u32 export_count = 0;
   u32 export_offsets[kMaxMemExportStreams] = {};
@@ -2879,6 +2918,13 @@ bool DrawStateLocked(const u8 *device_state, const DrawCall &call, const ReplayC
     // Vulkan: a pipeline without the constant as dynamic state overwrites it.
     if (IsVulkan())
       g_bound.blend_constant_set = false;
+  }
+  // RB_STENCILREFMASK's reference (D3D12 has one for both faces). N&B's
+  // silhouettes (the Jinjo Bingo prize previewer, sub_823E7558) mark the model
+  // with reference 1 and draw black where the stencil equals it.
+  if (!IsVulkan() && g_bound.stencil_reference != (key.stencil_ref_mask & 0xFF)) {
+    g_bound.stencil_reference = key.stencil_ref_mask & 0xFF;
+    SetStencilReference(cmd, g_bound.stencil_reference);
   }
   float blend_constant[4];
   if (DrawBlendConstant(dev, key, blend_constant) &&

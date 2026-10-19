@@ -21,6 +21,12 @@
  *   upscaled to the screen they show as blobs that slide over dark areas as
  *   the camera moves. A resolve's destination takes its source's host format,
  *   so the passes reading them see the finer values too.
+ * - renut_depth_of_field: the fog object's full-screen composite
+ *   (sub_82217628; VS 950f5ca8b083fa7c, PS a5e26fb9039da3bf in the main
+ *   game) blends the sharp scene toward the blurred one by
+ *   min(saturate(distance outside the focus range * c192.x near / c192.y
+ *   far), c194.w), c194.w being the most blur (0.8). Reduced halves the
+ *   scales and the cap in that draw's constants, Off zeroes them.
  */
 #pragma once
 
@@ -45,5 +51,9 @@ plume::RenderFormat SurfaceColorFormat(const d3d::SurfaceDesc &desc);
 
 // The anisotropy linear minification gets at least (1 = the game's own).
 uint32_t MinAnisotropy();
+
+// How strong the depth of field blur is, as a share of the game's (1 = the
+// game's own, 0 = off).
+float DepthOfFieldStrength();
 
 } // namespace renut::gpu

@@ -21,6 +21,7 @@
 
 #include <plume_render_interface_builders.h>
 #include <rex/cvar.h>
+#include <rex/logging/api.h>
 #include <xxhash.h>
 
 #if defined(_WIN32)
@@ -103,6 +104,35 @@ plume::RenderBlendDesc BlendDesc(u32 control, u32 write_mask) {
   return desc;
 }
 
+void CreatePipeline(plume::RenderDevice *device, const plume::RenderGraphicsPipelineDesc &desc,
+                    std::unique_ptr<plume::RenderPipeline> *out) {
+  *out = device->createGraphicsPipeline(desc);
+}
+
+#if defined(_WIN32)
+// A driver's shader compiler that faults on a pipeline takes the process
+// down; the log then names the pipeline (the crash dump goes on as before).
+LONG LogPipelineFault(const PipelineKey &key, DWORD code) {
+  const auto *vs = static_cast<const ShaderCacheEntry *>(key.vertex_shader);
+  const auto *ps = static_cast<const ShaderCacheEntry *>(key.pixel_shader);
+  RGPU_ERROR("The driver faulted ({:08X}) compiling pipeline vs_{:016x} ps_{:016x} ({} samples, "
+             "color format {}, depth format {})",
+             uint32_t(code), vs ? vs->hash : 0, ps ? ps->hash : 0, key.samples,
+             uint32_t(key.color_formats[0]), uint32_t(key.depth_format));
+  rex::FlushLogging();
+  return EXCEPTION_CONTINUE_SEARCH;
+}
+
+// No objects with destructors in here: __try forbids unwinding them.
+void CreatePipelineLogged(plume::RenderDevice *device, const plume::RenderGraphicsPipelineDesc &desc,
+                          const PipelineKey &key, std::unique_ptr<plume::RenderPipeline> *out) {
+  __try {
+    CreatePipeline(device, desc, out);
+  } __except (LogPipelineFault(key, GetExceptionCode())) {
+  }
+}
+#endif
+
 // Any thread: reads only what device creation set up.
 std::unique_ptr<plume::RenderPipeline> Build(const PipelineKey &key, const PipelineInputs &inputs) {
   auto &s = State();
@@ -179,7 +209,12 @@ std::unique_ptr<plume::RenderPipeline> Build(const PipelineKey &key, const Pipel
   desc.inputElements = layout.input_elements.data();
   desc.inputElementsCount = uint32_t(layout.input_elements.size());
 
-  auto pipeline = s.device->createGraphicsPipeline(desc);
+  std::unique_ptr<plume::RenderPipeline> pipeline;
+#if defined(_WIN32)
+  CreatePipelineLogged(s.device.get(), desc, key, &pipeline);
+#else
+  CreatePipeline(s.device.get(), desc, &pipeline);
+#endif
   if (GraphicsPipelineCreated(pipeline.get())) {
     // Names the guest shaders in captures.
     const auto *vs = static_cast<const ShaderCacheEntry *>(key.vertex_shader);

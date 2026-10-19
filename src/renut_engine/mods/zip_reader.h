@@ -29,6 +29,7 @@ public:
     bool Open(const std::filesystem::path &path, std::string *error);
 
     const EntryInfo *Find(std::string_view name) const;
+    const std::vector<EntryInfo> &Entries() const { return entries_; }
     // The entry's uncompressed bytes; nullopt (with *error set) when it is
     // missing or damaged.
     std::optional<std::vector<uint8_t>> Read(std::string_view name, std::string *error);

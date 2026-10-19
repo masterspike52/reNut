@@ -33,6 +33,11 @@ REXCVAR_DEFINE_STRING(renut_post_process_precision, "High", "Nuts&Bolts/Graphics
                       "uses 16 bits.")
     .allowed({"Game", "High"});
 
+REXCVAR_DEFINE_STRING(renut_depth_of_field, "Game", "Nuts&Bolts/Graphics",
+                      "Depth of field blur on what is out of focus: the game's own, Reduced (half "
+                      "as strong) or Off.")
+    .allowed({"Game", "Reduced", "Off"});
+
 namespace renut::gpu {
 
 namespace {
@@ -89,6 +94,7 @@ struct Latched {
   bool full_ambient_occlusion = false;
   uint32_t min_anisotropy = 1;
   bool high_precision_post = true;
+  float depth_of_field = 1.0f;
 };
 Latched g_latched;
 
@@ -104,6 +110,8 @@ void LatchGraphicsOptionsLocked() {
   const int anisotropy = std::atoi(REXCVAR_GET(renut_anisotropic_filtering).c_str());
   g_latched.min_anisotropy = anisotropy >= 2 ? uint32_t(anisotropy) : 1;
   g_latched.high_precision_post = REXCVAR_GET(renut_post_process_precision) != "Game";
+  const std::string &depth_of_field = REXCVAR_GET(renut_depth_of_field);
+  g_latched.depth_of_field = depth_of_field == "Off" ? 0.0f : depth_of_field == "Reduced" ? 0.5f : 1.0f;
 }
 
 RenderScale SurfaceRenderScale(const d3d::SurfaceDesc &desc, RenderScale resolution) {
@@ -130,6 +138,10 @@ plume::RenderFormat SurfaceColorFormat(const d3d::SurfaceDesc &desc) {
 
 uint32_t MinAnisotropy() {
   return g_latched.min_anisotropy;
+}
+
+float DepthOfFieldStrength() {
+  return g_latched.depth_of_field;
 }
 
 } // namespace renut::gpu

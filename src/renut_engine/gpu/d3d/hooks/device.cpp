@@ -46,6 +46,7 @@
 #include "renut_engine/gpu/backend/render_thread.h"
 #include "renut_engine/gpu/render/surfaces.h"
 #include "renut_engine/gpu/render/textures.h"
+#include "renut_engine/gpu/render/textures.h"
 #include "renut_engine/gpu/backend/video.h"
 
 using namespace renut::gpu;
@@ -467,14 +468,17 @@ u32 D3DDevice_Release_hook(u32 device_va) {
   return 0;
 }
 
-// The GPU starts on the kicked draws: the guest buffers they read are read
-// then (FlushVertexFillsLocked), before the fence tells the game it may reuse
-// them. Memexport results reach guest memory later, once the GPU has finished
+// The GPU starts on the kicked draws: the guest buffers and textures they read
+// are read then (FlushVertexFillsLocked, FlushTextureFillsLocked), before the
+// fence tells the game it may reuse them. Memexport results reach guest memory later, once the GPU has finished
 // the frame (detail::CompleteMemExportsLocked); draws that read them sooner
 // wait for them (DrawStateLocked).
 void KickDevice(d3d::Device *device, u32 device_va) {
   FlushDeferredVertices(device_va);
-  render_thread::Queue([] { FlushVertexFillsLocked(); });
+  render_thread::Queue([] {
+    FlushVertexFillsLocked();
+    FlushTextureFillsLocked();
+  });
   KickFence(reinterpret_cast<u8 *>(device));
 }
 
@@ -863,8 +867,20 @@ void D3DDevice_Swap_hook(u32 device_va, u32 front_buffer, u32 /*parameters*/) {
     {
       std::lock_guard lock(State().mutex);
       image = FrontBufferImageLocked(front_buffer);
-      if (image.texture)
+      if (image.texture) {
         State().last_front_buffer = front_buffer;
+      } else {
+        // Present shows black for this frame.
+        static uint32_t logged = 0;
+        if (logged++ < 32) {
+          const HostTexture *t = FindHostTextureLocked(front_buffer);
+          RGPU_WARN("Swap: front buffer {:08X} has {}: this frame is presented black",
+                    front_buffer,
+                    !t            ? "no host texture"
+                    : !t->texture ? "a host texture that was not made"
+                                  : "no bindless slot");
+        }
+      }
       AdvanceTextureFrameLocked();
       AdvanceStreamCacheFrameLocked();
       LatchResolutionScaleLocked();

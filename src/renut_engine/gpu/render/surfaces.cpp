@@ -284,6 +284,12 @@ HostSurface *GetHostSurfaceLocked(u32 surface_va) {
     // another target: TargetKey.)
     min_width = std::max(min_width, slot->width);
     min_height = std::max(min_height, slot->height);
+    static uint32_t logged = 0;
+    if (logged++ < 32) {
+      RGPU_WARN("Surface {:08X}: target rebuilt {}x{} -> {}x{}{}: what it held is lost", surface_va,
+                slot->width, slot->height, min_width, min_height,
+                slot->scale != scale ? " (scale changed)" : "");
+    }
     RetireTarget(*slot);
   } else if (!slot) {
     slot = std::make_unique<HostSurface>();

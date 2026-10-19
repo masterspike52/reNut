@@ -22,7 +22,8 @@
  * The XUI menus read keystrokes of any user (XUSER_INDEX_ANY, or
  * XINPUT_FLAG_ANYUSER: sub_82279D80, sub_823E9600, sub_823E8C98), which the
  * SDK answers from host slot 0 alone, as user 0; those are read here from
- * every host slot in turn.
+ * every host slot in turn. The bound keys' keystrokes (keyboard_input.cpp)
+ * come first, as player 1's.
  *
  * Logged (category renut_input), as it changes: the host slots with a
  * controller, which claims player 1 and when it is lost, each player's
@@ -39,6 +40,8 @@
 #include <cstdint>
 #include <cstring>
 #include <string>
+
+#include "renut_engine/game/keyboard_input.h"
 
 #if defined(_WIN32)
 #ifndef WIN32_LEAN_AND_MEAN
@@ -76,7 +79,9 @@ constexpr uint32_t kStateSize = 16;
 constexpr uint32_t kStateButtonsOffset = 4;
 // XINPUT_GAMEPAD_A | XINPUT_GAMEPAD_START: the buttons that claim player 1.
 constexpr uint16_t kClaimButtons = 0x1000 | 0x0010;
-// XINPUT_KEYSTROKE: VirtualKey, Unicode, Flags (2 bytes each), UserIndex.
+// XINPUT_KEYSTROKE: VirtualKey, Unicode, Flags (2 bytes each), UserIndex,
+// HidCode (1 byte each).
+constexpr uint32_t kKeystrokeSize = 8;
 constexpr uint32_t kKeystrokeFlagsOffset = 4;
 constexpr uint32_t kKeystrokeUserIndexOffset = 6;
 constexpr uint16_t kVirtualKeyPadA = 0x5800;      // VK_PAD_A
@@ -107,6 +112,11 @@ bool g_logged_press = false;    // player 1's first press, since its controller 
 
 uint16_t Load16(const uint8_t *p) {
   return rex::byte_swap(*reinterpret_cast<const uint16_t *>(p));
+}
+
+void Store16(uint8_t *p, uint16_t value) {
+  value = rex::byte_swap(value);
+  std::memcpy(p, &value, 2);
 }
 
 std::string SlotsText(uint32_t mask) {
@@ -352,6 +362,17 @@ REX_HOOK_RAW(rex_XInputGetKeystroke) {
     __imp__rex_XInputGetKeystroke(ctx, base);
     return;
   }
+  const bool any_user = user == kUserIndexAny || (flags & kFlagAnyUser);
+  // The bound keys' keystrokes, player 1's.
+  uint16_t key_virtual_key = 0, key_flags = 0;
+  if ((any_user || user == 0) && renut::game::NextKeystroke(key_virtual_key, key_flags)) {
+    uint8_t *out = base + keystroke;
+    std::memset(out, 0, kKeystrokeSize);
+    Store16(out, key_virtual_key);
+    Store16(out + kKeystrokeFlagsOffset, key_flags);
+    ctx.r3.u64 = kErrorSuccess;
+    return;
+  }
   // The next keystroke of host slot 'pad' (the SDK reads slot 0 alone for any
   // user, so never asked for one).
   auto next = [&](uint32_t pad) {
@@ -364,7 +385,6 @@ REX_HOOK_RAW(rex_XInputGetKeystroke) {
   // Any player's keystroke, or before player 1 is claimed player 1's: the next
   // from every host slot in turn (an A or START press claims), dropping those
   // of controllers that are no player, or not this one.
-  const bool any_user = user == kUserIndexAny || (flags & kFlagAnyUser);
   if (any_user || (user == 0 && g_claimed_pad == kNoPad)) {
     uint32_t result = kErrorDeviceNotConnected;
     for (uint32_t pad = 0; pad < kUserCount; ++pad) {

@@ -6,10 +6,13 @@
 #include "renut_engine/ui/path_setup_wizard.h"
 #include "renut_engine/ui/online_dialog.h"
 #include "renut_engine/ui/friends_dialog.h"
+#include "renut_engine/ui/settings_dialog.h"
 #include "renut_engine/gpu/overlay/app_integration.h"
 #include "renut_engine/app/crash_dump.h"
 #include "renut_engine/app/app_paths.h"
 #include "renut_engine/mods/mod_loader.h"
+#include "renut_engine/game/mouse_camera.h"
+#include "renut_engine/game/keyboard_input.h"
 #include <rex/ui/window.h>
 //#include <rex/discord_rpc.h>
 #include <functional>
@@ -29,6 +32,7 @@ public:
     void OnConfigurePaths(rex::PathConfig& paths) override {
         if (renut::paths::IsAppImage())
             paths.config_path = renut::paths::WritableFolder() / (app_name_ + ".toml");
+        config_path_ = paths.config_path;
     }
 
     void OnConfigureLogging(rex::LogConfig& config) override {
@@ -66,6 +70,13 @@ public:
     // drawer keeps only its own menus.
     void OnCreateDialogs(rex::ui::ImGuiDrawer* drawer) override {
         (void)drawer;
+        // F4 opens reNut's settings (RenutSettingsDialog); the SDK's, registered
+        // just before this as bind_settings on F4, moves to F8. Binds go by
+        // registration order, so the SDK's would take F4 first.
+        if (rex::cvar::GetFlagByName("bind_settings") == "F4")
+            rex::cvar::SetFlagByName("bind_settings", "F8");
+        settings_dialog_ = std::make_unique<RenutSettingsDialog>(config_path_);
+        renut::gpu::overlay::AddDialog(settings_dialog_.get());
         fps_overlay_ = std::make_unique<FpsOverlay>();
         log_overlay_ = std::make_unique<RenuLogOverlayDialog>();
         path_wizard_ = std::make_unique<PathSetupWizard>();
@@ -79,7 +90,10 @@ public:
     }
 
     void OnShutdown() override {
+        renut::game::DetachKeyboard();
+        renut::game::DetachMouseCamera();
         renut::gpu::ShutdownRenderer();
+        renut::gpu::overlay::RemoveDialog(settings_dialog_.get());
         renut::gpu::overlay::RemoveDialog(fps_overlay_.get());
         renut::gpu::overlay::RemoveDialog(log_overlay_.get());
         renut::gpu::overlay::RemoveDialog(path_wizard_.get());
@@ -114,6 +128,8 @@ public:
         // The path wizard is drawn before the game starts, so the renderer
         // (and its overlay-only presentation) comes up here.
         renut::gpu::StartRenderer(app_context(), [this] { return imgui_drawer(); });
+        renut::game::AttachMouseCamera(window());
+        renut::game::AttachKeyboard(window());
 
         path_wizard_->Init(app_name_, defaults, [resume](rex::PathConfig resolved) {
             resume(resolved);
@@ -123,6 +139,8 @@ public:
 
 private:
     std::string      app_name_;
+    std::filesystem::path config_path_;
+    std::unique_ptr<RenutSettingsDialog> settings_dialog_;
     std::unique_ptr<PathSetupWizard> path_wizard_;
     std::unique_ptr<FpsOverlay> fps_overlay_;
     std::unique_ptr<RenuLogOverlayDialog> log_overlay_;

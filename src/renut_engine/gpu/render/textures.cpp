@@ -651,6 +651,17 @@ HostTexture *ResolveTarget(u32 texture_va, plume::RenderFormat format, RenderSca
   auto &slot = TextureSlot(texture_va);
   if (slot && (!slot->render_target || std::memcmp(slot->desc, desc, sizeof(desc)) != 0 ||
                !slot->texture || slot->host_format != format || slot->scale != scale)) {
+    // What an earlier resolve wrote is lost (only the GPU had it).
+    static uint32_t logged = 0;
+    if (slot->gpu_written && slot->texture && logged++ < 32) {
+      RGPU_WARN("Resolve destination {:08X} rebuilt ({}), frame {}: what it held is lost",
+                texture_va,
+                !slot->render_target                                 ? "was a sampled texture"
+                : std::memcmp(slot->desc, desc, sizeof(desc)) != 0 ? "header changed"
+                : slot->host_format != format                        ? "format changed"
+                                                                     : "scale changed",
+                g_frame);
+    }
     Retire(*slot);
     slot.reset();
   }
@@ -878,16 +889,24 @@ TextureBinding BindTextureLocked(u32 texture_va, const TextureFetch &device_fetc
     return binding;
   TextureFetch fetch = TextureFetch::FromHeader(header->Format);
   // SetTexture copied the header into the device's fetch constant. A header
-  // that no longer matches it was a temporary the game has overwritten since
-  // (a command buffer runs after its recording thread's stack moved on); the
-  // device's copy is what the GPU reads.
-  if (!fetch.IsTexture() || fetch.BasePage() != device_fetch.BasePage())
-    fetch = device_fetch;
-  if (!fetch.IsTexture())
-    return binding;
-
+  // that no longer describes the same data (SameData: memory, format, size,
+  // dimension) was a temporary the game has overwritten since (a command
+  // buffer runs after its recording thread's stack moved on); the device's
+  // copy is what the GPU reads. Its memory alone does not tell: N&B's main
+  // menu builds its bloom buffers' headers on the stack (160x90 and 80x45
+  // 8_8_8_8 at 701CFB48 / 701CFB7C), whose size and dimension words are
+  // overwritten while the base address stays; read as another texture, the
+  // resolve those buffers hold was dropped, a black frame now and then.
   u32 desc[6];
   MaskedDesc(fetch, desc);
+  u32 device_desc[6];
+  MaskedDesc(device_fetch, device_desc);
+  if (!fetch.IsTexture() || !SameData(desc, device_desc)) {
+    fetch = device_fetch;
+    std::memcpy(desc, device_desc, sizeof(desc));
+  }
+  if (!fetch.IsTexture())
+    return binding;
   if (HostTexture *resolved = ResolvedAlias(texture_va, fetch, desc)) {
     resolved->used_frame = g_frame;
     TransitionTextureLocked(resolved, plume::RenderTextureLayout::SHADER_READ);
@@ -904,6 +923,12 @@ TextureBinding BindTextureLocked(u32 texture_va, const TextureFetch &device_fetc
   // keeps what the resolve wrote.
   if (slot && std::memcmp(slot->desc, desc, sizeof(desc)) != 0 &&
       !(slot->gpu_written && SameData(slot->desc, desc))) {
+    static uint32_t logged = 0;
+    if (slot->gpu_written && slot->texture && logged++ < 32) {
+      RGPU_WARN("Texture {:08X}: sampled with another header, frame {}: what a resolve wrote is "
+                "dropped for guest memory",
+                texture_va, g_frame);
+    }
     Retire(*slot);
     slot.reset();
   }
@@ -922,8 +947,8 @@ TextureBinding BindTextureLocked(u32 texture_va, const TextureFetch &device_fetc
     if (!Create(*slot, fetch, false, plume::RenderFormat::UNKNOWN, false, scale)) {
       static uint32_t logged = 0;
       if (logged++ < 16) {
-        RGPU_WARN("Texture {:08X}: format {} {}x{}x{} not supported", texture_va,
-                  u32(fetch.Format()), slot->width, slot->height, slot->depth);
+        RGPU_WARN("Texture {:08X}: format {} {}x{}x{} not supported, frame {}", texture_va,
+                  u32(fetch.Format()), slot->width, slot->height, slot->depth, g_frame);
       }
       Retire(*slot);
       return binding;  // keep the entry so it is not retried every draw

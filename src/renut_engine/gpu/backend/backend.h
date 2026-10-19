@@ -68,6 +68,13 @@ GpuMemoryUsage QueryGpuMemory(plume::RenderDevice *device);
 // the constant is bound (only those that read it have it as dynamic state).
 bool SetBlendConstant(plume::RenderCommandList *cmd, const float rgba[4]);
 
+// Sets the stencil reference for the rest of the command list (D3D12). plume's
+// D3D12 pipelines never take RenderGraphicsPipelineDesc::stencilReference: they
+// all set 0 before each draw (checkStencilRef), which, being the cached value,
+// it then never sends; the reference set here stays. Vulkan pipelines have the
+// reference built in: nothing to do there.
+void SetStencilReference(plume::RenderCommandList *cmd, uint32_t reference);
+
 // A host shader compiled at build time for both backends (see gpu.cmake).
 struct HostShaderBlob {
   const uint8_t *spirv = nullptr;

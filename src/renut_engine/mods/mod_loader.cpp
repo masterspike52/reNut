@@ -15,6 +15,7 @@
 
 #include "renut_engine/app/app_paths.h"
 #include "renut_engine/app/renut_logging.h"
+#include "renut_engine/mods/custom_parts.h"
 #include "renut_engine/mods/mod_device.h"
 #include "renut_engine/mods/nbpatch.h"
 #include "renut_engine/mods/sha256.h"
@@ -47,6 +48,32 @@ bool IsSha256(const std::string &s) {
     return s.size() == 64 && std::all_of(s.begin(), s.end(), [](char c) {
         return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F');
     });
+}
+
+// A bundle file's id: "Bundle/4f/685374" -> 0x4F685374 (the game opens
+// bundles as GAME:bundle\<type>\<id>); 0 for any other file.
+uint32_t BundleId(const std::string &path) {
+    const std::string key = PathKey(path);
+    uint32_t type = 0;
+    if (key.starts_with("bundle/4f/"))
+        type = 0x4F;
+    else if (key.starts_with("bundle/50/"))
+        type = 0x50;
+    else
+        return 0;
+    const std::string_view rest = std::string_view(key).substr(10);
+    if (rest.size() != 6)
+        return 0;
+    uint32_t id = 0;
+    for (char c : rest) {
+        if (c >= '0' && c <= '9')
+            id = id << 4 | uint32_t(c - '0');
+        else if (c >= 'a' && c <= 'f')
+            id = id << 4 | uint32_t(c - 'a' + 10);
+        else
+            return 0;
+    }
+    return type << 24 | id;
 }
 
 // A path inside the game folder: relative, no "." or ".." parts.
@@ -255,6 +282,11 @@ void LoadMod(const fs::path &package, LoadState &state) {
             return;
         }
     }
+    auto parts = ReadCustomParts(zip, &error);
+    if (!parts) {
+        RNUT_ERROR("mods: {} skipped: {}", label, error);
+        return;
+    }
 
     std::vector<std::pair<std::string, ModGameDevice::Redirect>> serve;
     int already = 0;
@@ -284,8 +316,20 @@ void LoadMod(const fs::path &package, LoadState &state) {
     state.loaded_conflicts.push_back({id, m.conflicts});
     ++state.mods;
 
-    RNUT_INFO("mods: loaded {}{}: {} file(s){}", label, m.author.empty() ? "" : " by " + m.author, serve.size(),
-              already ? " (" + std::to_string(already) + " already in the game folder)" : "");
+    RNUT_INFO("mods: loaded {}{}: {} file(s){}{}", label, m.author.empty() ? "" : " by " + m.author, serve.size(),
+              already ? " (" + std::to_string(already) + " already in the game folder)" : "",
+              parts->empty() ? "" : ", " + std::to_string(parts->size()) + " part(s)");
+    if (!parts->empty()) {
+        // Its own bundles (models, collision, textures of its parts) load with
+        // the common bundle.
+        for (const PatchFile &f : m.files)
+            if (f.kind == "new")
+                if (const uint32_t bundle = BundleId(f.path))
+                    AddModBundle({bundle, m.name});
+    }
+    for (CustomPart &part : *parts)
+        part.mod = m.name;
+    AddCustomParts(std::move(*parts));
     if (!m.exe_mods.empty()) {
         std::string names;
         for (const PatchExeMod &e : m.exe_mods)
@@ -313,8 +357,12 @@ void PruneCache(const LoadState &state) {
 } // namespace
 
 void LoadMods(rex::Runtime *runtime) {
+    fs::path folder = rex::to_path(REXCVAR_GET(renut_mods_folder));
+    if (folder.is_relative())
+        folder = renut::paths::WritableFolder() / folder;
     if (!REXCVAR_GET(renut_mods)) {
         RNUT_INFO("mods: disabled (renut_mods)");
+        RememberCustomParts(folder);
         return;
     }
     auto *vfs = runtime ? runtime->file_system() : nullptr;
@@ -324,9 +372,6 @@ void LoadMods(rex::Runtime *runtime) {
     std::error_code ec;
     LoadState state;
     state.game_root = fs::absolute(runtime->game_data_root(), ec);
-    fs::path folder = rex::to_path(REXCVAR_GET(renut_mods_folder));
-    if (folder.is_relative())
-        folder = renut::paths::WritableFolder() / folder;
     fs::create_directories(folder, ec);
     state.cache_dir = folder / ".cache";
 
@@ -341,6 +386,7 @@ void LoadMods(rex::Runtime *runtime) {
     for (const fs::path &package : packages)
         LoadMod(package, state);
     PruneCache(state);
+    RememberCustomParts(folder);
 
     if (state.redirects.empty()) {
         if (packages.empty())

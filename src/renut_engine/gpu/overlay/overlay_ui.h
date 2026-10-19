@@ -33,6 +33,11 @@ public:
 void AddDialog(Dialog *dialog);
 void RemoveDialog(Dialog *dialog);
 
+// Any thread: the last overlay frame showed a window that takes input (a
+// settings or online window, not the FPS overlay), so the mouse should be a
+// free cursor.
+bool WantsCursor();
+
 // Runs a function on the SDK's UI thread, later (WindowedAppContext::
 // CallInUIThreadDeferred).
 using UIThreadRunner = std::function<void(std::function<void()>)>;
