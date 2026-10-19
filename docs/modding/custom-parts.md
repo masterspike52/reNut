@@ -10,7 +10,7 @@ You can make three kinds of part:
 |---|---|---|
 | **Variant** | A shipped part with your name and changed values (a stronger engine, a bigger fuel tank). | A part file. |
 | **New kind of part** | A part with its own behaviour, written in Lua (the Teleporter example below). | A part file and a script. |
-| **Custom model** | Any of the above with its own model, collision and attach points. | NB Studio's `renut-models`. |
+| **Custom model** | Any of the above with its own model, collision and attach points. | An OBJ and a `models.json`. |
 
 Contents:
 
@@ -30,36 +30,60 @@ Contents:
 
 ## What you need
 
-- **reNut.**
-- **NB Studio** with a workspace made from your game (File > New Workspace from Game Directory). The workspace is where
-  your mod is built.
-- **NB.Cli** (it comes with NB Studio), for the `renut-models` and `patch-build` commands.
+- **reNut**, and your game folder: the one with `default.xex` and `Bundle/`. The tool reads the shipped parts and models
+  from it.
+- **renut-modtool**, the tool that turns a mod folder into a `.nbpatch`. It's in reNut's source at
+  `tools/renut_modtool` and needs the [.NET 9 SDK](https://dotnet.microsoft.com/download). It runs on Windows and Linux.
+  Build it once with:
+
+  ```
+  dotnet publish tools/renut_modtool -c Release -o renut-modtool
+  ```
+
+  This gives you `renut-modtool/renut-modtool.exe` (`renut-modtool/renut-modtool` on Linux).
 - A text editor for the JSON and Lua files.
 - For custom models: a 3D program that exports **OBJ** (Blender works).
 
 ## How a part mod is put together
 
-Everything for reNut parts lives in your workspace's `renut/parts` folder:
+A mod is a folder:
 
 ```
-MyWorkspace/
-  workspace.json
-  game/                      <- the workspace's copy of the game (NB Studio manages it)
-  renut/
-    parts/
-      turbo_engine.json      <- one part per .json file
-      teleporter.json
-      teleporter.lua         <- scripts, next to the parts that use them
+mymod/
+  mod.json                   <- the mod's name, id, version and author
+  parts/
+    turbo_engine.json        <- one part per .json file
+    teleporter.json
+    teleporter.lua           <- scripts, next to the parts that use them
+  models.json                <- optional: your models
+  teleporter.obj             <- the files models.json names
 ```
 
-When you create the patch, NB Studio packs every file in `renut/parts` into the `.nbpatch` as `parts/<file>`. Bundles
-made with `renut-models` are packed too, as new game files. reNut reads the whole package when the game starts.
+`mod.json`:
 
-File paths inside part files (`"script"`, `"objparams"`) are package paths, so they always start with `parts/`.
+```json
+{ "id": "mymod", "name": "My Mod", "version": "1", "author": "You", "description": "Two new parts." }
+```
+
+`id` is the mod's id: keep it the same between versions, so a new version replaces the old one. Without it, the id is
+made from `name`.
+
+Build the mod with:
+
+```
+renut-modtool build mymod <game folder>
+```
+
+The tool checks every part file and builds your models. It reports problems with the file name, such as a typo in a key,
+a base part that doesn't exist, or a missing script. If everything is fine, it writes `mymod.nbpatch` (choose another
+file with `-o <file>`). Everything in `parts/` goes into the patch as `parts/<file>`. Bundles built from `models.json` go
+in as new game files.
+
+File paths inside part files (`"script"`, `"objparams"`) start with `parts/`.
 
 ## Your first part: a variant
 
-Make `renut/parts/turbo_engine.json`:
+Make `mymod/parts/turbo_engine.json`:
 
 ```json
 {
@@ -74,8 +98,8 @@ Make `renut/parts/turbo_engine.json`:
 }
 ```
 
-Then create the patch ([Packaging and installing](#packaging-and-installing)), copy it to reNut's `mods` folder and start
-the game. In the garage, Turbo Engine sits next to the large engine sizes, and the player has 4 of them.
+Then build the mod ([Packaging and installing](#packaging-and-installing)), copy the `.nbpatch` to reNut's `mods` folder
+and start the game. In the garage, Turbo Engine sits next to the large engine sizes, and the player has 4 of them.
 
 The part starts as a copy of `base` (the shipped large power engine). It takes your name, and the values in `fields` are
 written over the copy. It uses the base's model and icon unless you give it your own model.
@@ -92,13 +116,13 @@ written over the copy. It uses the base's model and icon unless you give it your
 | `script` | no | A Lua script (`"parts/x.lua"`). This makes the part a new kind of part. |
 | `params` | no | Settings for the script (any JSON object). The script reads them as `params`. |
 | `model` | no | The part's model, see [Custom models](#custom-models). This can also be a shipped part's model, e.g. `"gadgets_spring"`. |
-| `attach` | no | The part's footprint and attach points (a shipped part's name, or one from `renut-models`). |
+| `attach` | no | The part's footprint and attach points (a shipped part's name, or one from your `models.json`). |
 | `objparams` | no* | A whole record file (`"parts/x.bin"`) to use instead of `base`. Advanced: a part made this way has no base to fall back to if the mod is removed. |
 
 \* A part needs `base` or `objparams`.
 
-**Finding base names.** In NB Studio's asset list, every part record is called
-`aid_objparams_banjox_vehicleblock_<name>`; `<name>` is what `base` takes.
+**Finding base names.** Every part record in the game is called `aid_objparams_banjox_vehicleblock_<name>`, and
+`<name>` is what `base` takes. NB Studio's asset list shows them all. If a name is wrong, `renut-modtool build` tells you.
 
 **Fields.** Each entry is `"<offset>": { "<type>": <value> }`. The offset is a byte offset into the part's record, and
 values are written big-endian, as the game stores them. The types are:
@@ -107,8 +131,8 @@ values are written big-endian, as the game stores them. The types are:
 - `u32`, `i32`, `u16`, `u8`: whole numbers
 - `str`: text, written with its terminating zero
 
-What an offset means depends on the part's class. Compare the records of shipped parts in NB Studio to find the value you
-want. Offsets that are the same for every part:
+What an offset means depends on the part's class. To find the value you want, compare the records of shipped parts,
+for example in NB Studio. Offsets that are the same for every part:
 
 | Offset | What | Notes |
 |---|---|---|
@@ -126,7 +150,7 @@ button action is left out: a scripted horn doesn't honk.
 
 Pick as `base` a shipped part whose shape and garage category fit. `gadgets_horn` makes a good "button gadget".
 
-`renut/parts/teleporter.json`:
+`mymod/parts/teleporter.json`:
 
 ```json
 {
@@ -139,7 +163,7 @@ Pick as `base` a shipped part whose shape and garage category fit. `gadgets_horn
 }
 ```
 
-`renut/parts/teleporter.lua`:
+`mymod/parts/teleporter.lua`:
 
 ```lua
 -- Teleporter: the button dashes the vehicle forward in a short glide, then it recharges.
@@ -259,8 +283,8 @@ no `io`, `os`, `require` or `load`.
 ## Custom models
 
 A custom model starts as a copy of a shipped part model (the **template**). You give it your own geometry from an OBJ,
-and it uses the template's materials: metal, rivets, paint and so on. NB Studio's `renut-models` builds the models into
-bundle files that belong to your mod. Your mod never changes the game's own bundles, so it never clashes with other mods.
+and it uses the template's materials: metal, rivets, paint and so on. `renut-modtool` builds the models into bundle files
+that belong to your mod. Your mod never changes the game's own bundles, so it never clashes with other mods.
 
 ### 1. Model it
 
@@ -273,7 +297,7 @@ bundle files that belong to your mod. Your mod never changes the game's own bund
 
 ### 2. Write a models file
 
-Next to your OBJ, write `models.json`:
+In your mod folder, write `models.json`:
 
 ```json
 {
@@ -296,10 +320,10 @@ Next to your OBJ, write `models.json`:
 
 | Key | Meaning |
 |---|---|
-| `bundle` | Your mod's bundle name (`a-z`, `0-9`, `_`), unique to your mod. Put all your models in one bundle. |
+| `bundle` | Your mod's bundle name (`a-z`, `0-9`, `_`), unique to your mod. If you leave it out, it's your mod's id. |
 | `models[].id` | The model's name; part files use it as `"model"`. |
 | `models[].template` | The shipped part model to start from, e.g. `gadgets_horn`. |
-| `models[].obj` | Your OBJ (path relative to `models.json`). Leave it out to keep the template's shape and only recolour it. |
+| `models[].obj` | Your OBJ (path relative to the mod folder; `.fbx` works too). Leave it out to keep the template's shape and only recolour it. |
 | `models[].materials` | Each OBJ material mapped to one of the template's colour textures. |
 | `models[].tint` | Recolours the surfaces using a texture: `"r,g,b"` (0–1 each). |
 | `models[].preRotate` | Turns the OBJ before import: `"x:90"`, or several such as `"x:90;y:180"`. |
@@ -310,8 +334,13 @@ Next to your OBJ, write `models.json`:
 | `attach[].id` | Its name; part files use it as `"attach"`. |
 | `attach[].attachable` | Which faces other parts attach to: `all`, `none`, `bottom`, `top`, `sides`, `bottom+sides`, or face centres `"x,y,z;x,y,z"`. Left out, it keeps the template's. |
 
-**Which material names?** Write any wrong name, such as `"body": "x"`, and run the command: the error lists the
-template's colour textures. Copy one of those.
+**Which material names?** Ask the tool for a template's colour textures and copy one of those:
+
+```
+renut-modtool materials <game folder> gadgets_horn
+```
+
+A wrong name in `materials` also prints the list.
 
 **New textures.** Add the PNG under `textures` and point the template's texture at it with `retarget`:
 
@@ -321,18 +350,17 @@ template's colour textures. Copy one of those.
 "textures":  { "aid_texture_banjox_mymod_stripes": "stripes.png" }
 ```
 
-PNG sides must be powers of two from 4 to 4096 (64×64, 256×128...). New textures go into a second bundle of your mod.
-They are built by the tool but haven't been tested in game yet; plain template materials with `tint` are tested.
+Images can be PNG or TGA, with sides that are powers of two from 4 to 4096 (64×64, 256×128...). New textures go into a
+second bundle of your mod. They are built by the tool but haven't been tested in game yet; plain template materials with
+`tint` are tested.
 
 ### 3. Build it
 
-```
-NB.Cli renut-models <workspace> models.json
-```
+`renut-modtool build` builds the models with the rest of the mod and prints each asset it made. They go into the patch as
+two new game files:
 
-It prints each asset it made. The models go into your workspace's game folder as two new files: `Bundle/50/<id>` holds
-models, collision and footprints, and `Bundle/4f/<id>` holds new textures, made only if you have any. Run the command
-again whenever you change the OBJ or the models file; it rebuilds both.
+- `Bundle/50/<id>` holds the models, collision and footprints.
+- `Bundle/4f/<id>` holds new textures. It's only made if you have any.
 
 ### 4. Use it
 
@@ -348,13 +376,11 @@ from the patch), the part keeps its base's model, and the log says why.
 
 ## Packaging and installing
 
-1. Put your part files and scripts in `<workspace>/renut/parts`.
-2. If you have models, run `renut-models`.
-3. Create the patch in either of these ways:
-   - NB Studio: **Build > Create Distributable Patch (.nbpatch)**.
-   - Command line: `NB.Cli patch-build <workspace> mymod.nbpatch --name "My Mod" --author "You"`.
-4. Copy the `.nbpatch` into reNut's `mods` folder, next to `renut.exe`. It can be changed with the `renut_mods_folder`
+1. Build the mod: `renut-modtool build mymod <game folder>`. This writes `mymod.nbpatch`.
+2. Copy the `.nbpatch` into reNut's `mods` folder, next to `renut.exe`. It can be changed with the `renut_mods_folder`
    setting. Mods load in file-name order when the game starts.
+3. Share the `.nbpatch`. Players only need reNut. The patch works with any copy of the game, since it adds files and
+   changes none.
 
 To check a patch, open it as a zip. It should hold `patch.json`, your `parts/...` files and, with models, `d/0000.bin`
 entries listed in `patch.json` as `Bundle/50/...` (and `Bundle/4f/...`) with kind `new`.

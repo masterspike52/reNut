@@ -1,0 +1,6 @@
+C:\Users\ninja\AppData\Local\Temp\claude\d--reNut\dab5e584-7ba5-46cd-aac9-7232d4a11d65\scratchpad\modtool_pub\renut-modtool.exe
+C:\Users\ninja\AppData\Local\Temp\claude\d--reNut\dab5e584-7ba5-46cd-aac9-7232d4a11d65\scratchpad\modtool_pub\renut-modtool.dll
+C:\Users\ninja\AppData\Local\Temp\claude\d--reNut\dab5e584-7ba5-46cd-aac9-7232d4a11d65\scratchpad\modtool_pub\renut-modtool.deps.json
+C:\Users\ninja\AppData\Local\Temp\claude\d--reNut\dab5e584-7ba5-46cd-aac9-7232d4a11d65\scratchpad\modtool_pub\renut-modtool.runtimeconfig.json
+C:\Users\ninja\AppData\Local\Temp\claude\d--reNut\dab5e584-7ba5-46cd-aac9-7232d4a11d65\scratchpad\modtool_pub\renut-modtool.pdb
+C:\Users\ninja\AppData\Local\Temp\claude\d--reNut\dab5e584-7ba5-46cd-aac9-7232d4a11d65\scratchpad\modtool_pub\System.IO.Hashing.dll
