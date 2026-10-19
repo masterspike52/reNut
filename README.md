@@ -85,6 +85,8 @@ Mods
 
 * depending on the size of the mod the game could take a while to open (this only happens once) and not all mods work (this will be trial and error)
 
+* we can now add custom parts following <a href="https://github.com/masterspike52/reNut/blob/main/docs/modding/custom-parts.md">custom-parts.md</a>
+
 
 
 What's different
