@@ -31,7 +31,8 @@
  * name. Each part gets a garage item of its own: a variant a size renut_<id>
  * in its base's type (the type's size table served with one more record, its
  * base size's renamed, text key renutpart_<id>); a new kind of part (with a
- * script) a type renut_<id> in its base's category (the category's type table
+ * script), or a variant of a type without sizes (gadgets, wheels: one item per
+ * type), a type renut_<id> in its base's category (the category's type table
  * served with its base type's record renamed, pointing at a size table of its
  * own, banjox_renut_sizes_<id>, holding its one size), listed beside its
  * base's type rather than under it.
@@ -608,8 +609,9 @@ struct GaragePart {
 
 // Once, from the inventory build (the game thread) with class_groupings open:
 // each part's own garage item (see the file comment). A variant gets a size of
-// its own in its base's type; a new kind of part (scripted) a type of its own
-// in its base's category, with a size table holding its one size.
+// its own in its base's type; a new kind of part (scripted), or a variant of a
+// type without sizes, a type of its own in its base's category (with a size
+// table holding its one size when its base type has sizes).
 void PrepareSizes(PPCContext &ctx, uint8_t *base) {
   const uint32_t groupings = Load32(base, kBlockClassGroupings);
   if (!groupings || !g_scratch_aid_va || g_sizes_prepared.exchange(true))
@@ -652,11 +654,13 @@ void PrepareSizes(PPCContext &ctx, uint8_t *base) {
                 gp.part->id, category, type);
       continue;
     }
-    if (!gp.part->script.empty())
+    // A new kind of part, or a variant of a type without sizes (gadgets,
+    // wheels: one item per type, which its base already has), gets a type of
+    // its own; a variant of a sized type, a size of its own.
+    if (!gp.part->script.empty() || !sizes_aid)
       add(by_type_table, types_aid, {&gp, record, sizes_aid});
-    else if (sizes_aid)
+    else
       add(by_size_table, sizes_aid, {&gp, record, sizes_aid});
-    // (A variant of a type without sizes is listed as it is.)
   }
 
   for (auto &[sizes_aid, parts] : by_size_table) {

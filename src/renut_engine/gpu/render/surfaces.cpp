@@ -60,15 +60,17 @@ struct CachedFramebuffer {
 // holograms test against it), and each hologram renders through surfaces of
 // its own at the same EDRAM bases. So host targets belong to the EDRAM view,
 // shared by every surface object over it, as long as they also agree on the
-// host format and render scale: graphics_options renders some surfaces at
-// another scale (the post-processing buffers at 1x), and a view used by
-// surfaces of both kinds would otherwise be rebuilt at every switch.
+// host format, render scale and host sample count: graphics_options renders
+// some surfaces at another scale (the post-processing buffers at 1x), and a
+// view used by surfaces of both kinds would otherwise be rebuilt at every
+// switch; a new renut_msaa gives new targets from the next frame.
 uint64_t TargetKey(const d3d::SurfaceDesc &desc, bool depth, plume::RenderFormat format,
-                   RenderScale scale) {
+                   RenderScale scale, plume::RenderSampleCounts samples) {
   const u32 info = desc.SurfaceInfo;
   return uint64_t(u32(desc.ColorInfo) & 0xFFF) | uint64_t(info & 0x3FFF) << 12 |
          uint64_t((info >> 16) & 3) << 26 | uint64_t(depth) << 28 |
-         uint64_t(scale.code & 7) << 29 | uint64_t(u32(format)) << 32;
+         uint64_t(scale.code & 7) << 29 | uint64_t(u32(format) & 0xFFFFFF) << 32 |
+         uint64_t(samples & 0x1F) << 56;
 }
 
 std::unordered_map<uint64_t, std::unique_ptr<HostSurface>> g_targets;
@@ -109,17 +111,6 @@ void RetireTarget(HostSurface &surface) {
   Video::RetireLocked(std::move(surface.texture));
 }
 
-plume::RenderSampleCounts SampleCount(u32 info_word) {
-  switch ((info_word >> 16) & 3) {
-  case 1:
-    return plume::RenderSampleCount::COUNT_2;
-  case 2:
-    return plume::RenderSampleCount::COUNT_4;
-  default:
-    return plume::RenderSampleCount::COUNT_1;
-  }
-}
-
 // At least 'min_width' x 'min_height' (see SetTilingExtentLocked), at 'scale'.
 bool BuildTarget(HostSurface &surface, const d3d::SurfaceDesc &desc, uint32_t min_width,
                  uint32_t min_height, RenderScale scale) {
@@ -133,12 +124,12 @@ bool BuildTarget(HostSurface &surface, const d3d::SurfaceDesc &desc, uint32_t mi
   const uint32_t host_width = surface.scale.Size(surface.width);
   const uint32_t host_height = surface.scale.Size(surface.height);
   surface.depth = d3d::IsDepthFormat(surface.format_word);
-  surface.samples = SampleCount(surface.info_word);
   if (surface.depth) {
     surface.format = DepthTargetFormat();
   } else {
     surface.format = SurfaceColorFormat(desc);
   }
+  surface.samples = SurfaceSampleCount(desc, surface.format);
 
   plume::RenderDevice *device = Video::Device();
   const plume::RenderMultisampling multisampling(surface.samples);
@@ -254,7 +245,8 @@ HostSurface *GetHostSurfaceLocked(u32 surface_va) {
   const plume::RenderFormat format = depth ? DepthTargetFormat() : SurfaceColorFormat(*desc);
   // The render resolution, or the finer one graphics_options gives it.
   const RenderScale scale = SurfaceRenderScale(*desc, g_resolution_scale);
-  const uint64_t key = TargetKey(*desc, depth, format, scale);
+  // ... and the sample count renut_msaa gives it.
+  const uint64_t key = TargetKey(*desc, depth, format, scale, SurfaceSampleCount(*desc, format));
   auto [bound, first_use] = g_surface_keys.try_emplace(surface_va, key);
   if (first_use) {
     ++g_target_users[key];

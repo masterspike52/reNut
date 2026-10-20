@@ -27,6 +27,19 @@
  *   min(saturate(distance outside the focus range * c192.x near / c192.y
  *   far), c194.w), c194.w being the most blur (0.8). Reduced halves the
  *   scales and the cap in that draw's constants, Off zeroes them.
+ * - renut_msaa: the sample count of the targets the game multisamples (its
+ *   D3DMULTISAMPLE_TYPE in the surface header, SurfaceInfo bits 16-17; the
+ *   scene and its depth). Game keeps it, Off renders them single-sampled,
+ *   2x/4x/8x give them that many samples. Everything that reads those targets
+ *   follows the host count: draws' pipelines take their first target's, color
+ *   resolves are hardware resolves of any count, and the depth resolve reads
+ *   sample 0 of a multisampled view. A count the GPU can't do for the
+ *   target's format and the depth format steps down to one it can, so a
+ *   draw's color and depth targets always agree.
+ * - renut_anti_aliasing: post-process anti-aliasing of the finished frame,
+ *   in the present pass (present_ps.hlsl) as it scans the game's front
+ *   buffer out to the window: FXAA in the frame's own texels. The overlay is
+ *   drawn after it, so only the game's image (HUD included) is smoothed.
  */
 #pragma once
 
@@ -48,6 +61,14 @@ RenderScale SurfaceRenderScale(const d3d::SurfaceDesc &desc, RenderScale resolut
 
 // The host format of the color target 'desc' describes.
 plume::RenderFormat SurfaceColorFormat(const d3d::SurfaceDesc &desc);
+
+// The host sample count of the target 'desc' describes, whose host format is
+// 'format': the game's, or renut_msaa's for one the game multisamples.
+plume::RenderSampleCounts SurfaceSampleCount(const d3d::SurfaceDesc &desc, plume::RenderFormat format);
+
+// renut_anti_aliasing as last latched, for the present pass (any thread): 0
+// off, 1 FXAA.
+uint32_t PostAntiAliasing();
 
 // The anisotropy linear minification gets at least (1 = the game's own).
 uint32_t MinAnisotropy();

@@ -14,6 +14,7 @@
 #include "renut_engine/gpu/backend/backend.h"
 #include "renut_engine/gpu/backend/gpu_profile.h"
 #include "renut_engine/gpu/render/draw.h"
+#include "renut_engine/gpu/render/graphics_options.h"
 #include "renut_engine/gpu/log.h"
 #include "renut_engine/gpu/overlay/overlay_ui.h"
 #include "renut_engine/gpu/backend/render_thread.h"
@@ -120,6 +121,7 @@ void RecordScanOut(VideoState &s, const PresentImage &image, uint32_t out_w, uin
   push.texture_index = image.descriptor;
   push.sampler_index = kLinearClampSamplerSlot;
   push.param0 = s.output_gamma;
+  push.param1 = float(PostAntiAliasing());  // 1: FXAA (renut_anti_aliasing)
   cmd->setGraphicsPushConstants(0, &push, 0, sizeof(push));
   cmd->drawInstanced(3, 1, 0, 0);
 }

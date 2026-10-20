@@ -24,8 +24,8 @@
 // the model's name); "attach" an aid_avatarhavokdata_banjox_vehicleblock_
 // <attach> asset. Either is a shipped part's (e.g. "gadgets_spring") or one
 // the mod brings in a bundle of its own: every bundle file a mod with parts
-// adds (Bundle/4f/<id> resident, Bundle/50/<id> stream archive; NB Studio's
-// renut-models builds them) is loaded with the game's common bundle
+// adds (Bundle/4f/<id> resident, Bundle/50/<id> stream archive;
+// tools/renut_modtool builds them) is loaded with the game's common bundle
 // (game/mod_bundles.cpp). One that isn't there keeps the base part's.
 //
 // "base" is the part's objparams name, with or without

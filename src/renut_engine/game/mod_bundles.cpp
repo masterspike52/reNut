@@ -13,8 +13,8 @@
  * table 0x82F7BB50 (128 of {u32 id, u32 references}); owner 0 is no level's,
  * so no level change lets them go. Vehicles stream their parts' models and
  * collision by id (Bundle/50) and streamed models find their textures by name
- * among the resident bundles, so a mod's parts can bring their own: NB
- * Studio's renut-models writes a resident bundle (textures) and a stream
+ * among the resident bundles, so a mod's parts can bring their own:
+ * tools/renut_modtool writes a resident bundle (textures) and a stream
  * archive (models, collision, footprints) that the mod adds as new files.
  *
  * Here each mod bundle (mods/custom_parts.h ModBundles) is loaded the same

@@ -74,13 +74,28 @@ private:
         return s;
     }
 
-    // "renut_depth_of_field" as "Depth of field".
+    // "renut_depth_of_field" as "Depth of field"; abbreviations in capitals
+    // ("renut_msaa" as "MSAA").
     static std::string Label(const std::string& name) {
+        static const char* const kUpper[] = {"msaa", "fxaa", "smaa", "ssao", "hud", "fov", "fps", "ui"};
         std::string label = name.rfind("renut_", 0) == 0 ? name.substr(6) : name;
-        std::replace(label.begin(), label.end(), '_', ' ');
-        if (!label.empty())
-            label[0] = char(std::toupper(static_cast<unsigned char>(label[0])));
-        return label;
+        std::string out;
+        size_t start = 0;
+        while (start <= label.size()) {
+            size_t end = label.find('_', start);
+            if (end == std::string::npos)
+                end = label.size();
+            std::string word = label.substr(start, end - start);
+            if (std::find_if(std::begin(kUpper), std::end(kUpper), [&](const char* u) { return word == u; }) !=
+                std::end(kUpper))
+                for (char& c : word)
+                    c = char(std::toupper(static_cast<unsigned char>(c)));
+            out += (out.empty() ? "" : " ") + word;
+            start = end + 1;
+        }
+        if (!out.empty())
+            out[0] = char(std::toupper(static_cast<unsigned char>(out[0])));
+        return out;
     }
 
     void DrawTabs() {
