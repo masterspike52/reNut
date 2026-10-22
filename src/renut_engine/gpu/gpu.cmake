@@ -33,6 +33,19 @@ if(NOT EXISTS "${RENUT_SHADER_DUMP_DIR}")
 endif()
 
 # plume is read-only and vendored; build it as-is.
+# On Linux its Vulkan surface goes through SDL (PLUME_SDL_VULKAN_ENABLED), so
+# Wayland works as well as X11: plume takes its <SDL_vulkan.h> from the
+# SDL2::SDL2 target, which here is reNut's SDL2-to-SDL3 bridge
+# (backend/sdl2_vulkan) over the SDK's SDL3 headers; the surface itself is
+# made in backend/native_window.cpp.
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND NOT TARGET plume)
+    set(PLUME_SDL_VULKAN_ENABLED ON CACHE BOOL "plume's Vulkan surface through SDL (Wayland and X11)" FORCE)
+    if(NOT TARGET SDL2::SDL2)
+        add_library(SDL2::SDL2 INTERFACE IMPORTED)
+        set_target_properties(SDL2::SDL2 PROPERTIES INTERFACE_INCLUDE_DIRECTORIES
+            "${RENUT_GPU_DIR}/backend/sdl2_vulkan;$<TARGET_PROPERTY:SDL3::SDL3-static,INTERFACE_INCLUDE_DIRECTORIES>")
+    endif()
+endif()
 if(NOT TARGET plume)
     add_subdirectory("${CMAKE_SOURCE_DIR}/thirdparty/plume" "${CMAKE_BINARY_DIR}/plume")
 endif()
@@ -78,6 +91,8 @@ endif()
 function(renut_host_shader TARGET STEM PROFILE)
     set(src "${RENUT_GPU_DIR}/shaders/host/${STEM}.hlsl")
     file(GLOB host_includes "${RENUT_GPU_DIR}/shaders/host/*.hlsli")
+    # smaa_common.hlsli includes SMAA's own.
+    list(APPEND host_includes "${CMAKE_SOURCE_DIR}/thirdparty/smaa/SMAA.hlsl")
 
     set(formats spirv)
     if(WIN32)
@@ -197,12 +212,15 @@ function(renut_gpu_setup TARGET)
     target_sources(${TARGET} PRIVATE
         # The host device, the frame and the render thread.
         ${RENUT_GPU_DIR}/backend/backend.cpp
+        ${RENUT_GPU_DIR}/backend/command_recorder.cpp
         ${RENUT_GPU_DIR}/backend/gpu_profile.cpp
         ${RENUT_GPU_DIR}/backend/memory_report.cpp
         ${RENUT_GPU_DIR}/backend/native_window.cpp
         ${RENUT_GPU_DIR}/backend/present.cpp
         ${RENUT_GPU_DIR}/backend/queued.cpp
+        ${RENUT_GPU_DIR}/backend/render_profile.cpp
         ${RENUT_GPU_DIR}/backend/render_thread.cpp
+        ${RENUT_GPU_DIR}/backend/smaa.cpp
         ${RENUT_GPU_DIR}/backend/video.cpp
         # The guest D3D runtime, native, and its hooks.
         ${RENUT_GPU_DIR}/d3d/d3d_native_state.cpp
@@ -225,6 +243,7 @@ function(renut_gpu_setup TARGET)
         ${RENUT_GPU_DIR}/render/draw.cpp
         ${RENUT_GPU_DIR}/render/format.cpp
         ${RENUT_GPU_DIR}/render/graphics_options.cpp
+        ${RENUT_GPU_DIR}/render/parallel.cpp
         ${RENUT_GPU_DIR}/render/pipeline.cpp
         ${RENUT_GPU_DIR}/render/shader_library.cpp
         ${RENUT_GPU_DIR}/render/surfaces.cpp
@@ -244,6 +263,10 @@ function(renut_gpu_setup TARGET)
     renut_host_shader(${TARGET} point_sprite_gs gs_6_0)
     renut_host_shader(${TARGET} stream_convert_cs cs_6_0)
     renut_host_shader(${TARGET} target_readback_cs cs_6_0)
+    # renut_anti_aliasing SMAA (backend/smaa.cpp; thirdparty/smaa).
+    renut_host_shader(${TARGET} smaa_edge_ps ps_6_0)
+    renut_host_shader(${TARGET} smaa_weight_ps ps_6_0)
+    renut_host_shader(${TARGET} smaa_blend_ps ps_6_0)
 
     renut_xenos_shader_cache(${TARGET})
 
@@ -276,9 +299,7 @@ function(renut_gpu_setup TARGET)
 
     if(WIN32)
         target_link_libraries(${TARGET} PRIVATE d3d12 dxgi)
-    elseif(NOT APPLE)
-        # plume's Linux Vulkan surface is Xlib; volk loads libvulkan itself.
-        find_package(X11 REQUIRED)
-        target_link_libraries(${TARGET} PRIVATE X11::X11)
     endif()
+    # Linux: volk loads libvulkan itself, and the Wayland or X11 surface is made
+    # from SDL's handles (backend/native_window.cpp): no X11 or Wayland library.
 endfunction()

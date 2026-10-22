@@ -27,6 +27,9 @@
  *   min(saturate(distance outside the focus range * c192.x near / c192.y
  *   far), c194.w), c194.w being the most blur (0.8). Reduced halves the
  *   scales and the cap in that draw's constants, Off zeroes them.
+ * - renut_bloom: the glow composite (ps_981a6a58f2abfa42) adds the scene's
+ *   four bloom levels at weights c0 = (1, 1.2, 1.6, 2); Reduced halves them in
+ *   that draw's constants, Off zeroes them.
  * - renut_msaa: the sample count of the targets the game multisamples (its
  *   D3DMULTISAMPLE_TYPE in the surface header, SurfaceInfo bits 16-17; the
  *   scene and its depth). Game keeps it, Off renders them single-sampled,
@@ -38,8 +41,9 @@
  *   draw's color and depth targets always agree.
  * - renut_anti_aliasing: post-process anti-aliasing of the finished frame,
  *   in the present pass (present_ps.hlsl) as it scans the game's front
- *   buffer out to the window: FXAA in the frame's own texels. The overlay is
- *   drawn after it, so only the game's image (HUD included) is smoothed.
+ *   buffer out to the window: FXAA in the frame's own texels, or SMAA 1x in
+ *   passes of its own before it (backend/smaa.h). The overlay is drawn after
+ *   it, so only the game's image (HUD included) is smoothed.
  */
 #pragma once
 
@@ -66,8 +70,10 @@ plume::RenderFormat SurfaceColorFormat(const d3d::SurfaceDesc &desc);
 // 'format': the game's, or renut_msaa's for one the game multisamples.
 plume::RenderSampleCounts SurfaceSampleCount(const d3d::SurfaceDesc &desc, plume::RenderFormat format);
 
-// renut_anti_aliasing as last latched, for the present pass (any thread): 0
-// off, 1 FXAA.
+// renut_anti_aliasing as last latched, for the present pass (any thread).
+constexpr uint32_t kPostAntiAliasingOff = 0;
+constexpr uint32_t kPostAntiAliasingFxaa = 1;
+constexpr uint32_t kPostAntiAliasingSmaa = 2;
 uint32_t PostAntiAliasing();
 
 // The anisotropy linear minification gets at least (1 = the game's own).
@@ -76,5 +82,9 @@ uint32_t MinAnisotropy();
 // How strong the depth of field blur is, as a share of the game's (1 = the
 // game's own, 0 = off).
 float DepthOfFieldStrength();
+
+// How strong the bloom (glow) is, as a share of the game's (1 = the game's
+// own, 0 = off).
+float BloomStrength();
 
 } // namespace renut::gpu

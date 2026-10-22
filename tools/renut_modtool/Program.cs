@@ -1,7 +1,7 @@
 // renut-modtool: builds reNut part mods (.nbpatch) from a mod folder. See docs/modding/custom-parts.md.
 //
 //   renut-modtool build <mod folder> <game folder> [-o <file.nbpatch>]
-//   renut-modtool materials <game folder> <template model>
+//   renut-modtool materials <game folder> <template model> [--turning]
 //
 // A mod folder holds mod.json, a parts/ folder (part files, scripts) and optionally models.json with the OBJ and image
 // files it names. The game folder is the one with default.xex and Bundle/.
@@ -18,10 +18,10 @@ try
 {
     if (args.Length >= 3 && args[0] == "build")
         return Build(args[1], args[2], Option("-o"));
-    if (args.Length == 3 && args[0] == "materials")
+    if (args.Length >= 3 && args[0] == "materials")
     {
         var b = new ModBuilder(GameFolder(args[1]));
-        foreach (var m in b.TemplateMaterials(Strip(args[2], ModBuilder.ModelPrefix))) Console.WriteLine(m);
+        foreach (var m in b.TemplateMaterials(Strip(args[2], ModBuilder.ModelPrefix), args.Contains("--turning"))) Console.WriteLine(m);
         return 0;
     }
     Console.WriteLine("""
@@ -29,8 +29,9 @@ try
 
           renut-modtool build <mod folder> <game folder> [-o <file.nbpatch>]
               Checks the mod's part files, builds its models (models.json) and writes the .nbpatch.
-          renut-modtool materials <game folder> <template model>
-              Lists a shipped part model's colour textures, for models.json "materials" (e.g. gadgets_horn).
+          renut-modtool materials <game folder> <template model> [--turning]
+              Lists a shipped part model's colour textures, for models.json "materials" (e.g. gadgets_horn);
+              --turning: only those on a wheel's turning part (for "spins").
 
         See docs/modding/custom-parts.md.
         """);
@@ -122,6 +123,9 @@ static int Build(string modDir, string gameDir, string? outPath)
         if (attach.Length > 0 && spec?.Attach.Any(a => a.Id == attach) != true && !builder.StreamHas(ModBuilder.AttachPrefix + attach))
             Problem($"\"attach\": '{attach}' is neither in models.json nor a part footprint of the game");
     }
+    foreach (var f in Directory.GetFiles(modDir, "*.json"))
+        if (Path.GetFileName(f) is var n && !n.Equals("mod.json", StringComparison.OrdinalIgnoreCase) && !n.Equals("models.json", StringComparison.OrdinalIgnoreCase))
+            problems.Add($"{n}: part files go in parts/; this one is next to mod.json, so it isn't packed");
     if (partCount == 0) problems.Add("parts/: no part files (*.json)");
     if (problems.Count > 0)
     {

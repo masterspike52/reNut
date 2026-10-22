@@ -34,11 +34,31 @@ public sealed class ModelSpec
     public string? Obj { get; set; }
     public string? PreRotate { get; set; }
     public string? CollisionFit { get; set; }
+    /// <summary>The collision's box in model space, overriding <see cref="CollisionFit"/>.</summary>
+    public BoxSpec? CollisionBox { get; set; }
     public Dictionary<string, string> Tint { get; set; } = new();
     public Dictionary<string, string> Materials { get; set; } = new();
     public Dictionary<string, string> Retarget { get; set; } = new();
     public Dictionary<string, string> Textures { get; set; } = new();
     public bool KeepAnimated { get; set; }
+    /// <summary>The model goes on the template's moving pieces (a wheel's turning rim and tyre), so it turns with them; the
+    /// rest of the template draws nothing.</summary>
+    public bool Spins { get; set; }
+    /// <summary>Keeps the template model's bounds (chunk 5) instead of the imported geometry's.</summary>
+    public bool KeepBounds { get; set; }
+}
+
+public sealed class BoxSpec
+{
+    public float[] Min { get; set; } = Array.Empty<float>();
+    public float[] Max { get; set; } = Array.Empty<float>();
+
+    public (Vector3 Min, Vector3 Max) ToBounds(string model)
+    {
+        if (Min.Length != 3 || Max.Length != 3 || Min[0] >= Max[0] || Min[1] >= Max[1] || Min[2] >= Max[2])
+            throw new ArgumentException($"model {model}: collisionBox is {{ \"min\": [x, y, z], \"max\": [x, y, z] }} with min below max");
+        return (new Vector3(Min[0], Min[1], Min[2]), new Vector3(Max[0], Max[1], Max[2]));
+    }
 }
 
 public sealed class AttachSpec
@@ -103,12 +123,17 @@ public sealed class ModBuilder
         return (c, sym);
     }
 
-    /// <summary>The template model's colour textures (what OBJ materials map to).</summary>
-    public List<string> TemplateMaterials(string template)
+    /// <summary>The template model's colour textures (what OBJ materials map to); <paramref name="turning"/>: only those on
+    /// its turning part (a wheel's, for "spins").</summary>
+    public List<string> TemplateMaterials(string template, bool turning = false)
     {
         var (c, sym) = Streamed(ModelPrefix + template);
         var ma = ModelAsset.Parse(c, sym);
-        return ma.Draws.Select(x => ObjExporter.DiffuseTexture(x)).Where(x => x != null).Select(x => ObjExporter.TextureFileStem(x!)).Distinct().ToList();
+        var lodNodes = ma.LodLevels.SelectMany(g => g.SelectMany(l => l.Nodes)).ToHashSet();
+        var turningVbs = ma.Draws.GroupBy(x => x.VbRecord)
+            .Where(g => g.Any(x => !lodNodes.Contains(x.Node) && x.Node > 3) && !g.Any(x => lodNodes.Contains(x.Node))).Select(g => g.Key).ToHashSet();
+        return ma.Draws.Where(x => !turning || turningVbs.Contains(x.VbRecord)).Select(x => ObjExporter.DiffuseTexture(x)).Where(x => x != null)
+            .Select(x => ObjExporter.TextureFileStem(x!)).Distinct().ToList();
     }
 
     /// <summary>Builds the bundles: (game-relative path, bytes) of each new file.</summary>
@@ -154,6 +179,7 @@ public sealed class ModBuilder
                 fit = footprints.TryGetValue(m.Id, out var fp) ? FootprintBounds(fp)
                     : throw new ArgumentException($"model {m.Id}: collisionFit \"footprint\" needs an attach entry with id {m.Id}");
             else if (m.CollisionFit != null && m.CollisionFit != "model") throw new ArgumentException($"model {m.Id}: collisionFit is \"model\" or \"footprint\"");
+            if (m.CollisionBox != null) fit = m.CollisionBox.ToBounds(m.Id);
             Log.Add(Add(ModelPrefix + m.Template, ModelPrefix + m.Id, (sc, sym) => ImportModel(sc, sym, m, meshes)));
             Log.Add(Add(HavokPrefix + m.Template, HavokPrefix + m.Id, (sc, sym) => FitCollision(sc, sym, fit)));
         }
@@ -254,25 +280,47 @@ public sealed class ModBuilder
         if (meshes == null) { Tint(caff, nm, spec); return $"template geometry, {spec.Retarget.Count} texture(s) retargeted"; }
         // OBJ materials -> the (retargeted) colour textures of the draws that held the template texture
         var ma = ModelAsset.Parse(caff, nm);
+        // moving pieces: vertex buffers drawn on rendergraph nodes outside the LOD table (a wheel's turning part)
+        var lodNodes = ma.LodLevels.SelectMany(g => g.SelectMany(l => l.Nodes)).ToHashSet();
+        var animated = ma.Draws.GroupBy(x => x.VbRecord).Where(g => g.Any(x => !lodNodes.Contains(x.Node) && x.Node > 3)).Select(g => g.Key).ToHashSet();
+        // the turning part itself: buffers none of whose draws hang on a LOD table node. A buffer drawn on LOD table nodes
+        // (a wheel's distant-LOD rim) shows with one wheel but not once the game pairs two wheels into an axle.
+        var turning = ma.Draws.GroupBy(x => x.VbRecord).Where(g => animated.Contains(g.Key) && !g.Any(x => lodNodes.Contains(x.Node))).Select(g => g.Key).ToHashSet();
         string Final(string tplStem) => spec.Retarget.TryGetValue(tplStem, out var t) ? ObjExporter.TextureFileStem(t.Replace("aid_texture_banjox_", "")) : tplStem;
-        var stems = ma.Draws.Select(x => ObjExporter.DiffuseTexture(x)).Where(x => x != null).Select(x => ObjExporter.TextureFileStem(x!)).Distinct().ToList();
+        string? Stem(MeshDraw x) => ObjExporter.DiffuseTexture(x) is string t ? ObjExporter.TextureFileStem(t) : null;
+        var stems = ma.Draws.Where(x => !spec.Spins || turning.Contains(x.VbRecord)).Select(Stem).OfType<string>().Distinct().ToList();
+        string Which() => spec.Spins ? "the template's colour textures on its turning part" : "the template's colour textures";
         var named = new List<ImportMesh>();
         foreach (var m in meshes)
         {
             if (!spec.Materials.TryGetValue(m.Name, out var tstem))
-                throw new InvalidDataException($"model {spec.Id}: OBJ material '{m.Name}' isn't in \"materials\" (the template's colour textures: {string.Join(", ", stems)})");
+                throw new InvalidDataException($"model {spec.Id}: OBJ material '{m.Name}' isn't in \"materials\" ({Which()}: {string.Join(", ", stems)})");
             string want = Final(tstem);
             string? hit = stems.FirstOrDefault(s => s.Equals(want, StringComparison.OrdinalIgnoreCase) || s.EndsWith(want, StringComparison.OrdinalIgnoreCase) || want.EndsWith(s, StringComparison.OrdinalIgnoreCase));
-            if (hit == null) throw new InvalidDataException($"model {spec.Id}: material '{m.Name}' -> '{want}' is not a colour texture of the template ({string.Join(", ", stems)})");
+            if (hit == null) throw new InvalidDataException($"model {spec.Id}: material '{m.Name}' -> '{want}' is not one of {Which()} ({string.Join(", ", stems)})");
             named.Add(new ImportMesh { Name = hit, Positions = m.Positions, Normals = m.Normals, UVs = m.UVs, Triangles = m.Triangles });
         }
-        var lodNodes = ma.LodLevels.SelectMany(g => g.SelectMany(l => l.Nodes)).ToHashSet();
-        var animated = ma.Draws.GroupBy(x => x.VbRecord).Where(g => g.Any(x => !lodNodes.Contains(x.Node) && x.Node > 3)).Select(g => g.Key).ToHashSet();
-        var keep = spec.KeepAnimated ? animated : null;
-        var r = ModelImporter.Replace(caff, nm, named, false, keep, spec.KeepAnimated ? null : animated);
+        HashSet<int>? keep = null, exclude;
+        if (spec.Spins)
+        {
+            if (turning.Count == 0) throw new InvalidDataException($"model {spec.Id}: \"spins\": the template {spec.Template} has no turning part (use a wheel)");
+            exclude = ma.Draws.Select(x => x.VbRecord).Where(vb => !turning.Contains(vb)).ToHashSet();
+        }
+        else
+        {
+            keep = spec.KeepAnimated ? animated : null;
+            exclude = spec.KeepAnimated ? null : animated;
+        }
+        const int BoundsSize = 88;   // chunk 5: 22 floats
+        byte[]? bounds = null;
+        if (spec.KeepBounds && ma.Chunks.TryGetValue(5, out int b5))
+            bounds = new AssetView(caff, nm).Data(".data").AsSpan(b5, BoundsSize).ToArray();
+        var r = ModelImporter.Replace(caff, nm, named, false, keep, exclude);
+        if (bounds != null && ModelAsset.Parse(caff, nm, geometry: false).Chunks.TryGetValue(5, out int nb5))
+            bounds.CopyTo(new AssetView(caff, nm).Data(".data"), nb5);
         ModelEdit.SetLodDistances(caff, nm, 1e6f, 1f, keepLod0: true);
         Tint(caff, nm, spec);
-        return $"{r.Vertices} vertices, {r.Triangles} triangles";
+        return $"{r.Vertices} vertices, {r.Triangles} triangles{(spec.Spins ? ", on the moving pieces" : "")}";
     }
 
     static void Tint(CaffFile caff, int nm, ModelSpec spec)

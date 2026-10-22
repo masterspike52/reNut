@@ -115,15 +115,15 @@ void MaybeReportMemory() {
             Mb(process.private_bytes), Mb(process.resident_bytes), gpu.valid ? "used/budget" : "n/a",
             Mb(gpu.local_used), Mb(gpu.local_budget), Mb(gpu.shared_used), Mb(gpu.shared_budget));
   RGPU_INFO("Memory: GPU: {} render targets {:.0f} MB (x{:.3g} scale), {} textures {:.0f} MB (of "
-            "which {} resolve targets {:.0f} MB), memexport {:.0f} MB",
+            "which {} resolve targets {:.0f} MB), memexport {:.0f} MB, stream cache {:.0f} MB in "
+            "{:.0f} MB of pools ({} streams, {} index ranges)",
             targets, Mb(target_bytes), ResolutionScale().Factor(), textures.textures, Mb(textures.bytes),
-            textures.resolve_targets, Mb(textures.resolve_bytes), Mb(memexport));
-  RGPU_INFO("Memory: host: upload rings {:.0f} MB, stream cache {:.0f} MB in a {:.0f} MB pool "
-            "({} streams, {} index ranges), memexport readback {:.0f} MB, command buffers "
+            textures.resolve_targets, Mb(textures.resolve_bytes), Mb(memexport),
+            Mb(streams.cached_bytes), Mb(streams.pool_bytes), streams.streams, streams.index_ranges);
+  RGPU_INFO("Memory: host: upload rings {:.0f} MB, memexport readback {:.0f} MB, command buffers "
             "{:.0f} MB in {} ({} live) + {:.0f} MB in {} spare, shader cache {:.0f} MB, "
             "pipelines {} built + {} prebuilt unused (of {} listed, {} waiting for their shaders)",
-            Mb(uploads), Mb(streams.cached_bytes), Mb(streams.pool_bytes), streams.streams,
-            streams.index_ranges, Mb(readback), Mb(commands.recorded_bytes), commands.recorded,
+            Mb(uploads), Mb(readback), Mb(commands.recorded_bytes), commands.recorded,
             commands.live, Mb(commands.spare_bytes), commands.spare, Mb(ShaderCacheHostBytes()),
             pipelines.built, pipelines.prebuilt_unused, pipelines.listed, pipelines.waiting);
 }

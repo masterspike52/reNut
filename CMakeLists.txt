@@ -19,10 +19,14 @@ set(RENUT_SOURCES
 	src/renut_engine/game/frameHooks.cpp
 	src/renut_engine/perf/frame_stats.cpp
 	src/renut_engine/game/frontend_debug_menu.cpp
+	src/renut_engine/game/graphics_menu.cpp
+	src/renut_engine/game/coop_menu.cpp
+	src/renut_engine/game/env_map_pool.cpp
 	src/renut_engine/game/level_pools.cpp
 	src/renut_engine/game/controllers.cpp
 	src/renut_engine/game/thread_slots.cpp
 	src/renut_engine/game/lod.cpp
+	src/renut_engine/game/field_of_view.cpp
 	src/renut_engine/game/mouse_camera.cpp
 	src/renut_engine/game/keyboard_input.cpp
 	src/renut_engine/game/custom_parts.cpp
@@ -30,7 +34,9 @@ set(RENUT_SOURCES
 	src/renut_engine/game/part_scripts.cpp
 	src/renut_engine/game/effect_log.cpp
 	src/renut_engine/game/mod_bundles.cpp
+	src/renut_engine/game/part_attach_log.cpp
 	src/renut_engine/online/identity.cpp
+	src/renut_engine/online/coop.cpp
 	src/renut_engine/online/trace.cpp
 	src/renut_engine/online/eos.cpp
 	src/renut_engine/online/friends.cpp

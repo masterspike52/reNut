@@ -24,6 +24,8 @@
 
 namespace renut::gpu {
 
+class CommandRecorder;
+
 constexpr uint32_t kFramesInFlight = 2;
 constexpr uint32_t kTextureDescriptorCount = 8192;
 constexpr uint32_t kSamplerDescriptorCount = 256;
@@ -104,8 +106,15 @@ struct VideoState {
   std::unique_ptr<plume::RenderCommandQueue> queue;
   std::string backend_description;
 
-  // Frame ring. command_list aliases command_lists[frame] while one is open.
+  // Frame ring. command_list aliases recorders[frame] while one is open, or
+  // command_lists[frame] without them (renut_threaded_recording off).
   std::unique_ptr<plume::RenderCommandList> command_lists[kFramesInFlight];
+  CommandRecorder *recorders[kFramesInFlight] = {};  // never destroyed, like the device
+  // With recorders, the frame's submission and present run on the recording
+  // thread (CommandRecorder::RecordCall): their tokens, waited before the
+  // slot's fence and before the next acquire. 0: none outstanding.
+  uint64_t submit_calls[kFramesInFlight] = {};
+  uint64_t present_call = 0;
   std::unique_ptr<plume::RenderCommandFence> fences[kFramesInFlight];
   std::unique_ptr<plume::RenderCommandSemaphore> acquire_semaphores[kFramesInFlight];
   bool submitted[kFramesInFlight] = {};

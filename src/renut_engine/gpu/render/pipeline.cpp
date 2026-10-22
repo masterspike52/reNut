@@ -60,6 +60,29 @@ std::unordered_map<uint64_t, std::vector<CachedPipeline>> g_pipelines;
 PipelineKey g_last_key{};
 plume::RenderPipeline *g_last_pipeline = nullptr;
 
+// Built pipelines by key hash, with their keys, in front of g_pipelines: the
+// map's bucket, node and vector were three cache misses a draw before the key
+// compare (pipelines are never erased). Two ways to a set, the newer first.
+struct PipelineMemo {
+  uint64_t hash = 0;
+  plume::RenderPipeline *pipeline = nullptr;
+  PipelineKey key{};
+};
+constexpr uint32_t kPipelineMemoBits = 10;
+PipelineMemo g_pipeline_memo[2u << kPipelineMemoBits];
+
+PipelineMemo *PipelineMemoSet(uint64_t hash) {
+  return &g_pipeline_memo[uint32_t((hash * 0x9E3779B97F4A7C15ull) >> (64 - kPipelineMemoBits)) * 2];
+}
+
+void RememberPipeline(uint64_t hash, const PipelineKey &key, plume::RenderPipeline *pipeline) {
+  PipelineMemo *set = PipelineMemoSet(hash);
+  set[1] = set[0];
+  set[0].hash = hash;
+  set[0].pipeline = pipeline;
+  set[0].key = key;
+}
+
 // Every draw looks its pipeline up: a byte-at-a-time hash of the whole key
 // cost as much as the rest of the lookup.
 uint64_t HashKey(const PipelineKey &key) {
@@ -615,12 +638,22 @@ plume::RenderPipeline *GetPipelineLocked(const PipelineKey &key, const PipelineI
   if (g_last_pipeline && std::memcmp(&g_last_key, &key, sizeof(key)) == 0)
     return g_last_pipeline;
   const uint64_t hash = HashKey(key);
+  PipelineMemo *set = PipelineMemoSet(hash);
+  for (uint32_t way = 0; way < 2; ++way) {
+    const PipelineMemo &m = set[way];
+    if (m.pipeline && m.hash == hash && std::memcmp(&m.key, &key, sizeof(key)) == 0) {
+      g_last_key = key;
+      g_last_pipeline = m.pipeline;
+      return m.pipeline;
+    }
+  }
   auto &bucket = g_pipelines[hash];
   for (auto &cached : bucket) {
     if (std::memcmp(&cached.key, &key, sizeof(key)) == 0) {
       if (cached.pipeline) {
         g_last_key = key;
         g_last_pipeline = cached.pipeline.get();
+        RememberPipeline(hash, key, g_last_pipeline);
       }
       return cached.pipeline.get();
     }
@@ -652,6 +685,7 @@ plume::RenderPipeline *GetPipelineLocked(const PipelineKey &key, const PipelineI
   if (result) {
     g_last_key = key;
     g_last_pipeline = result;
+    RememberPipeline(hash, key, result);
   }
   return result;
 }

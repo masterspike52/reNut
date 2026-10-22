@@ -12,8 +12,12 @@
  * Friend messages (EOS channel 1): u8 type, u8 version, u8 gamertag length,
  * the gamertag, then for presence: u8 session length and the session (u8
  * id[8], u8 key[16], u8 public slots, u8 filled slots, u8 joinable, u8 QoS
- * data size, the QoS data; none while not hosting). Requests, answers and
- * removals go reliably; presence every couple of seconds, unreliably.
+ * data size, the QoS data, then u8 co-op and u32 co-op town scene, which
+ * older builds leave unread; none while not hosting). Requests, answers and
+ * removals go reliably; presence every couple of seconds, unreliably, and at
+ * once to a friend whose connection just opened or who was just heard from
+ * for the first time (so coming online shows straight away on both sides). A
+ * friend whose connection closes is offline at once.
  *
  * online_friends.txt: a line per friend ("friend", online ID, gamertag) and
  * per request sent and not answered yet ("sent", online ID), tab-separated.
@@ -87,6 +91,8 @@ std::vector<Request> g_sent;
 std::vector<Request> g_requests;
 std::unordered_map<std::string, Live> g_live;
 Session g_hosted;
+bool g_coop_hosting = false;
+uint32_t g_coop_town = 0;
 // XNetQosListen's data, by session: the hosted session's is told to friends.
 struct QosEntry {
   SessionId id{};
@@ -161,6 +167,9 @@ std::vector<uint8_t> EncodeSession(const Session &s) {
   blob.push_back(s.joinable ? 1 : 0);
   blob.push_back(s.qos_size);
   blob.insert(blob.end(), s.qos_data.begin(), s.qos_data.begin() + s.qos_size);
+  blob.push_back(s.coop ? 1 : 0);
+  for (int shift = 24; shift >= 0; shift -= 8)
+    blob.push_back(uint8_t(s.coop_town >> shift));
   return blob;
 }
 
@@ -177,6 +186,12 @@ std::optional<Session> DecodeSession(const uint8_t *data, size_t size, const std
   if (size < size_t(28) + s.qos_size)
     return std::nullopt;
   std::memcpy(s.qos_data.data(), data + 28, s.qos_size);
+  const size_t coop_at = size_t(28) + s.qos_size;
+  if (size >= coop_at + 5) {
+    s.coop = data[coop_at] != 0;
+    s.coop_town = uint32_t(data[coop_at + 1]) << 24 | uint32_t(data[coop_at + 2]) << 16 |
+                  uint32_t(data[coop_at + 3]) << 8 | data[coop_at + 4];
+  }
   s.host_address = xnaddr::Make(id);
   return s.Valid() ? std::optional<Session>(s) : std::nullopt;
 }
@@ -189,6 +204,8 @@ std::vector<uint8_t> MessageLocked(MessageType type) {
   m.insert(m.end(), name.begin(), name.end());
   if (type == kPresence) {
     Session s = g_hosted;
+    s.coop = g_coop_hosting;
+    s.coop_town = g_coop_hosting ? g_coop_town : 0;
     for (const QosEntry &q : g_qos) {
       if (q.id == s.id) {
         s.qos_data = q.data;
@@ -273,6 +290,11 @@ void OnMessage(const std::string &id, const uint8_t *data, size_t size) {
     break;
   case kPresence:
     if (is_friend) {
+      auto known = g_live.find(id);
+      const bool was_online = known != g_live.end() && Clock::now() - known->second.heard_at < kOnlineFor;
+      // Just came online: it hears from us now, not at our next tick.
+      if (!was_online)
+        SendLocked(id, kPresence);
       Live &live = g_live[id];
       live.gamertag = gamertag;
       live.heard_at = Clock::now();
@@ -306,9 +328,26 @@ void Tick() {
   }
 }
 
+// The connection to a player opened or closed, on the EOS thread. A friend
+// reached is told our presence at once (so each sees the other online within
+// a round trip, not a tick or two later); one whose connection closed is
+// offline now, not once its presence has been missing for kOnlineFor.
+void OnPeer(const std::string &id, bool connected) {
+  std::lock_guard lock(g_mutex);
+  LoadLocked();
+  if (FindById(g_friends, id) == g_friends.end())
+    return;
+  if (connected) {
+    SendLocked(id, kPresence);
+  } else if (g_live.erase(id)) {
+    RONL_INFO("Friends: lost the connection to {}: offline", id);
+  }
+}
+
 [[maybe_unused]] const bool g_registered = [] {
   eos::SetReceiver(eos::kChannelFriends, &OnMessage);
   eos::AddTicker(&Tick);
+  eos::AddPeerListener(&OnPeer);
   return true;
 }();
 
@@ -453,6 +492,14 @@ void SetQosData(const SessionId &id, const uint8_t *data, size_t size) {
   }
   if (g_hosted.Valid() && g_hosted.id == id)
     BroadcastPresenceLocked();
+}
+
+void SetCoopHosting(bool coop, uint32_t town) {
+  std::lock_guard lock(g_mutex);
+  LoadLocked();
+  g_coop_hosting = coop;
+  g_coop_town = town;
+  BroadcastPresenceLocked();
 }
 
 std::optional<Session> FindFriendSession(const SessionId &id) {

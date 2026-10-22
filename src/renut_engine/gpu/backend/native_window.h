@@ -15,8 +15,8 @@ struct SDL_Window;
 namespace renut::gpu {
 
 // Windows: the HWND of this process's game window (the SDK's SDL window).
-// Linux: the Xlib display + window of the SDL window (plume's Linux Vulkan
-// surface is Xlib, so SDL is pinned to its X11 driver).
+// Linux: the SDL window itself (plume is built with PLUME_SDL_VULKAN_ENABLED;
+// its surface, Wayland or X11, is made in native_window.cpp).
 bool GetNativeRenderWindow(plume::RenderWindow &out);
 
 // The game window's client area, in pixels.

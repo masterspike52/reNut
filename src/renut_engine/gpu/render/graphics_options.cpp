@@ -43,6 +43,11 @@ REXCVAR_DEFINE_STRING(renut_depth_of_field, "Game", "Nuts&Bolts/Graphics",
                       "as strong) or Off.")
     .allowed({"Game", "Reduced", "Off"});
 
+REXCVAR_DEFINE_STRING(renut_bloom, "Game", "Nuts&Bolts/Graphics",
+                      "Glow around bright light and sky: the game's own, Reduced (half as strong) "
+                      "or Off.")
+    .allowed({"Game", "Reduced", "Off"});
+
 REXCVAR_DEFINE_STRING(renut_msaa, "Game", "Nuts&Bolts/Graphics",
                       "Multisample anti-aliasing of the scene: the game's own, Off, or 2x, 4x or "
                       "8x. More samples smooth edges more but cost GPU time and memory, most at "
@@ -50,9 +55,11 @@ REXCVAR_DEFINE_STRING(renut_msaa, "Game", "Nuts&Bolts/Graphics",
     .allowed({"Game", "Off", "2x", "4x", "8x"});
 
 REXCVAR_DEFINE_STRING(renut_anti_aliasing, "Off", "Nuts&Bolts/Graphics",
-                      "Anti-aliasing of the finished frame, on top of MSAA: Off, or FXAA (fast; "
-                      "smooths every edge, the HUD's too, and softens the image a little).")
-    .allowed({"Off", "FXAA"});
+                      "Anti-aliasing of the finished frame, on top of MSAA: Off, FXAA (fast; "
+                      "smooths every edge, the HUD's too, and softens the image a little) or SMAA "
+                      "(follows edges' shapes: smoother edges, text and textures kept sharp, a "
+                      "little more GPU time).")
+    .allowed({"Off", "FXAA", "SMAA"});
 
 namespace renut::gpu {
 
@@ -111,6 +118,7 @@ struct Latched {
   uint32_t min_anisotropy = 1;
   bool high_precision_post = true;
   float depth_of_field = 1.0f;
+  float bloom = 1.0f;
   uint32_t msaa = 0;  // 0: the game's; else the sample count (1 = off)
 };
 Latched g_latched;
@@ -158,6 +166,8 @@ void LatchGraphicsOptionsLocked() {
   g_latched.high_precision_post = REXCVAR_GET(renut_post_process_precision) != "Game";
   const std::string &depth_of_field = REXCVAR_GET(renut_depth_of_field);
   g_latched.depth_of_field = depth_of_field == "Off" ? 0.0f : depth_of_field == "Reduced" ? 0.5f : 1.0f;
+  const std::string &bloom = REXCVAR_GET(renut_bloom);
+  g_latched.bloom = bloom == "Off" ? 0.0f : bloom == "Reduced" ? 0.5f : 1.0f;
   const std::string &msaa = REXCVAR_GET(renut_msaa);
   const uint32_t samples = msaa == "Off" ? 1u : uint32_t(std::atoi(msaa.c_str()));
   if (samples != g_latched.msaa) {
@@ -169,7 +179,11 @@ void LatchGraphicsOptionsLocked() {
       RGPU_INFO("MSAA: {}x on the targets the game multisamples", samples);
   }
   g_latched.msaa = samples;
-  g_post_anti_aliasing.store(REXCVAR_GET(renut_anti_aliasing) == "FXAA" ? 1u : 0u, std::memory_order_relaxed);
+  const std::string &anti_aliasing = REXCVAR_GET(renut_anti_aliasing);
+  g_post_anti_aliasing.store(anti_aliasing == "FXAA"   ? kPostAntiAliasingFxaa
+                             : anti_aliasing == "SMAA" ? kPostAntiAliasingSmaa
+                                                       : kPostAntiAliasingOff,
+                             std::memory_order_relaxed);
 }
 
 uint32_t PostAntiAliasing() {
@@ -222,6 +236,10 @@ uint32_t MinAnisotropy() {
 
 float DepthOfFieldStrength() {
   return g_latched.depth_of_field;
+}
+
+float BloomStrength() {
+  return g_latched.bloom;
 }
 
 } // namespace renut::gpu

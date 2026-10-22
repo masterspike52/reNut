@@ -179,12 +179,19 @@ u32 CameraAspectMode() {
   return mode == kAspectModeConsole ? LoadU32(kConsoleAspectModeVa) : mode;
 }
 
-// XUI's root is the back buffer's size (sub_823E92E8), so its units are
-// screen pixels; sub_82208338 still scales its view by the render target
-// over 1280x720, which on a wider screen would stretch XUI sideways. That
-// view keeps the vertical scale on both axes. The target is the screen, or
-// the tiling target (its width rounded up to 32).
-void UnstretchXuiView(u32 matrix_va) {
+// How far right XUI's 1280-wide space sits on the wider screen, in screen
+// pixels: in the middle.
+float XuiOffset() {
+  return Widened() ? float(GuestScreenWidth() - kNativeWidth) * 0.5f : 0.0f;
+}
+
+// XUI's root stays 1280x720 (the game's scenes are laid out for it, from its
+// left edge: on a wider root they sat at the screen's left). sub_82208338
+// scales XUI's view by the render target over 1280x720, which on a wider
+// screen would stretch XUI sideways: the view keeps the vertical scale on
+// both axes and is moved right by XuiOffset, so the 16:9 layout is centred.
+// The target is the screen, or the tiling target (its width rounded up to 32).
+void CenterXuiView(u32 matrix_va) {
   if (!Widened())
     return;
   auto *m = GuestPtr<be_f32>(matrix_va);
@@ -194,9 +201,19 @@ void UnstretchXuiView(u32 matrix_va) {
   const float target_height = m[5].get() * float(kNativeHeight);
   const u32 width = GuestScreenWidth();
   if (target_width > float(width) - 1.0f && target_width < float(AlignUp(width, 32)) + 1.0f &&
-      std::fabs(target_height - float(kNativeHeight)) < 1.0f)
-    m[0] = m[5].get();
+      std::fabs(target_height - float(kNativeHeight)) < 1.0f) {
+    const float scale = m[5].get();
+    m[0] = scale;
+    m[12] = m[12].get() + (float(width) - float(kNativeWidth) * scale) * 0.5f;
+  }
 }
+
+// sub_823E92E8 (XUI start) is sizing XUI's root on this thread, and the root.
+thread_local bool t_sizing_xui_root = false;
+std::atomic<u32> g_xui_root{0};
+// A marker (sub_825E2028, sub_825C5AF8: a world position projected to screen
+// pixels by sub_823DBB50, kept in the safe area) is placing its XUI element.
+thread_local bool t_placing_marker = false;
 
 } // namespace
 
@@ -269,6 +286,56 @@ REX_HOOK_RAW(sub_82236148) {
 // HRESULT XuiRenderSetViewTransform(HXUIDC, const D3DXMATRIX *) [0x82205C88]
 REX_EXTERN(__imp__sub_82205C88);
 REX_HOOK_RAW(sub_82205C88) {
-  UnstretchXuiView(ctx.r4.u32);
+  CenterXuiView(ctx.r4.u32);
   __imp__sub_82205C88(ctx, base);
+}
+
+// int sub_823E92E8(app): starts XUI; its root (app + 8) is sized to the back
+// buffer with XuiElementSetBounds.
+REX_EXTERN(__imp__sub_823E92E8);
+REX_HOOK_RAW(sub_823E92E8) {
+  t_sizing_xui_root = true;
+  __imp__sub_823E92E8(ctx, base);
+  t_sizing_xui_root = false;
+}
+
+// HRESULT XuiElementSetBounds(HXUIOBJ, float width, float height) [0x829CA2A8]:
+// XUI's root keeps the game's 1280 wide.
+REX_EXTERN(__imp__sub_829CA2A8);
+REX_HOOK_RAW(sub_829CA2A8) {
+  if (Widened()) {
+    const u32 object = ctx.r3.u32;
+    if (t_sizing_xui_root)
+      g_xui_root = object;
+    if (object && object == g_xui_root.load() &&
+        std::fabs(float(ctx.f1.f64) - float(GuestScreenWidth())) < 1.0f)
+      ctx.f1.f64 = double(kNativeWidth);
+  }
+  __imp__sub_829CA2A8(ctx, base);
+}
+
+// A marker's screen position (screen pixels, from the screen's left) goes to
+// its element in XUI's centred 1280-wide space.
+REX_EXTERN(__imp__sub_825E2028);
+REX_HOOK_RAW(sub_825E2028) {
+  t_placing_marker = true;
+  __imp__sub_825E2028(ctx, base);
+  t_placing_marker = false;
+}
+
+REX_EXTERN(__imp__sub_825C5AF8);
+REX_HOOK_RAW(sub_825C5AF8) {
+  t_placing_marker = true;
+  __imp__sub_825C5AF8(ctx, base);
+  t_placing_marker = false;
+}
+
+// HRESULT XuiElementSetPosition(HXUIOBJ, const D3DXVECTOR3 *) [0x82267268]
+REX_EXTERN(__imp__sub_82267268);
+REX_HOOK_RAW(sub_82267268) {
+  if (t_placing_marker && Widened()) {
+    if (auto *position = GuestPtr<be_f32>(ctx.r4.u32))
+      position[0] = position[0].get() - XuiOffset();
+  }
+  __imp__sub_82267268(ctx, base);
 }

@@ -130,6 +130,16 @@ std::unordered_map<uint64_t, std::chrono::steady_clock::time_point> g_connected_
 uint32_t g_next_inaddr = (uint32_t(xnaddr::kInAddrNet) << 24) | 1;
 uint32_t g_logged_sends = 0;
 uint32_t g_logged_receives = 0;
+// Game packets to and from each player since the last traffic report, and the
+// connections the game has been told are lost (logged once each).
+struct Traffic {
+  uint32_t sent = 0;
+  uint32_t received = 0;
+};
+std::map<uint64_t, Traffic> g_traffic;
+std::vector<uint32_t> g_reported_lost;
+uint32_t g_report_ticks = 0;
+constexpr uint32_t kReportTicks = 3;  // every ~6 s while in a session
 
 uint16_t Load16(const uint8_t *base, uint32_t va) {
   return rex::byte_swap(*reinterpret_cast<const uint16_t *>(base + va));
@@ -242,6 +252,7 @@ bool Send(uint32_t handle, uint32_t ina, uint16_t port, const uint8_t *data, siz
   p += connection->session.size();
   std::memcpy(p, data, size);
   SendToPlayer(connection->xuid, packet, kGameHeaderSize + size);
+  ++g_traffic[connection->xuid].sent;
   if (g_logged_sends < 8) {
     ++g_logged_sends;
     RONL_INFO("Online: game packet to {:016X} via {} port {} ({} bytes)", connection->xuid,
@@ -298,6 +309,7 @@ void OnGamePacket(uint64_t xuid, const uint8_t *data, size_t size) {
   const uint32_t ina = InAddrForLocked(xuid, session);
   DeliverLocked(ina, from_port, to_port, protocol, data + kGameHeaderSize,
                 size - kGameHeaderSize);
+  ++g_traffic[xuid].received;
   if (g_logged_receives < 8) {
     ++g_logged_receives;
     RONL_INFO("Online: game packet from {:016X} via {} to port {} ({} bytes)", xuid,
@@ -396,9 +408,34 @@ void SendKeepAlives() {
     SendToPlayer(xuid, packet, sizeof(packet));
 }
 
+// Every few ticks while in a session: per player, the game packets sent and
+// received since the last report and how long ago it was last heard from (so
+// a log shows who stopped hearing whom when a player drops).
+void ReportTraffic() {
+  if (!InSession() || ++g_report_ticks % kReportTicks != 0)
+    return;
+  const auto now = std::chrono::steady_clock::now();
+  std::lock_guard lock(g_mutex);
+  for (auto &[xuid, traffic] : g_traffic) {
+    auto heard = g_heard_at.find(xuid);
+    const long long silent =
+        heard == g_heard_at.end()
+            ? -1
+            : std::chrono::duration_cast<std::chrono::seconds>(now - heard->second).count();
+    RONL_INFO("Online: traffic with {:016X} ({}): {} sent, {} received; last heard {} s ago", xuid,
+              eos::IdOf(xuid), traffic.sent, traffic.received, silent);
+    traffic = {};
+  }
+}
+
+void Tick() {
+  SendKeepAlives();
+  ReportTraffic();
+}
+
 [[maybe_unused]] const bool g_registered = [] {
   eos::SetReceiver(eos::kChannelGame, &OnPeerMessage);
-  eos::AddTicker(&SendKeepAlives);
+  eos::AddTicker(&Tick);
   return true;
 }();
 
@@ -514,6 +551,13 @@ REX_HOOK_RAW(sub_829A80C8) {
         status = kConnectLost;
       else
         status = kConnectConnected;  // EOS reaches any player by its online ID
+      auto &lost = transport::g_reported_lost;
+      if (status == kConnectLost && std::find(lost.begin(), lost.end(), ina) == lost.end()) {
+        lost.push_back(ina);
+        RONL_WARN("Online: the game is told its connection to {:016X} ({}) is lost: not heard "
+                  "from for {} s",
+                  c->xuid, InAddrText(ina), kLostAfter.count());
+      }
     }
   }
   ctx.r3.u64 = status;

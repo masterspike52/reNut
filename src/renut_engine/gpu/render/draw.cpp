@@ -23,10 +23,12 @@
 
 #include "renut_engine/gpu/backend/backend.h"
 #include "renut_engine/gpu/backend/gpu_profile.h"
+#include "renut_engine/gpu/backend/render_profile.h"
 #include "renut_engine/gpu/guest/command_buffers.h"
 #include "renut_engine/gpu/d3d/d3d.h"
 #include "renut_engine/gpu/render/format.h"
 #include "renut_engine/gpu/render/graphics_options.h"
+#include "renut_engine/gpu/render/parallel.h"
 #include "renut_engine/gpu/guest/guest_memory.h"
 #include "renut_engine/gpu/guest/guest_records.h"
 #include "renut_engine/gpu/log.h"
@@ -340,6 +342,7 @@ struct PendingStreamFill {
   const u8 *guest = nullptr;
   u32 stride = 0, count = 0, endian = 0;
   u8 *host = nullptr;
+  plume::RenderBufferReference host_ref;  // 'host' on the GPU
   StreamKey key{};   // cacheable: the g_stream_cache entry
   bool cacheable = false;
 };
@@ -348,7 +351,10 @@ struct PendingCopy {
   u8 *dst = nullptr;
   u32 size = 0;
 };
+// The first g_stream_fill_count entries are queued; the rest are kept from
+// earlier flushes, for their memory.
 std::vector<PendingStreamFill> g_stream_fills;
+size_t g_stream_fill_count = 0;
 std::vector<PendingCopy> g_copy_fills;
 
 // Fetch data copies (UploadVertexFetchData) queued since the last flush, by
@@ -398,7 +404,6 @@ uint64_t g_stream_cache_frame = 0;
 // A cached copy's memory: part of one of the pool's buffers.
 struct PoolSpan {
   plume::RenderBuffer *buffer = nullptr;
-  u8 *cpu = nullptr;
   u32 chunk = 0;
   uint64_t offset = 0;
   u32 size = 0;
@@ -406,16 +411,27 @@ struct PoolSpan {
   plume::RenderBufferReference Ref() const { return plume::RenderBufferReference(buffer, offset); }
 };
 
-// Where the cached copies live: a few large upload buffers, mapped once, that
-// copies are carved from. A buffer of its own per copy cost a driver
-// allocation each, and a scene coming into view made hundreds of copies in a
-// frame. A freed span is reused once the frame slot it was freed in has
+// Where the cached copies live: a few large buffers in video memory that
+// copies are carved from, filled by the GPU (FlushPoolFillsLocked). A buffer
+// of its own per copy cost a driver allocation each, and a scene coming into
+// view made hundreds of copies in a frame. (They were upload buffers once:
+// then the GPU read every cached mesh over PCIe every frame, which a laptop's
+// GPU, behind a narrow link, felt most.) A freed span is reused once the frame
+// slot it was freed in has
 // finished on the GPU (DrainSlot), as retired resources are. A chunk left
 // with nothing in it is released (the first one stays): the copies of a
 // scene the game has left go after kStreamCacheIdleFrames, and their memory
 // with them.
 class CopyPool {
 public:
+  // Vertex and index copies have pools of their own: a D3D12 buffer is read
+  // in one state, and plume gives one with both flags the vertex buffer's.
+  // 'addressable': read by shaders by address (AddressableBufferFlags, known
+  // once the backend is).
+  CopyPool(plume::RenderBufferFlags flags, uint64_t chunk_size, const char *name,
+           bool addressable = false)
+      : flags_(flags), chunk_size_(chunk_size), name_(name), addressable_(addressable) {}
+
   PoolSpan Allocate(u32 size) {
     const uint64_t need = (uint64_t(size) + kAlign - 1) & ~(kAlign - 1);
     for (u32 i = 0; i < chunks_.size(); ++i) {
@@ -442,7 +458,6 @@ public:
       // reuse. The other slot may still draw from it: retired, not freed.
       if (span.chunk != 0 && chunk.free.size() == 1 && chunk.free.begin()->second == chunk.size) {
         Video::RetireLocked(std::move(chunk.buffer));
-        chunk.cpu = nullptr;
         chunk.free.clear();
         chunk.size = 0;
       }
@@ -459,33 +474,29 @@ public:
   }
 
 private:
-  static constexpr uint64_t kChunkSize = 64ull << 20;
   static constexpr uint64_t kAlign = 256;
 
   struct Chunk {
     std::unique_ptr<plume::RenderBuffer> buffer;  // null once released
-    u8 *cpu = nullptr;
     uint64_t size = 0;
     std::map<uint64_t, uint64_t> free;  // offset -> size, adjacent ranges merged
   };
 
   // The index of a new chunk of at least 'min_size' bytes, or UINT32_MAX.
   u32 AddChunk(uint64_t min_size) {
-    const uint64_t size = std::max(kChunkSize, min_size);
-    auto buffer = State().device->createBuffer(plume::RenderBufferDesc::UploadBuffer(
-        size, plume::RenderBufferFlag::VERTEX | plume::RenderBufferFlag::INDEX));
-    void *mapped = buffer ? buffer->map() : nullptr;
-    if (!mapped)
+    const uint64_t size = std::max(chunk_size_, min_size);
+    const plume::RenderBufferFlags flags = flags_ | (addressable_ ? AddressableBufferFlags() : 0);
+    auto buffer = State().device->createBuffer(plume::RenderBufferDesc::DefaultBuffer(size, flags));
+    if (!BufferCreated(buffer.get()))
       return UINT32_MAX;
     u32 index = 0;
     while (index < chunks_.size() && chunks_[index].buffer)
       ++index;
     if (index == chunks_.size())
       chunks_.emplace_back();
-    buffer->setName("renut stream cache #" + std::to_string(index));
+    buffer->setName(std::string(name_) + " #" + std::to_string(index));
     Chunk &chunk = chunks_[index];
     chunk.buffer = std::move(buffer);
-    chunk.cpu = static_cast<u8 *>(mapped);
     chunk.size = size;
     chunk.free.emplace(0, size);
     return index;
@@ -503,7 +514,6 @@ private:
         chunk.free.emplace(offset + size, left);
       PoolSpan span;
       span.buffer = chunk.buffer.get();
-      span.cpu = chunk.cpu + offset;
       span.chunk = index;
       span.offset = offset;
       span.size = u32(size);
@@ -529,10 +539,16 @@ private:
     chunk.free.emplace(offset, size);
   }
 
+  plume::RenderBufferFlags flags_;
+  uint64_t chunk_size_;
+  const char *name_;
+  bool addressable_;
   std::vector<Chunk> chunks_;
   std::vector<PoolSpan> deferred_[kFramesInFlight];
 };
-CopyPool g_copy_pool;
+CopyPool g_copy_pool(plume::RenderBufferFlag::VERTEX, 64ull << 20, "renut stream cache");
+CopyPool g_index_pool(plume::RenderBufferFlag::INDEX, 32ull << 20, "renut index cache");
+CopyPool g_fetch_pool(plume::RenderBufferFlag::NONE, 64ull << 20, "renut fetch cache", true);
 
 // A direct-mapped memo of a node map's entries by key hash, in front of the
 // stream and index caches: draws look up the same keys every frame, and the
@@ -540,15 +556,23 @@ CopyPool g_copy_pool;
 // render thread). Here a repeat is one line and the entry itself, which the
 // draw reads anyway. The entries stay where they are until erased (the map is
 // node-based, a rehash moves none), so the memo is cleared whenever the map
-// erases any.
+// erases any. Two ways to a set, the newer first: a frame's draws use several
+// thousand keys, and with one way the ones sharing a slot pushed each other
+// out, back to the map every time (2026-10-22 trace: the index memo alone
+// was 4% of the render thread).
 template <typename Map, typename Hash, u32 kBits>
 class EntryMemo {
 public:
   using Entry = typename Map::value_type;
 
   Entry *Find(const typename Map::key_type &key, size_t hash) const {
-    const Slot &slot = slots_[Index(hash)];
-    return slot.entry && slot.hash == hash && slot.entry->first == key ? slot.entry : nullptr;
+    const Slot *set = &slots_[SetIndex(hash) * 2];
+    for (u32 way = 0; way < 2; ++way) {
+      const Slot &slot = set[way];
+      if (slot.entry && slot.hash == hash && slot.entry->first == key)
+        return slot.entry;
+    }
+    return nullptr;
   }
 
   // The map's entry for 'key', made if 'make' (else null when it has none).
@@ -562,7 +586,9 @@ public:
         return nullptr;
       it = map.try_emplace(key).first;
     }
-    slots_[Index(hash)] = {hash, &*it};
+    Slot *set = &slots_[SetIndex(hash) * 2];
+    set[1] = set[0];
+    set[0] = {hash, &*it};
     return &*it;
   }
 
@@ -573,10 +599,10 @@ private:
     size_t hash = 0;
     Entry *entry = nullptr;
   };
-  static u32 Index(size_t hash) {
+  static u32 SetIndex(size_t hash) {
     return u32((uint64_t(hash) * 0x9E3779B97F4A7C15ull) >> (64 - kBits));
   }
-  Slot slots_[1u << kBits];
+  alignas(32) Slot slots_[2u << kBits];
 };
 
 struct CachedStream {
@@ -584,6 +610,7 @@ struct CachedStream {
   u32 stable = 0;     // flushes in a row that converted the same bytes
   u32 drops = 0;      // copies dropped because the guest bytes changed
   bool dynamic = false;
+  bool pending = false;  // a copy waits for the GPU to fill it (PoolFill)
   PoolSpan copy;
   u32 bytes = 0;
   uint64_t last_used = 0;               // g_stream_cache_frame
@@ -591,7 +618,20 @@ struct CachedStream {
 };
 using StreamCache = std::unordered_map<StreamKey, CachedStream, StreamKeyHash>;
 StreamCache g_stream_cache;
-EntryMemo<StreamCache, StreamKeyHash, 13> g_stream_memo;
+EntryMemo<StreamCache, StreamKeyHash, 14> g_stream_memo;
+
+// A persistent copy waiting for its bytes: at the next flush the GPU copies
+// them from the upload memory the draw that made it filled with the same
+// bytes (FlushPoolFillsLocked), and only then do draws use it.
+struct PoolFill {
+  plume::RenderBufferReference source;
+  PoolSpan span;
+  u32 bytes = 0;
+};
+struct StreamPoolFill : PoolFill {
+  StreamKey key{};
+};
+std::vector<StreamPoolFill> g_stream_pool_fills;
 
 // Whether a cached copy last checked in 'checked_frame' is due a check now.
 bool CacheCheckDue(uint64_t checked_frame) {
@@ -678,6 +718,105 @@ private:
 };
 ContentVerifier<StreamKey, HashGuestStream> g_stream_verifier;
 
+// Buffers vertex shaders read by address (UploadVertexFetchData), kept in
+// video memory like the streams: most are geometry the game never rewrites,
+// and copying each of them into upload memory every frame was the largest
+// part of the flushes (a tenth of the renderer's CPU time with the helpers'
+// share, 2026-10-22), which the GPU then read over PCIe. A buffer that hashes
+// the same at kStableFlushes flushes in a row gets a copy the GPU fills from
+// that flush's upload copy (FlushPoolFillsLocked); a draw whose buffers all
+// have copies, in one pool buffer, reads them there. Copies are checked like
+// the streams'; one that keeps changing (kFetchChanges flushes in a row) is
+// not hashed again.
+struct FetchKey {
+  const u8 *src = nullptr;
+  u32 size = 0;
+  bool operator==(const FetchKey &) const = default;
+};
+struct FetchKeyHash {
+  size_t operator()(const FetchKey &k) const {
+    return size_t((uint64_t(reinterpret_cast<uintptr_t>(k.src)) ^ (uint64_t(k.size) << 40)) *
+                  0x9E3779B97F4A7C15ull);
+  }
+};
+struct CachedFetch {
+  uint64_t hash = 0;
+  u32 stable = 0;   // flushes in a row the bytes hashed the same
+  u32 changes = 0;  // flushes in a row they did not
+  u32 drops = 0;    // copies dropped because the bytes changed
+  bool dynamic = false;
+  bool pending = false;  // a copy waits for the GPU to fill it (PoolFill)
+  PoolSpan copy;
+  u32 bytes = 0;
+  uint64_t last_used = 0;               // g_stream_cache_frame
+  uint64_t checked_frame = UINT64_MAX;  // frame last hashed or checked in
+};
+constexpr u32 kFetchChanges = 8;
+using FetchCache = std::unordered_map<FetchKey, CachedFetch, FetchKeyHash>;
+FetchCache g_fetch_cache;
+EntryMemo<FetchCache, FetchKeyHash, 10> g_fetch_memo;
+
+uint64_t HashFetch(const FetchKey &key) {
+  return XXH3_64bits(key.src, key.size);
+}
+ContentVerifier<FetchKey, HashFetch> g_fetch_verifier;
+
+// The buffers this flush's fetch copies read, and where in upload memory they
+// go (UploadVertexFetchData); looked at once the copies are made.
+struct FetchTrack {
+  FetchKey key;
+  plume::RenderBufferReference source;
+};
+std::vector<FetchTrack> g_fetch_tracks;
+struct FetchPoolFill : PoolFill {
+  FetchKey key{};
+};
+std::vector<FetchPoolFill> g_fetch_pool_fills;
+
+void DropCachedFetch(CachedFetch &c) {
+  if (!c.copy)
+    return;
+  g_stream_cache_bytes -= c.bytes;
+  g_fetch_pool.Free(c.copy);
+  c.copy = {};
+  c.bytes = 0;
+}
+
+// After a flush made the fetch copies: count how long each buffer's bytes
+// have held, and give one that has held long enough its persistent copy.
+void TrackFetchCopies() {
+  for (const FetchTrack &t : g_fetch_tracks) {
+    CachedFetch &c = g_fetch_memo.Get(g_fetch_cache, t.key, true)->second;
+    c.last_used = g_stream_cache_frame;
+    if (c.dynamic || c.copy || c.pending || c.checked_frame == g_stream_cache_frame)
+      continue;
+    c.checked_frame = g_stream_cache_frame;
+    const uint64_t hash = HashFetch(t.key);
+    if (hash == c.hash) {
+      ++c.stable;
+      c.changes = 0;
+    } else {
+      c.stable = 0;
+      c.dynamic = ++c.changes >= kFetchChanges;
+    }
+    c.hash = hash;
+    if (c.stable + 1 < kStableFlushes || g_stream_cache_bytes + t.key.size > kStreamCacheMaxBytes)
+      continue;
+    const PoolSpan copy = g_fetch_pool.Allocate(t.key.size);
+    if (!copy)
+      continue;
+    FetchPoolFill fill;
+    fill.source = t.source;
+    fill.span = copy;
+    fill.bytes = t.key.size;
+    fill.key = t.key;
+    g_fetch_pool_fills.push_back(fill);
+    c.pending = true;
+    g_stream_cache_bytes += t.key.size;
+  }
+  g_fetch_tracks.clear();
+}
+
 void DropCachedCopy(CachedStream &c) {
   if (!c.copy)
     return;
@@ -694,7 +833,7 @@ void TrackConvertedStream(const PendingStreamFill &f) {
   if (it == g_stream_cache.end())
     return;
   CachedStream &c = it->second;
-  if (c.dynamic || c.copy)
+  if (c.dynamic || c.copy || c.pending)
     return;
   const uint64_t hash = HashGuestStream(f.key);
   c.stable = hash == c.hash ? c.stable + 1 : 0;
@@ -705,12 +844,14 @@ void TrackConvertedStream(const PendingStreamFill &f) {
   const PoolSpan copy = g_copy_pool.Allocate(bytes);
   if (!copy)
     return;
-  // Converted again rather than copied from f.host: upload memory is
-  // write-combined, slow to read back.
-  ConvertVertices(f.stream, f.guest, f.stride, f.count, f.endian, copy.cpu);
-  c.copy = copy;
-  c.bytes = bytes;
-  c.checked_frame = g_stream_cache_frame;
+  // The GPU copies what the flush just converted into f.host.
+  StreamPoolFill fill;
+  fill.source = f.host_ref;
+  fill.span = copy;
+  fill.bytes = bytes;
+  fill.key = f.key;
+  g_stream_pool_fills.push_back(fill);
+  c.pending = true;
   g_stream_cache_bytes += bytes;
 }
 
@@ -1175,6 +1316,34 @@ UploadAllocation ScaleDepthOfField(const ConstantUpload &last, float strength) {
   return alloc;
 }
 
+// The glow composite (ps_981a6a58f2abfa42): the scene plus its four bloom
+// levels weighted by c0 (1, 1.2, 1.6, 2), compressed where the sum passes 1.
+// renut_bloom scales those weights; the scene's own color is not one of them.
+constexpr uint64_t kBloomCompositePixelShader = 0x981A6A58F2ABFA42ull;
+constexpr u32 kBloomWeights = 0;
+
+bool IsBloomDraw(uint64_t ps_hash, const u32 ps_used[8]) {
+  return ps_hash == kBloomCompositePixelShader && (ps_used[kBloomWeights / 32] & (1u << (kBloomWeights % 32)));
+}
+
+// renut_bloom: a copy of the upload UploadFloatConstants just made or reused
+// ('last' holds its registers) with the bloom weights scaled by 'strength'.
+UploadAllocation ScaleBloom(const ConstantUpload &last, float strength) {
+  UploadAllocation alloc = Video::UploadsLocked().Allocate(256 * 16, 256);
+  if (!alloc)
+    return alloc;
+  u32 lanes[256 * 4];
+  std::memcpy(lanes, last.bytes, sizeof(lanes));
+  for (u32 &lane : lanes)
+    lane = std::byteswap(lane);
+  float values[256 * 4];
+  std::memcpy(values, lanes, sizeof(values));
+  for (u32 c = 0; c < 4; ++c)
+    values[kBloomWeights * 4 + c] *= strength;
+  std::memcpy(alloc.cpu, values, sizeof(values));
+  return alloc;
+}
+
 TextureFetch DeviceTextureFetch(const d3d::Device &dev, u32 r) {
   return TextureFetch::FromGuest(dev.m_Constants.TextureFetch[r]);
 }
@@ -1293,6 +1462,7 @@ struct CachedIndices {
   u32 stable = 0;  // frames in a row the range hashed the same
   u32 drops = 0;   // copies dropped because the guest range changed
   bool dynamic = false;
+  bool pending = false;  // a copy waits for the GPU to fill it (PoolFill)
   PoolSpan copy;
   u32 bytes = 0, index_count = 0, lo = 0, max_index = 0;
   bool wide = false;
@@ -1301,7 +1471,14 @@ struct CachedIndices {
 };
 using IndexCache = std::unordered_map<IndexKey, CachedIndices, IndexKeyHash>;
 IndexCache g_index_cache;
-EntryMemo<IndexCache, IndexKeyHash, 12> g_index_memo;
+EntryMemo<IndexCache, IndexKeyHash, 14> g_index_memo;
+
+struct IndexPoolFill : PoolFill {
+  IndexKey key{};
+  u32 index_count = 0, lo = 0, max_index = 0;
+  bool wide = false;
+};
+std::vector<IndexPoolFill> g_index_pool_fills;
 
 uint64_t HashIndices(const IndexKey &key) {
   return XXH3_64bits(key.src, size_t(key.count) * (key.is32 ? 4 : 2));
@@ -1313,7 +1490,7 @@ void DropCachedIndices(CachedIndices &c) {
   if (!c.copy)
     return;
   g_stream_cache_bytes -= c.bytes;
-  g_copy_pool.Free(c.copy);
+  g_index_pool.Free(c.copy);
   c.copy = {};
   c.bytes = 0;
 }
@@ -1339,12 +1516,14 @@ bool CachedIndexDraw(const IndexKey &key, const DrawCall &call, Geometry &g) {
   return true;
 }
 
-// After a draw read the range into g_indices: count how long it has held, and
-// give a range that has held long enough its persistent copy.
-void TrackIndices(const IndexKey &key, u32 lo, u32 max_index) {
+// After a draw read the range into g_indices and wrote them rebased to
+// 'source': count how long it has held, and give a range that has held long
+// enough its persistent copy (filled from 'source' by the GPU).
+void TrackIndices(const IndexKey &key, u32 lo, u32 max_index,
+                  const plume::RenderBufferReference &source) {
   CachedIndices &c = g_index_memo.Get(g_index_cache, key, true)->second;
   c.last_used = g_stream_cache_frame;
-  if (c.dynamic || c.copy || c.checked_frame == g_stream_cache_frame)
+  if (c.dynamic || c.copy || c.pending || c.checked_frame == g_stream_cache_frame)
     return;
   c.checked_frame = g_stream_cache_frame;
   const uint64_t hash = HashIndices(key);
@@ -1354,24 +1533,20 @@ void TrackIndices(const IndexKey &key, u32 lo, u32 max_index) {
   const u32 bytes = u32(g_indices.size()) * (wide ? 4 : 2);
   if (c.stable + 1 < kStableFlushes || g_stream_cache_bytes + bytes > kStreamCacheMaxBytes)
     return;
-  const PoolSpan copy = g_copy_pool.Allocate(bytes);
+  const PoolSpan copy = g_index_pool.Allocate(bytes);
   if (!copy)
     return;
-  if (wide) {
-    auto *out = reinterpret_cast<u32 *>(copy.cpu);
-    for (size_t i = 0; i < g_indices.size(); ++i)
-      out[i] = g_indices[i] - lo;
-  } else {
-    auto *out = reinterpret_cast<uint16_t *>(copy.cpu);
-    for (size_t i = 0; i < g_indices.size(); ++i)
-      out[i] = uint16_t(g_indices[i] - lo);
-  }
-  c.copy = copy;
-  c.bytes = bytes;
-  c.index_count = u32(g_indices.size());
-  c.lo = lo;
-  c.max_index = max_index;
-  c.wide = wide;
+  IndexPoolFill fill;
+  fill.source = source;
+  fill.span = copy;
+  fill.bytes = bytes;
+  fill.key = key;
+  fill.index_count = u32(g_indices.size());
+  fill.lo = lo;
+  fill.max_index = max_index;
+  fill.wide = wide;
+  g_index_pool_fills.push_back(fill);
+  c.pending = true;
   g_stream_cache_bytes += bytes;
 }
 
@@ -1470,7 +1645,7 @@ bool PrepareGeometry(const GuestDevice &device, const DrawCall &call, Geometry &
     g.index_view = plume::RenderIndexBufferView(
         alloc.ref, bytes, wide ? plume::RenderFormat::R32_UINT : plume::RenderFormat::R16_UINT);
     if (cacheable_indices)
-      TrackIndices(index_key, lo, max_index);
+      TrackIndices(index_key, lo, max_index, alloc.ref);
   }
   return true;
 }
@@ -1662,16 +1837,20 @@ bool BindStreams(const GuestDevice &device, const DrawCall &call, const ShaderRe
         // A copy taken at the call (queued.cpp).
         ConvertVertices(hs, guest, src.stride, count, src.endian, static_cast<u8 *>(alloc.cpu));
       } else {
-        PendingStreamFill fill;
+        // Into an entry kept from an earlier flush when there is one: its
+        // element list keeps its memory.
+        if (g_stream_fill_count == g_stream_fills.size())
+          g_stream_fills.emplace_back();
+        PendingStreamFill &fill = g_stream_fills[g_stream_fill_count++];
         fill.stream = hs;
         fill.guest = guest;
         fill.stride = src.stride;
         fill.count = count;
         fill.endian = src.endian;
         fill.host = static_cast<u8 *>(alloc.cpu);
+        fill.host_ref = alloc.ref;
         fill.key = key;
         fill.cacheable = cached && !cached->dynamic;
-        g_stream_fills.push_back(std::move(fill));
         g_queued_streams.emplace(key, alloc);
       }
     }
@@ -1781,6 +1960,49 @@ UploadAllocation UploadVertexFetchData(const GuestDevice &device, const DrawCall
     total += (c.size + 15u) & ~15u;
   }
 
+  // From the fetch cache when it has a copy of every buffer, all in one pool
+  // buffer, which the slots then count from (nothing copied).
+  if (!any_exported && copy_count) {
+    CachedFetch *found[32] = {};
+    plume::RenderBuffer *pool = nullptr;
+    bool all = true;
+    for (u32 i = 0; all && i < copy_count; ++i) {
+      const Copy &c = copies[i];
+      if (!c.size)
+        continue;
+      if (c.index == up_fetch_index && call.up_vertices) {
+        all = false;
+        break;
+      }
+      auto *entry = g_fetch_memo.Get(g_fetch_cache, FetchKey{c.src, c.size}, false);
+      CachedFetch *f = entry ? &entry->second : nullptr;
+      all = f && f->copy && (!pool || f->copy.buffer == pool);
+      if (all) {
+        pool = f->copy.buffer;
+        found[i] = f;
+      }
+    }
+    if (all && pool) {
+      for (u32 i = 0; i < copy_count; ++i) {
+        const Copy &c = copies[i];
+        CachedFetch *f = found[i];
+        if (f) {
+          f->last_used = g_stream_cache_frame;
+          if (CacheCheckDue(f->checked_frame)) {
+            f->checked_frame = g_stream_cache_frame;
+            g_fetch_verifier.Submit(FetchKey{c.src, c.size}, f->hash);
+          }
+        }
+        sc.vertex_fetch_slots[c.index] = (f ? u32(f->copy.offset) : 0u) | c.endian;
+      }
+      UploadAllocation cached;
+      cached.ref = plume::RenderBufferReference(pool, 0);
+      cached.gpu_address = IsVulkan() ? pool->getDeviceAddress() : 0;
+      sc.vertex_fetch_data = cached.gpu_address;
+      return cached;
+    }
+  }
+
   UploadAllocation alloc = Video::UploadsLocked().Allocate(total, 256);
   if (!alloc)
     return alloc;
@@ -1804,10 +2026,13 @@ UploadAllocation UploadVertexFetchData(const GuestDevice &device, const DrawCall
           at = known.offset;
         } else {
           g_copy_fills.push_back({c.src, dst, c.size});
+          g_fetch_tracks.push_back({FetchKey{c.src, c.size}, plume::RenderBufferReference(alloc.ref.ref, at)});
           known = {c.src, c.size, g_fetch_copy_generation, alloc.ref.ref, at};
         }
       } else {
         g_copy_fills.push_back({c.src, dst, c.size});
+        g_fetch_tracks.push_back({FetchKey{c.src, c.size},
+                                  plume::RenderBufferReference(alloc.ref.ref, alloc.ref.offset + offset)});
       }
     }
     sc.vertex_fetch_slots[c.index] = at | c.endian;
@@ -2206,6 +2431,26 @@ bool FindExportedStream(const GuestDevice &device, const DrawCall &call, const S
   return true;
 }
 
+// Whether a pending export writes anywhere a texture's data could be: an
+// over-estimate of its base and mip data from the size alone (each level in
+// whole 32x32x4 tiles at 16 bytes a texel, twice over, and the padding of a
+// mip chain's small levels), tested against the granule bitmap before the
+// exact extent (TextureGuestExtent), whose memo lookup per texture per draw
+// cost more than the rest of DrawNeedsExportFlush.
+bool ExportsNearTexture(const TextureFetch &fetch) {
+  u32 width, height, depth;
+  fetch.Size(width, height, depth);
+  const uint64_t w = (uint64_t(std::max(width, fetch.PitchTexels())) + 31) & ~uint64_t(31);
+  const uint64_t h = (uint64_t(height) + 31) & ~uint64_t(31);
+  const uint64_t d = (uint64_t(std::max(depth, 1u)) + 3) & ~uint64_t(3);
+  const u32 bound = u32(std::min<uint64_t>(w * h * d * 16 * 2 + (256u << 10), 0x20000000u));
+  for (const u32 page : {fetch.BasePage(), fetch.MipPage()}) {
+    if (page && ExportGranulesTouched(page << 12, bound))
+      return true;
+  }
+  return false;
+}
+
 // Why a draw needs the pending exports in guest memory first (see
 // DrawNeedsExportFlush).
 enum class ExportRead : u32 {
@@ -2291,8 +2536,11 @@ ExportRead DrawNeedsExportFlush(const GuestDevice &device, const DrawCall &call,
   const u32 texture_mask =
       (vs.entry ? vs.entry->textureFetchMask : 0) | (ps && ps->entry ? ps->entry->textureFetchMask : 0);
   for (u32 bits = texture_mask; bits; bits &= bits - 1) {
+    const TextureFetch fetch = DeviceTextureFetch(device.dev(), u32(std::countr_zero(bits)));
+    if (!ExportsNearTexture(fetch))
+      continue;
     u32 pages[2], sizes[2];
-    TextureGuestExtent(DeviceTextureFetch(device.dev(), u32(std::countr_zero(bits))), pages, sizes);
+    TextureGuestExtent(fetch, pages, sizes);
     for (u32 i = 0; i < 2; ++i) {
       if (!pages[i])
         continue;
@@ -2586,6 +2834,21 @@ bool ConvertExportedStreamsLocked(VideoState &s, const GuestDevice &device, cons
                                   GpuStreams &out) {
   if (!s.stream_convert_pipeline || !AnyPendingExports())
     return true;
+  // The streams whose memory a pending export writes, first: exports are
+  // pending nearly always, and for most draws none is (the jobs below are
+  // big to set up).
+  u32 pending = 0;
+  for (u32 stream = 0; stream < kMaxVertexStreams; ++stream) {
+    if (!declaration.layout.streams[stream].used)
+      continue;
+    const u32 fetch_index = d3d::kFirstVertexFetchIndex + d3d::StreamFetchIndex(stream);
+    const u32 base = device.VertexFetchWord(fetch_index, 0) & ~3u;
+    const u32 size = device.VertexFetchWord(fetch_index, 1) & 0x3FFFFFCu;
+    if (PendingExportSlots(base, size))
+      pending |= 1u << stream;
+  }
+  if (!pending)
+    return true;
   struct Job {
     u32 stream;
     ExportedStream src;
@@ -2594,17 +2857,11 @@ bool ConvertExportedStreamsLocked(VideoState &s, const GuestDevice &device, cons
   Job jobs[kMaxVertexStreams];
   u32 job_count = 0;
   uint64_t total = 0;
-  for (u32 stream = 0; stream < kMaxVertexStreams; ++stream) {
-    if (!declaration.layout.streams[stream].used)
-      continue;
-    const u32 fetch_index = d3d::kFirstVertexFetchIndex + d3d::StreamFetchIndex(stream);
-    const u32 base = device.VertexFetchWord(fetch_index, 0) & ~3u;
-    const u32 size = device.VertexFetchWord(fetch_index, 1) & 0x3FFFFFCu;
+  for (u32 bits = pending; bits; bits &= bits - 1) {
+    const u32 stream = u32(std::countr_zero(bits));
     Job job{stream};
-    if (!PendingExportSlots(base, size) ||
-        !FindExportedStream(device, call, vs, shader_strides, declaration, stream, job.src)) {
+    if (!FindExportedStream(device, call, vs, shader_strides, declaration, stream, job.src))
       continue;
-    }
     // The vertices BindStreams would convert.
     job.first = g.first_vertex;
     if (job.first >= job.src.vertex_count)
@@ -2676,7 +2933,7 @@ bool ConvertExportedStreamsLocked(VideoState &s, const GuestDevice &device, cons
     push.host_stride_words = job.src.host_stride / 4;
     push.element_count = job.src.element_count;
     std::memcpy(push.elements, job.src.elements, sizeof(push.elements));
-    cmd->setComputePushConstants(0, &push);
+    cmd->setComputePushConstants(0, &push, 0, sizeof(push));
     cmd->dispatch((job.count * job.src.element_count + 63) / 64, 1, 1);
     out.ref[job.stream] = plume::RenderBufferReference(dest, used);
     out.bytes[job.stream] = bytes;
@@ -2689,6 +2946,108 @@ bool ConvertExportedStreamsLocked(VideoState &s, const GuestDevice &device, cons
   g_bound.pipeline = nullptr;
   g_bound.framebuffer = nullptr;
   return true;
+}
+
+// The GPU fills the persistent copies made since the last flush from the
+// upload memory their draws filled (PoolFill), and the cache entries take
+// them: draws from here on bind them. Records copies, which end any render
+// pass. Without an open list (none were made then) they are let go.
+void FlushPoolFillsLocked() {
+  if (g_stream_pool_fills.empty() && g_index_pool_fills.empty() && g_fetch_pool_fills.empty())
+    return;
+  auto &s = State();
+  plume::RenderCommandList *cmd = s.list_open ? s.command_list : nullptr;
+  // The pool buffers written to, once each: the vertex and index pools' read
+  // as such after, the fetch pool's by shaders.
+  static std::vector<plume::RenderBufferBarrier> barriers, fetch_barriers;
+  barriers.clear();
+  fetch_barriers.clear();
+  auto written = [](std::vector<plume::RenderBufferBarrier> &list, const PoolSpan &span) {
+    for (const plume::RenderBufferBarrier &b : list) {
+      if (b.buffer == span.buffer)
+        return;
+    }
+    list.push_back(plume::RenderBufferBarrier(span.buffer, plume::RenderBufferAccess::WRITE));
+  };
+  for (const StreamPoolFill &f : g_stream_pool_fills)
+    written(barriers, f.span);
+  for (const IndexPoolFill &f : g_index_pool_fills)
+    written(barriers, f.span);
+  for (const FetchPoolFill &f : g_fetch_pool_fills)
+    written(fetch_barriers, f.span);
+  if (cmd) {
+    static std::vector<plume::RenderBufferBarrier> all;
+    all.assign(barriers.begin(), barriers.end());
+    all.insert(all.end(), fetch_barriers.begin(), fetch_barriers.end());
+    cmd->barriers(plume::RenderBarrierStage::COPY, all.data(), u32(all.size()));
+  }
+
+  for (const StreamPoolFill &f : g_stream_pool_fills) {
+    auto it = g_stream_cache.find(f.key);
+    CachedStream *c = it != g_stream_cache.end() ? &it->second : nullptr;
+    if (cmd && c && c->pending && !c->copy) {
+      cmd->copyBufferRegion(f.span.Ref(), f.source, f.bytes);
+      c->copy = f.span;
+      c->bytes = f.bytes;
+      c->checked_frame = g_stream_cache_frame;
+    } else {
+      g_copy_pool.Free(f.span);
+      g_stream_cache_bytes -= f.bytes;
+    }
+    if (c)
+      c->pending = false;
+  }
+  for (const IndexPoolFill &f : g_index_pool_fills) {
+    auto it = g_index_cache.find(f.key);
+    CachedIndices *c = it != g_index_cache.end() ? &it->second : nullptr;
+    if (cmd && c && c->pending && !c->copy) {
+      cmd->copyBufferRegion(f.span.Ref(), f.source, f.bytes);
+      c->copy = f.span;
+      c->bytes = f.bytes;
+      c->index_count = f.index_count;
+      c->lo = f.lo;
+      c->max_index = f.max_index;
+      c->wide = f.wide;
+    } else {
+      g_index_pool.Free(f.span);
+      g_stream_cache_bytes -= f.bytes;
+    }
+    if (c)
+      c->pending = false;
+  }
+  for (const FetchPoolFill &f : g_fetch_pool_fills) {
+    auto it = g_fetch_cache.find(f.key);
+    CachedFetch *c = it != g_fetch_cache.end() ? &it->second : nullptr;
+    if (cmd && c && c->pending && !c->copy) {
+      cmd->copyBufferRegion(f.span.Ref(), f.source, f.bytes);
+      c->copy = f.span;
+      c->bytes = f.bytes;
+      c->checked_frame = g_stream_cache_frame;
+    } else {
+      g_fetch_pool.Free(f.span);
+      g_stream_cache_bytes -= f.bytes;
+    }
+    if (c)
+      c->pending = false;
+  }
+  g_stream_pool_fills.clear();
+  g_index_pool_fills.clear();
+  g_fetch_pool_fills.clear();
+
+  if (cmd) {
+    for (plume::RenderBufferBarrier &b : barriers)
+      b.accessBits = plume::RenderBufferAccess::READ;
+    for (plume::RenderBufferBarrier &b : fetch_barriers)
+      b.accessBits = plume::RenderBufferAccess::READ;
+    if (!barriers.empty())
+      cmd->barriers(plume::RenderBarrierStage::GRAPHICS, barriers.data(), u32(barriers.size()));
+    // As gpu_fetch_data is (UploadVertexFetchData): a root SRV on D3D12.
+    if (!fetch_barriers.empty()) {
+      cmd->barriers(plume::RenderBarrierStage::GRAPHICS_AND_COMPUTE, fetch_barriers.data(),
+                    u32(fetch_barriers.size()));
+    }
+    g_bound.framebuffer = nullptr;
+  }
 }
 
 // Stands in for a null vertex declaration: the vertex shader fetches its data
@@ -2715,15 +3074,29 @@ void FinishRecordingLocked(VideoState &) {
 } // namespace detail
 
 void FlushVertexFillsLocked() {
-  for (const PendingStreamFill &f : g_stream_fills) {
-    ConvertVertices(f.stream, f.guest, f.stride, f.count, f.endian, f.host);
-    if (f.cacheable)
-      TrackConvertedStream(f);
+  // Each fill and copy reads its own guest bytes into its own upload memory:
+  // they go on the helper threads too (parallel.h).
+  const size_t fills = g_stream_fill_count;
+  parallel::For(fills + g_copy_fills.size(), 4, [fills](size_t begin, size_t end) {
+    for (size_t i = begin; i < end; ++i) {
+      if (i < fills) {
+        const PendingStreamFill &f = g_stream_fills[i];
+        ConvertVertices(f.stream, f.guest, f.stride, f.count, f.endian, f.host);
+      } else {
+        const PendingCopy &c = g_copy_fills[i - fills];
+        std::memcpy(c.dst, c.src, c.size);
+      }
+    }
+  });
+  for (size_t i = 0; i < fills; ++i) {
+    if (g_stream_fills[i].cacheable)
+      TrackConvertedStream(g_stream_fills[i]);
   }
-  g_stream_fills.clear();
+  TrackFetchCopies();
+  // The copies those (and the draws' index ranges) made.
+  FlushPoolFillsLocked();
+  g_stream_fill_count = 0;
   g_queued_streams.clear();
-  for (const PendingCopy &c : g_copy_fills)
-    std::memcpy(c.dst, c.src, c.size);
   g_copy_fills.clear();
   ++g_fetch_copy_generation;
 }
@@ -2743,6 +3116,8 @@ bool DrawStateLocked(const u8 *device_state, const DrawCall &call, const ReplayC
   const GuestDevice device(device_state);
   if (!device.valid())
     return false;
+  render_profile::Stages stages;
+  stages.Enter(render_profile::Stage::kShaders);
 
   const u32 vs_va = device.U32(d3d::kDeviceOffsetVertexShader);
   auto *vs = FindShaderLocked(vs_va, RecordKind::VertexShader);
@@ -2782,6 +3157,7 @@ bool DrawStateLocked(const u8 *device_state, const DrawCall &call, const ReplayC
 
   // Earlier memexport results reach guest memory before this draw reads them
   // (WaitForExportsLocked may submit the list: before anything is recorded).
+  stages.Enter(render_profile::Stage::kExportWait);
   const FloatConstants vs_constants = DrawFloatConstants(device_state, replay, false);
   const FloatConstants ps_constants = DrawFloatConstants(device_state, replay, true);
   // Waiting for an older slot's results leaves the current slot's, which the
@@ -2802,6 +3178,7 @@ bool DrawStateLocked(const u8 *device_state, const DrawCall &call, const ReplayC
     }
     WaitForExportsLocked(slots);
   }
+  stages.Enter(render_profile::Stage::kShaders);
   if (!Video::EnsureCommandListLocked())
     return false;
   SyncBound(s);
@@ -2816,12 +3193,14 @@ bool DrawStateLocked(const u8 *device_state, const DrawCall &call, const ReplayC
     return false;
 
   // Everything that records copies or barriers comes before the framebuffer.
+  stages.Enter(render_profile::Stage::kTextures);
   SharedConstants sc;
   std::memset(&sc, 0, sizeof(sc));
   const u32 texture_mask =
       (vs->entry ? vs->entry->textureFetchMask : 0) | (ps && ps->entry ? ps->entry->textureFetchMask : 0);
   FillTextures(device, texture_mask, sc);
 
+  stages.Enter(render_profile::Stage::kConstants);
   const d3d::Device &dev = device.dev();
   const u8 *bools = reinterpret_cast<const u8 *>(&dev.m_Constants.VertexShaderB[0]);
   SwapEndian(2, bools, sc.booleans, sizeof(sc.booleans));
@@ -2849,6 +3228,7 @@ bool DrawStateLocked(const u8 *device_state, const DrawCall &call, const ReplayC
     sc.point_state[3] = float(point_min_max >> 16) / 16.0f;
   }
 
+  stages.Enter(render_profile::Stage::kGeometry);
   Geometry geometry;
   if (call.tessellation ? !PrepareTessellation(device, call, geometry, sc.tessellation)
                         : !PrepareGeometry(device, call, geometry)) {
@@ -2858,6 +3238,7 @@ bool DrawStateLocked(const u8 *device_state, const DrawCall &call, const ReplayC
   // it in PrepareGeometry); the guest's r0.x is the vertex index itself.
   if (!call.tessellation)
     sc.tessellation[3] = geometry.first_vertex;
+  stages.Enter(render_profile::Stage::kVertexFetch);
   GpuStreams gpu_streams;
   if (!ConvertExportedStreamsLocked(s, device, call, *vs, shader_strides, *declaration, geometry,
                                     gpu_streams)) {
@@ -2867,6 +3248,7 @@ bool DrawStateLocked(const u8 *device_state, const DrawCall &call, const ReplayC
   const u32 fetch_mask = (vs->entry ? vs->entry->vertexFetchMemoryMask : 0) |
                          DescribeBoundFetches(device, call, *vs, *declaration, shader_strides, sc);
   UploadAllocation fetch_alloc = UploadVertexFetchData(device, call, fetch_mask, sc);
+  stages.Enter(render_profile::Stage::kConstants);
   static constexpr u32 kAllRegisters[8] = {~0u, ~0u, ~0u, ~0u, ~0u, ~0u, ~0u, ~0u};
   static constexpr u32 kNoRegisters[8] = {};
   const u32 *vs_used = vs->entry ? vs->entry->floatConstants : kAllRegisters;
@@ -2875,6 +3257,8 @@ bool DrawStateLocked(const u8 *device_state, const DrawCall &call, const ReplayC
   UploadAllocation ps_alloc = UploadFloatConstants(ps_constants, ps_used, g_bound.ps_constants);
   if (ps_alloc && ps && DepthOfFieldStrength() != 1.0f && IsDepthOfFieldDraw(vs->hash, ps_used))
     ps_alloc = ScaleDepthOfField(g_bound.ps_constants, DepthOfFieldStrength());
+  if (ps_alloc && ps && BloomStrength() != 1.0f && IsBloomDraw(ps->hash, ps_used))
+    ps_alloc = ScaleBloom(g_bound.ps_constants, BloomStrength());
   MemExportStream exports[kMaxMemExportStreams];
   u32 export_count = 0;
   u32 export_offsets[kMaxMemExportStreams] = {};
@@ -2889,15 +3273,21 @@ bool DrawStateLocked(const u8 *device_state, const DrawCall &call, const ReplayC
   if (memexport && IsVulkan())
     sc.memexport_address = memexport->getDeviceAddress();
   UploadAllocation sc_alloc = Video::UploadsLocked().Upload(&sc, sizeof(sc), 256);
-  if (!fetch_alloc || !vs_alloc || !ps_alloc || !sc_alloc || !memexport)
+  // (Fetch data from the fetch cache has no upload memory, only the buffer.)
+  if (!fetch_alloc.ref.ref || !vs_alloc || !ps_alloc || !sc_alloc || !memexport)
     return false;
 
+  stages.Enter(render_profile::Stage::kPipeline);
   const PipelineKey key =
       MakeKey(device, vs, ps, declaration, targets, call.primitive, geometry.per_instance);
   plume::RenderPipeline *pipeline =
       GetPipelineLocked(key, {host_vs, host_ps, &declaration->layout});
-  if (!pipeline || !BindTargets(targets))
+  if (!pipeline)
     return false;
+  stages.Enter(render_profile::Stage::kTargets);
+  if (!BindTargets(targets))
+    return false;
+  stages.Enter(render_profile::Stage::kRecord);
   plume::RenderCommandList *cmd = s.command_list;
   SetViewport(cmd, viewport.viewport, viewport.scissor, targets.color_count);
 
@@ -2952,10 +3342,13 @@ bool DrawStateLocked(const u8 *device_state, const DrawCall &call, const ReplayC
     SetRootDescriptor(cmd, plume::RenderBufferReference(memexport), kDrawRootMemExport);
   }
 
+  stages.Enter(render_profile::Stage::kStreams);
   if (!BindStreams(device, call, *vs, shader_strides, declaration->layout,
                    declaration->layout_hash, geometry, gpu_streams)) {
     return false;
   }
+  stages.Enter(render_profile::Stage::kRecord);
+  render_profile::CountDraw();
   if (geometry.indexed) {
     SetIndexBuffer(cmd, geometry.index_view);
     cmd->drawIndexedInstanced(geometry.index_count, 1, 0, 0, 0);
@@ -2973,6 +3366,8 @@ namespace detail {
 
 void ReleaseCacheCopiesLocked(uint32_t slot) {
   g_copy_pool.ReleaseSlot(slot);
+  g_index_pool.ReleaseSlot(slot);
+  g_fetch_pool.ReleaseSlot(slot);
 }
 
 void CompleteMemExportsLocked(uint32_t slot) {
@@ -3039,11 +3434,35 @@ void AdvanceStreamCacheFrameLocked() {
   }
   stale_indices.clear();
 
+  static std::vector<decltype(g_fetch_verifier)::Check> stale_fetches;
+  g_fetch_verifier.Flush();
+  g_fetch_verifier.TakeStale(stale_fetches);
+  for (const auto &check : stale_fetches) {
+    auto it = g_fetch_cache.find(check.key);
+    if (it == g_fetch_cache.end())
+      continue;
+    CachedFetch &c = it->second;
+    if (!c.copy || c.hash != check.hash)
+      continue;
+    DropCachedFetch(c);
+    c.stable = 0;
+    c.checked_frame = UINT64_MAX;  // hashed again by TrackFetchCopies
+    c.dynamic = ++c.drops >= kMaxCacheDrops;
+  }
+  stale_fetches.clear();
+
   if (++g_stream_cache_frame % 60)
     return;
   // The memos may hold entries about to go.
   g_stream_memo.Clear();
   g_index_memo.Clear();
+  g_fetch_memo.Clear();
+  std::erase_if(g_fetch_cache, [](auto &entry) {
+    if (g_stream_cache_frame - entry.second.last_used < kStreamCacheIdleFrames)
+      return false;
+    DropCachedFetch(entry.second);
+    return true;
+  });
   std::erase_if(g_stream_cache, [](auto &entry) {
     if (g_stream_cache_frame - entry.second.last_used < kStreamCacheIdleFrames)
       return false;
@@ -3060,7 +3479,7 @@ void AdvanceStreamCacheFrameLocked() {
 
 StreamCacheMemory StreamCacheMemoryLocked() {
   StreamCacheMemory usage;
-  usage.pool_bytes = g_copy_pool.Bytes();
+  usage.pool_bytes = g_copy_pool.Bytes() + g_index_pool.Bytes() + g_fetch_pool.Bytes();
   usage.cached_bytes = g_stream_cache_bytes;
   usage.streams = g_stream_cache.size();
   usage.index_ranges = g_index_cache.size();
@@ -3182,6 +3601,7 @@ plume::RenderRect ClampRect(const ClearRect *rect, uint32_t width, uint32_t heig
 
 void ClearStateLocked(const u8 *device_state, u32 flags, const ClearRect *rect,
                       const float color[4], float depth, u32 stencil) {
+  render_profile::Scope profile(render_profile::Stage::kClear);
   auto &s = State();
   if (!Video::EnsureCommandListLocked())
     return;
@@ -3221,6 +3641,7 @@ void ResolveStateLocked(const u8 *device_state, u32 flags, const ClearRect *sour
                         u32 dest_texture_va, const d3d::TextureFetchConstant *dest_format,
                         i32 dest_x, i32 dest_y, u32 dest_level, u32 dest_slice,
                         const float clear_color[4], float clear_depth, u32 clear_stencil) {
+  render_profile::Scope profile(render_profile::Stage::kResolve);
   auto &s = State();
   static const uint32_t kProfileLabel = gpu_profile::Label("resolves");
   gpu_profile::Mark(s, kProfileLabel);
@@ -3429,7 +3850,7 @@ bool ReadRenderTargetLocked(const u8 *device_state, u32 source, u32 &width, u32 
   push.height = height;
   push.scale_numerator = RenderScale::kNumerators[scale.code];
   push.scale_denominator = RenderScale::kDenominators[scale.code];
-  cmd->setComputePushConstants(0, &push);
+  cmd->setComputePushConstants(0, &push, 0, sizeof(push));
   cmd->dispatch((width + 7) / 8, (height + 7) / 8, 1);
   cmd->barriers(plume::RenderBarrierStage::COPY,
                 plume::RenderBufferBarrier(output.get(), plume::RenderBufferAccess::READ));

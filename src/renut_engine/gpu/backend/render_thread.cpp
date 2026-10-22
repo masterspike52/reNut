@@ -12,6 +12,7 @@
 #include <vector>
 
 #include "renut_engine/perf/frame_stats.h"
+#include "renut_engine/gpu/backend/render_profile.h"
 #include "renut_engine/gpu/guest/guest_memory.h"
 #include "renut_engine/gpu/log.h"
 #include "renut_engine/gpu/backend/video.h"
@@ -228,6 +229,7 @@ uint64_t QueueFrame(std::function<void()> work) {
     g_busy = -so_far;
     g_waited = {};
     frame_stats::OnRenderThreadFrame(busy_ms);
+    render_profile::FrameDone(busy_ms);
     {
       std::lock_guard lock(g_mutex);
       ++g_frames_done;

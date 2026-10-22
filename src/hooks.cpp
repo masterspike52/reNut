@@ -2,6 +2,7 @@
 
 #include <string_view>
 
+#include "renut_engine/online/coop.h"
 #include "renut_engine/online/online.h"
 
 // Cheats are off in online multiplayer: while the game has a session
@@ -17,9 +18,19 @@ static bool CheatValueAllowed(std::string_view value) {
     return CheatsAllowed() || (value != "true" && value != "1");
 }
 
+// Changing vehicles anywhere is also allowed in co-op (online/coop.h), which
+// is no contest.
+static bool VehicleCheatAllowed() {
+    return CheatsAllowed() || renut::online::coop::CurrentRole() != renut::online::coop::Role::kNone;
+}
+
+static bool VehicleCheatValueAllowed(std::string_view value) {
+    return VehicleCheatAllowed() || (value != "true" && value != "1");
+}
+
 // Name = "Showdown Town Vehicles"
-REXCVAR_DEFINE_BOOL(change_vehicles_anywhere, false, "Nuts&Bolts/Cheats", "Enables Changing Vehicles Anywhere. Off in online multiplayer.")
-.validator(CheatValueAllowed);
+REXCVAR_DEFINE_BOOL(change_vehicles_anywhere, false, "Nuts&Bolts/Cheats", "Enables Changing Vehicles Anywhere. Off in online multiplayer, but for co-op.")
+.validator(VehicleCheatValueAllowed);
 // Name = "No Notes Spent"
 REXCVAR_DEFINE_BOOL(no_notes_spent, false, "Nuts&Bolts/Cheats", "hook created by serenity. Off in online multiplayer.")
 .validator(CheatValueAllowed);
@@ -52,7 +63,7 @@ void Infinite_fuel_and_ammo() {
 
 void overworld_vehicles_hook(PPCRegister& r23, PPCRegister& r26) {
 	// If true, then set r23 and r26 to 1. This will add "Change Vehicle" (r26) and "Build Vehicle" (r23) to the pause menu list.
-    if (REXCVAR_GET(change_vehicles_anywhere) && CheatsAllowed()) {
+    if (REXCVAR_GET(change_vehicles_anywhere) && VehicleCheatAllowed()) {
 		r23.u32 = 1;
 		r26.u8 = 1;
     }

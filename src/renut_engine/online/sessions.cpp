@@ -23,6 +23,7 @@
 #include <rex/system/xtypes.h>
 #include <rex/types.h>
 
+#include "renut_engine/game/guest_call.h"
 #include "renut_engine/online/eos.h"
 #include "renut_engine/online/friends.h"
 #include "renut_engine/online/online.h"
@@ -124,6 +125,14 @@ REX_HOOK_RAW(rex_XSessionLeaveRemote) {
     __imp__rex_XSessionLeaveRemote(ctx, base);
     return;
   }
+  // Which players the game takes out (a player dropped shows here).
+  const uint32_t count = ctx.r4.u32;
+  const uint32_t xuids = ctx.r5.u32;
+  for (uint32_t i = 0; xuids && i < count && i < 8; ++i) {
+    const uint64_t xuid = uint64_t(Load32(base, xuids + 8 * i)) << 32 | Load32(base, xuids + 8 * i + 4);
+    RONL_INFO("Online: the game takes player {:016X} ({}) out of a session (from {})", xuid,
+              eos::IdOf(xuid), renut::guest::GuestBacktrace(ctx, base));
+  }
   Succeed(ctx, ctx.r6.u32);
   TraceCall("XSessionLeaveRemote", args, ctx.r3.u32);
 }
@@ -203,6 +212,8 @@ REX_HOOK_RAW(sub_82BEEE28) {
 REX_HOOK_RAW(rex_XSessionDelete) {
   const uint32_t args[6] = {ctx.r3.u32, ctx.r4.u32, ctx.r5.u32,
                             ctx.r6.u32, ctx.r7.u32, ctx.r8.u32};
+  if (Enabled())
+    RONL_INFO("Online: the game deletes a session (from {})", renut::guest::GuestBacktrace(ctx, base));
   __imp__rex_XSessionDelete(ctx, base);
   TraceCall("XSessionDelete", args, ctx.r3.u32);
   int sessions = g_sessions.load();

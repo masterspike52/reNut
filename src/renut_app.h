@@ -13,6 +13,7 @@
 #include "renut_engine/mods/mod_loader.h"
 #include "renut_engine/game/mouse_camera.h"
 #include "renut_engine/game/keyboard_input.h"
+#include "renut_engine/game/graphics_menu.h"
 #include <rex/ui/window.h>
 //#include <rex/discord_rpc.h>
 #include <functional>
@@ -33,6 +34,7 @@ public:
         if (renut::paths::IsAppImage())
             paths.config_path = renut::paths::WritableFolder() / (app_name_ + ".toml");
         config_path_ = paths.config_path;
+        renut::graphics_menu::SetConfigPath(config_path_);
     }
 
     void OnConfigureLogging(rex::LogConfig& config) override {

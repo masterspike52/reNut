@@ -49,8 +49,9 @@ constexpr uint64_t kXuidHashMask = 0x0000FFFFFFFFFFFFull;
 constexpr auto kTickerInterval = std::chrono::seconds(2);
 constexpr auto kSignInRetry = std::chrono::seconds(30);
 constexpr size_t kMaxQueued = 4096;
-constexpr uint8_t kChannelCount = 2;
+constexpr uint8_t kChannelCount = 3;
 constexpr size_t kMaxTickers = 8;
+constexpr size_t kMaxPeerListeners = 4;
 
 enum class State { kOff, kSigningIn, kSignedIn, kRetrying, kFailed };
 
@@ -63,6 +64,18 @@ std::atomic<uint64_t> g_own_xuid{0};
 std::atomic<Receiver> g_receivers[kChannelCount] = {};
 std::atomic<Ticker> g_tickers[kMaxTickers] = {};
 std::atomic<size_t> g_ticker_count{0};
+std::atomic<PeerListener> g_peer_listeners[kMaxPeerListeners] = {};
+std::atomic<size_t> g_peer_listener_count{0};
+
+void TellPeerListeners(const std::string &id, bool connected) {
+  if (id.empty())
+    return;
+  const size_t count = std::min(g_peer_listener_count.load(), kMaxPeerListeners);
+  for (size_t i = 0; i < count; ++i) {
+    if (const PeerListener listener = g_peer_listeners[i])
+      listener(id, connected);
+  }
+}
 
 struct Outgoing {
   std::string id;
@@ -152,6 +165,27 @@ void EOS_CALL OnConnectionRequest(const EOS_P2P_OnIncomingConnectionRequestInfo 
   EOS_P2P_AcceptConnection(g_p2p, &options);
 }
 
+void EOS_CALL OnConnectionEstablished(const EOS_P2P_OnPeerConnectionEstablishedInfo *info) {
+  const std::string id = IdString(info->RemoteUserId);
+  Remember(id);
+  RONL_INFO("EOS: connection to {} {} ({})", id,
+            info->ConnectionType == EOS_EConnectionEstablishedType::EOS_CET_Reconnection ? "back"
+                                                                                          : "open",
+            info->NetworkType == EOS_ENetworkConnectionType::EOS_NCT_RelayedConnection ? "relayed"
+                                                                                        : "direct");
+  TellPeerListeners(id, true);
+}
+
+void EOS_CALL OnConnectionClosed(const EOS_P2P_OnRemoteConnectionClosedInfo *info) {
+  RONL_INFO("EOS: connection to {} closed (reason {})", IdString(info->RemoteUserId),
+            int(info->Reason));
+  // Closed here (signing out, shutting down): not the other player leaving.
+  if (info->Reason == EOS_EConnectionClosedReason::EOS_CCR_ClosedByLocalUser ||
+      info->Reason == EOS_EConnectionClosedReason::EOS_CCR_Unknown)
+    return;
+  TellPeerListeners(IdString(info->RemoteUserId), false);
+}
+
 void Login();
 
 void EOS_CALL OnAuthExpiration(const EOS_Connect_AuthExpirationCallbackInfo *) {
@@ -175,6 +209,16 @@ void SignedInAs(EOS_ProductUserId local) {
     request.LocalUserId = g_local;
     request.SocketId = &g_socket;
     EOS_P2P_AddNotifyPeerConnectionRequest(g_p2p, &request, nullptr, &OnConnectionRequest);
+    EOS_P2P_AddNotifyPeerConnectionEstablishedOptions established = {};
+    established.ApiVersion = EOS_P2P_ADDNOTIFYPEERCONNECTIONESTABLISHED_API_LATEST;
+    established.LocalUserId = g_local;
+    established.SocketId = &g_socket;
+    EOS_P2P_AddNotifyPeerConnectionEstablished(g_p2p, &established, nullptr, &OnConnectionEstablished);
+    EOS_P2P_AddNotifyPeerConnectionClosedOptions closed = {};
+    closed.ApiVersion = EOS_P2P_ADDNOTIFYPEERCONNECTIONCLOSED_API_LATEST;
+    closed.LocalUserId = g_local;
+    closed.SocketId = &g_socket;
+    EOS_P2P_AddNotifyPeerConnectionClosed(g_p2p, &closed, nullptr, &OnConnectionClosed);
     EOS_Connect_AddNotifyAuthExpirationOptions expiration = {};
     expiration.ApiVersion = EOS_CONNECT_ADDNOTIFYAUTHEXPIRATION_API_LATEST;
     EOS_Connect_AddNotifyAuthExpiration(g_connect, &expiration, nullptr, &OnAuthExpiration);
@@ -482,6 +526,12 @@ void AddTicker(Ticker ticker) {
   const size_t index = g_ticker_count.fetch_add(1);
   if (index < kMaxTickers)
     g_tickers[index] = ticker;
+}
+
+void AddPeerListener(PeerListener listener) {
+  const size_t index = g_peer_listener_count.fetch_add(1);
+  if (index < kMaxPeerListeners)
+    g_peer_listeners[index] = listener;
 }
 
 } // namespace renut::online::eos

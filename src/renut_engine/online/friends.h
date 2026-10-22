@@ -47,6 +47,9 @@ struct Session {
   uint8_t qos_size = 0;
   // A friend's: the round trip to it (an estimate; EOS does not measure it).
   uint16_t rtt_ms = 0;
+  // A co-op session (coop.h), and the Showdown Town scene script its matches use.
+  bool coop = false;
+  uint32_t coop_town = 0;
 
   bool Valid() const;
 };
@@ -87,6 +90,9 @@ Session HostedSession();
 // What player 1's game answers QoS probes for a session with (XNetQosListen);
 // told with the hosted session. 'size' 0: none.
 void SetQosData(const SessionId &id, const uint8_t *data, size_t size);
+// Player 1's hosted session is co-op (told with it), its matches in this town
+// scene script.
+void SetCoopHosting(bool coop, uint32_t town);
 // A friend's hosted session with this ID.
 std::optional<Session> FindFriendSession(const SessionId &id);
 

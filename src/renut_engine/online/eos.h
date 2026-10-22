@@ -61,10 +61,12 @@ void Remember(std::string_view id);
 std::string IdOf(uint64_t xuid);
 
 // Peer-to-peer messages. Channel 0: the game's traffic (transport.cpp);
-// channel 1: friends (friends.cpp). At most kMaxMessage bytes each. Sent
-// unreliably (as the game's own datagrams) or reliably and in order.
+// channel 1: friends (friends.cpp); channel 2: co-op (coop.cpp). At most
+// kMaxMessage bytes each. Sent unreliably (as the game's own datagrams) or
+// reliably and in order.
 constexpr uint8_t kChannelGame = 0;
 constexpr uint8_t kChannelFriends = 1;
+constexpr uint8_t kChannelCoop = 2;
 constexpr size_t kMaxMessage = 1170;  // EOS_P2P_MAX_PACKET_SIZE
 // Queued for the EOS thread; false when not signed in or too long.
 bool Send(std::string_view id, uint8_t channel, const void *data, size_t size, bool reliable);
@@ -75,5 +77,10 @@ void SetReceiver(uint8_t channel, Receiver receiver);
 // Called every couple of seconds on the EOS thread while signed in.
 using Ticker = void (*)();
 void AddTicker(Ticker ticker);
+// Called on the EOS thread when the connection to a player opens (it can be
+// reached now: it came online, or answered) and when it closes (it went away,
+// or cannot be reached).
+using PeerListener = void (*)(const std::string &id, bool connected);
+void AddPeerListener(PeerListener listener);
 
 } // namespace renut::online::eos

@@ -21,6 +21,7 @@
 
 #include "renut_engine/perf/frame_stats.h"
 #include "renut_engine/gpu/backend/backend.h"
+#include "renut_engine/gpu/backend/command_recorder.h"
 #include "renut_engine/gpu/backend/gpu_profile.h"
 #include "renut_engine/gpu/log.h"
 #include "renut_engine/gpu/backend/native_window.h"
@@ -444,8 +445,11 @@ void WaitSlotLocked(VideoState &s, uint32_t slot) {
     return;
   {
     render_thread::WaitScope wait;
+    // Submitted by the recording thread: once it has, the fence means it.
+    CommandRecorder::WaitForCall(s.submit_calls[slot]);
     s.queue->waitForCommandFence(s.fences[slot].get());
   }
+  s.submit_calls[slot] = 0;
   s.submitted[slot] = false;
   CollectGpuTime(s, slot);
   gpu_profile::Collect(s, slot);
@@ -464,13 +468,25 @@ void WaitAllSubmitted(VideoState &s) {
   }
 }
 
+// Ends the slot's list: with a recorder, once the recording thread has made
+// all of its calls.
+void EndCommandList(VideoState &s, uint32_t slot) {
+  if (CommandRecorder *recorder = s.recorders[slot]) {
+    recorder->end();
+    render_thread::WaitScope wait;
+    recorder->Finish();
+  } else {
+    s.command_lists[slot]->end();
+  }
+}
+
 void SubmitAndWaitLocked(VideoState &s) {
   if (!s.list_open)
     return;
   const uint32_t cur = s.frame;
   FinishRecordingLocked(s);
   EndListTiming(s, false);
-  s.command_lists[cur]->end();
+  EndCommandList(s, cur);
   const plume::RenderCommandList *lists[] = {s.command_lists[cur].get()};
   s.queue->executeCommandLists(lists, 1, nullptr, 0, nullptr, 0, s.fences[cur].get());
   {
@@ -491,15 +507,25 @@ void SubmitAndAdvance(VideoState &s, plume::RenderCommandSemaphore *wait,
   if (s.list_open) {
     FinishRecordingLocked(s);
     EndListTiming(s, true);
-    s.command_lists[cur]->end();
     s.list_open = false;
     s.command_list = nullptr;
-    const plume::RenderCommandList *lists[] = {s.command_lists[cur].get()};
-    plume::RenderCommandSemaphore *waits[] = {wait};
-    plume::RenderCommandSemaphore *signals[] = {signal};
-    s.queue->executeCommandLists(lists, 1, wait ? waits : nullptr, wait ? 1 : 0,
-                                 signal ? signals : nullptr, signal ? 1 : 0,
-                                 s.fences[cur].get());
+    const auto submit = [queue = s.queue.get(), list = s.command_lists[cur].get(),
+                         fence = s.fences[cur].get(), wait, signal] {
+      const plume::RenderCommandList *lists[] = {list};
+      plume::RenderCommandSemaphore *waits[] = {wait};
+      plume::RenderCommandSemaphore *signals[] = {signal};
+      queue->executeCommandLists(lists, 1, wait ? waits : nullptr, wait ? 1 : 0,
+                                 signal ? signals : nullptr, signal ? 1 : 0, fence);
+    };
+    if (CommandRecorder *recorder = s.recorders[cur]) {
+      // The recording thread ends and submits the list after the rest of its
+      // calls; the render thread goes on to the next frame meanwhile.
+      recorder->end();
+      s.submit_calls[cur] = recorder->RecordCall(submit);
+    } else {
+      s.command_lists[cur]->end();
+      submit();
+    }
     s.submitted[cur] = true;
   }
 
@@ -542,7 +568,7 @@ bool Video::CreateHostDevice() {
   }
 #endif
 
-  s.render_interface = CreateRenderInterface();
+  s.render_interface = CreateRenderInterface(render_window);
   if (!s.render_interface) {
     RGPU_ERROR("{} render interface creation failed", BackendName(ActiveBackend()));
     return false;
@@ -573,6 +599,8 @@ bool Video::CreateHostDevice() {
       return false;
     if (s.device->getCapabilities().queryPools)
       s.timestamps[i] = s.device->createQueryPool(2 * VideoState::kTimedLists);
+    if (ThreadedRecordingEnabled())
+      s.recorders[i] = new CommandRecorder(s.command_lists[i].get());
   }
 
   // One image beyond the frames in flight, so acquiring never waits on scanout.
@@ -617,6 +645,11 @@ void Video::BeginShutdown() {
   StopPipelinePrebuild();
   render_thread::Stop();
   std::lock_guard lock(s.mutex);
+  // The recording thread is done with the lists before they go at exit.
+  for (CommandRecorder *recorder : s.recorders) {
+    if (recorder)
+      recorder->Finish();
+  }
   if (s.queue)
     detail::WaitAllSubmitted(s);
 }
@@ -653,7 +686,8 @@ bool Video::EnsureCommandListLocked() {
   if (!s.host_ready || s.shutting_down.load(std::memory_order_acquire))
     return false;
 
-  s.command_list = s.command_lists[s.frame].get();
+  s.command_list = s.recorders[s.frame] ? static_cast<plume::RenderCommandList *>(s.recorders[s.frame])
+                                        : s.command_lists[s.frame].get();
   s.command_list->begin();
   s.list_open = true;
   ++s.list_generation;

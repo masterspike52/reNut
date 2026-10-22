@@ -37,10 +37,12 @@
 #include <rex/logging.h>
 #include <rex/types.h>
 
+#include <atomic>
 #include <cstdint>
 #include <cstring>
 #include <string>
 
+#include "renut_engine/game/controllers.h"
 #include "renut_engine/game/keyboard_input.h"
 
 #if defined(_WIN32)
@@ -109,6 +111,8 @@ int g_logged_pad[kUserCount] = {kNoPad, kNoPad, kNoPad, kNoPad};
 uint32_t g_logged_ignored = 0;
 int g_logged_focus = -1;        // whether the game window had the focus
 bool g_logged_press = false;    // player 1's first press, since its controller changed
+// Player 1's buttons from the game's last read (Player1Buttons).
+std::atomic<uint16_t> g_player1_buttons{0};
 
 uint16_t Load16(const uint8_t *p) {
   return rex::byte_swap(*reinterpret_cast<const uint16_t *>(p));
@@ -304,6 +308,10 @@ uint32_t KeystrokePlayer(const uint8_t *keystroke, uint32_t pad) {
 
 } // namespace
 
+uint16_t renut::controllers::Player1Buttons() {
+  return g_player1_buttons.load(std::memory_order_relaxed);
+}
+
 // DWORD XInputGetState(DWORD user, XINPUT_STATE *state)
 REX_HOOK_RAW(rex_XInputGetState) {
   const uint32_t user = ctx.r3.u32;
@@ -336,10 +344,12 @@ REX_HOOK_RAW(rex_XInputGetState) {
     for (uint32_t player = 0; player < kUserCount; ++player)
       LogPlayer(player);
     if (g_player_pad[0] == kNoPad) {
+      g_player1_buttons = 0;
       ctx.r3.u64 = kErrorDeviceNotConnected;
       return;
     }
     LogPress(states[g_player_pad[0]], g_player_pad[0]);
+    g_player1_buttons = Load16(states[g_player_pad[0]] + kStateButtonsOffset);
     std::memcpy(base + state, states[g_player_pad[0]], kStateSize);
     ctx.r3.u64 = kErrorSuccess;
     return;

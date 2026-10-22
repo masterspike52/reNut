@@ -19,6 +19,7 @@
 #include "renut_engine/gpu/guest/guest_memory.h"
 #include "renut_engine/gpu/log.h"
 #include "renut_engine/gpu/render/graphics_options.h"
+#include "renut_engine/gpu/render/parallel.h"
 #include "renut_engine/gpu/backend/video.h"
 
 namespace renut::gpu {
@@ -71,6 +72,32 @@ std::unordered_map<u32, HostTexture *> g_resolve_targets;
 std::unordered_map<uint64_t, uint32_t> g_samplers;  // sampler key -> slot
 std::vector<std::unique_ptr<plume::RenderSampler>> g_sampler_objects;
 uint64_t g_frame = 1;
+
+// BindTextureLocked's answers by texture, device fetch constant and the
+// header's own, within a generation: a frame's draws bind the same few
+// hundred textures thousands of times, and each bind read the header,
+// converted it and looked the texture up in up to three maps (a tenth of the
+// render thread, 2026-10-22). A generation ends with the frame and with
+// whatever changes what a bind finds: a host texture retired (released,
+// replaced, evicted) and any resolve. Two ways to a set, the newer first.
+uint64_t g_bind_generation = 1;
+struct BindMemo {
+  uint64_t generation = 0;
+  u32 va = 0;
+  u32 device[6] = {};
+  u32 header[6] = {};
+  HostTexture *texture = nullptr;  // made SHADER_READ again at each hit
+  TextureBinding binding;
+};
+constexpr u32 kBindMemoBits = 11;
+BindMemo g_bind_memo[2u << kBindMemoBits];
+
+BindMemo *BindMemoSet(u32 texture_va, const u32 device[6]) {
+  uint32_t hash = texture_va * 0x9E3779B1u;
+  for (u32 i = 0; i < 6; ++i)
+    hash = (hash ^ device[i]) * 0x85EBCA6Bu;
+  return &g_bind_memo[(hash >> (32 - kBindMemoBits)) * 2];
+}
 
 // Resources D3D::UnlockResource was called on since the last bind that
 // looked (NoteTextureUnlocked; any thread, hence the lock of its own).
@@ -552,6 +579,7 @@ void MaskedDesc(const TextureFetch &fetch, u32 out[6]) {
 }
 
 void Retire(HostTexture &t) {
+  ++g_bind_generation;
   if (t.slot != UINT32_MAX && t.slot != kInvalidDescriptor)
     Video::FreeTextureSlotLocked(t.slot);
   t.slot = UINT32_MAX;
@@ -634,6 +662,8 @@ void CopyDepthWords(HostTexture &t, HostTexture &source) {
 HostTexture *ResolveTarget(u32 texture_va, plume::RenderFormat format, RenderScale scale,
                            const d3d::TextureFetchConstant *header_format, bool depth,
                            TextureFetch &fetch) {
+  // What binds of this memory (or depth words over it) find changes.
+  ++g_bind_generation;
   if (!texture_va)
     return nullptr;
   if (!header_format) {
@@ -812,6 +842,7 @@ void EvictIdleTexturesLocked() {
 
 void AdvanceTextureFrameLocked() {
   ++g_frame;
+  ++g_bind_generation;
   ApplyUnlocksLocked();
   if (g_frame % kEvictCheckFrames == 0)
     EvictIdleTexturesLocked();
@@ -842,10 +873,14 @@ void NoteTextureUnlocked(u32 resource_va) {
 }
 
 void FlushTextureFillsLocked() {
-  for (const PendingFill &f : g_pending_fills) {
-    ReadLevel(f.info, f.fetch, f.src, f.blocks_w, f.blocks_h, f.depth, f.dst, f.row_pitch,
-              f.slice_pitch);
-  }
+  // Each fill writes its own staging memory (parallel.h).
+  parallel::For(g_pending_fills.size(), 1, [](size_t begin, size_t end) {
+    for (size_t i = begin; i < end; ++i) {
+      const PendingFill &f = g_pending_fills[i];
+      ReadLevel(f.info, f.fetch, f.src, f.blocks_w, f.blocks_h, f.depth, f.dst, f.row_pitch,
+                f.slice_pitch);
+    }
+  });
   g_pending_fills.clear();
 }
 
@@ -878,15 +913,15 @@ void TransitionTextureLocked(HostTexture *texture, plume::RenderTextureLayout la
   texture->layout = layout;
 }
 
-TextureBinding BindTextureLocked(u32 texture_va, const TextureFetch &device_fetch) {
+namespace {
+
+// BindTextureLocked without the memo; 'bound' receives the host texture bound,
+// if any.
+TextureBinding BindUncached(u32 texture_va, const TextureFetch &device_fetch,
+                            const d3d::BaseTexture *header, HostTexture *&bound) {
   TextureBinding binding;
   binding.dimension = HostDimension(device_fetch);
   binding.slot = NullSlot(binding.dimension);
-  if (!texture_va)
-    return binding;
-  const auto *header = GuestPtr<const d3d::BaseTexture>(texture_va);
-  if (!header)
-    return binding;
   TextureFetch fetch = TextureFetch::FromHeader(header->Format);
   // SetTexture copied the header into the device's fetch constant. A header
   // that no longer describes the same data (SameData: memory, format, size,
@@ -908,6 +943,7 @@ TextureBinding BindTextureLocked(u32 texture_va, const TextureFetch &device_fetc
   if (!fetch.IsTexture())
     return binding;
   if (HostTexture *resolved = ResolvedAlias(texture_va, fetch, desc)) {
+    bound = resolved;
     resolved->used_frame = g_frame;
     TransitionTextureLocked(resolved, plume::RenderTextureLayout::SHADER_READ);
     binding.dimension = resolved->dimension;
@@ -976,11 +1012,53 @@ TextureBinding BindTextureLocked(u32 texture_va, const TextureFetch &device_fetc
     }
   }
   TransitionTextureLocked(&t, plume::RenderTextureLayout::SHADER_READ);
+  bound = &t;
   binding.dimension = t.dimension;
   binding.slot = SlotForSwizzle(t, fetch.Swizzle());
   binding.stacked = t.stacked;
   binding.scale = t.scale;
   binding.lod_scale = t.extra_levels ? t.scale : RenderScale{};
+  return binding;
+}
+
+} // namespace
+
+TextureBinding BindTextureLocked(u32 texture_va, const TextureFetch &device_fetch) {
+  const auto *header = texture_va ? GuestPtr<const d3d::BaseTexture>(texture_va) : nullptr;
+  if (!header) {
+    TextureBinding binding;
+    binding.dimension = HostDimension(device_fetch);
+    binding.slot = NullSlot(binding.dimension);
+    return binding;
+  }
+  static_assert(sizeof(header->Format) == sizeof(BindMemo::header));
+  static_assert(sizeof(device_fetch.dword) == sizeof(BindMemo::device));
+  u32 header_words[6];
+  std::memcpy(header_words, &header->Format, sizeof(header_words));
+  BindMemo *set = BindMemoSet(texture_va, device_fetch.dword);
+  for (u32 way = 0; way < 2; ++way) {
+    BindMemo &m = set[way];
+    if (m.generation == g_bind_generation && m.va == texture_va &&
+        std::memcmp(m.device, device_fetch.dword, sizeof(m.device)) == 0 &&
+        std::memcmp(m.header, header_words, sizeof(m.header)) == 0) {
+      if (m.texture) {
+        m.texture->used_frame = g_frame;
+        TransitionTextureLocked(m.texture, plume::RenderTextureLayout::SHADER_READ);
+      }
+      return m.binding;
+    }
+  }
+  HostTexture *bound = nullptr;
+  const TextureBinding binding = BindUncached(texture_va, device_fetch, header, bound);
+  // At the generation the bind ended in (it may have retired a texture).
+  set[1] = set[0];
+  BindMemo &m = set[0];
+  m.generation = g_bind_generation;
+  m.va = texture_va;
+  std::memcpy(m.device, device_fetch.dword, sizeof(m.device));
+  std::memcpy(m.header, header_words, sizeof(m.header));
+  m.texture = bound;
+  m.binding = binding;
   return binding;
 }
 
@@ -1314,8 +1392,11 @@ uint32_t SamplerSlotUncached(const TextureFetch &fetch, RenderScale lod_scale);
 
 uint32_t SamplerSlotLocked(const TextureFetch &fetch, RenderScale lod_scale) {
   // Every draw asks for each of its textures: remember the answer by the
-  // fetch constant words the sampler state comes from (clamps in 0, filters,
-  // anisotropy and LOD bias in 3, mip range in 4, border color in 5).
+  // fetch constant bits the sampler state comes from (clamps in 0, filters
+  // and anisotropy in 3, mip range and LOD bias in 4, border color in 5).
+  // Only those bits: the words also hold the pitch and the mip address, and
+  // keyed by them every texture had entries of its own, which pushed each
+  // other out.
   struct Memo {
     bool valid = false;
     u32 words[4] = {};
@@ -1325,9 +1406,10 @@ uint32_t SamplerSlotLocked(const TextureFetch &fetch, RenderScale lod_scale) {
   };
   static Memo memo[256];
   const uint32_t min_anisotropy = MinAnisotropy();
-  const u32 words[4] = {fetch.dword[0], fetch.dword[3], fetch.dword[4], fetch.dword[5]};
+  const u32 words[4] = {fetch.dword[0] & 0x0007FC00u, fetch.dword[3] & 0x0FF80000u,
+                        fetch.dword[4] & 0x003FF3FCu, fetch.dword[5] & 0x00000003u};
   Memo &entry = memo[(words[0] * 0x9E3779B1u ^ words[1] * 0x85EBCA6Bu ^ words[2] * 0xC2B2AE35u ^
-                      words[3] ^ lod_scale.code * 0x27D4EB2Fu) >> 24];
+                      words[3] * 0x165667B1u ^ lod_scale.code * 0x27D4EB2Fu) >> 24];
   if (entry.valid && entry.lod_scale == lod_scale && entry.min_anisotropy == min_anisotropy &&
       std::memcmp(entry.words, words, sizeof(words)) == 0)
     return entry.slot;

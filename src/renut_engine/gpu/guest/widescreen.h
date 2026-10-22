@@ -8,6 +8,9 @@
  * projection widens (Hor+): the vertical field of view stays the game's.
  * The guest buffers it sizes for 1280 (sub_823191B8) are sized for the wider
  * screen. Decided the first time the game asks, and kept until restart.
+ * XUI (menus, title screen, HUD) keeps its 1280x720 root, as its scenes are
+ * laid out for, and is drawn centred; markers that follow the world are moved
+ * into that centred space.
  */
 #pragma once
 

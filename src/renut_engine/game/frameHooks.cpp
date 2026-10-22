@@ -17,6 +17,8 @@
 #include <string>
 #include <thread>
 
+#include "renut_engine/online/coop.h"
+
 // Typed import of the original generated implementation at sub_823edeb8.
 REX_IMPORT(__imp__rex_setParamInterval, setParamInterval, void(int));
 
@@ -52,11 +54,15 @@ static std::atomic<bool> g_saucerOfPeril{ false };
 REX_EXTERN(__imp__sub_821ED7F8);
 REX_EXTERN(__imp__sub_825214E0);
 
-// void challengeManTick(challengeMan*), once a frame from sub_82238360.
+// void challengeManTick(challengeMan*), once a frame from sub_82238360. In a
+// co-op session it runs as single player (online/coop.h).
 REX_HOOK_RAW(sub_821ED7F8)
 {
 	const uint32_t man = ctx.r3.u32;
-	__imp__sub_821ED7F8(ctx, base);
+	{
+		renut::online::coop::OfflineChallenge offline(base);
+		__imp__sub_821ED7F8(ctx, base);
+	}
 	const uint32_t id = rex::byte_swap(*reinterpret_cast<const uint32_t*>(base + man + kChallengeIdOffset));
 	g_saucerOfPeril.store(id == kSaucerOfPerilChallenge, std::memory_order_relaxed);
 }
@@ -65,7 +71,10 @@ REX_HOOK_RAW(sub_821ED7F8)
 // id still set (leaving the world), so the hold ends here too.
 REX_HOOK_RAW(sub_825214E0)
 {
-	__imp__sub_825214E0(ctx, base);
+	{
+		renut::online::coop::OfflineChallenge offline(base);
+		__imp__sub_825214E0(ctx, base);
+	}
 	g_saucerOfPeril.store(false, std::memory_order_relaxed);
 }
 
