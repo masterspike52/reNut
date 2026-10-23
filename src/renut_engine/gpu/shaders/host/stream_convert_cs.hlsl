@@ -79,7 +79,11 @@ void main(uint3 id : SV_DispatchThreadID)
         return;
     const uint vertex = id.x / count;
     const uint element = id.x % count;
-    const uint4 pair = g_Push.elements[element >> 1];
+    const uint pairIndex = element >> 1;
+    const uint4 pair = pairIndex == 0 ? g_Push.elements[0]
+                     : pairIndex == 1 ? g_Push.elements[1]
+                     : pairIndex == 2 ? g_Push.elements[2]
+                                      : g_Push.elements[3];
     const uint layout = (element & 1) ? pair.z : pair.x;
     const uint type = (element & 1) ? pair.w : pair.y;
 
