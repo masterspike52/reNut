@@ -50,6 +50,7 @@ if(NOT TARGET plume)
     add_subdirectory("${CMAKE_SOURCE_DIR}/thirdparty/plume" "${CMAKE_BINARY_DIR}/plume")
 endif()
 
+
 # The shader cache is zstd-compressed and its SPIR-V is smol-v encoded. Only the
 # decoders are needed, built from the copies vendored with XenosRecomp.
 enable_language(C)
@@ -143,14 +144,26 @@ function(renut_xenos_shader_cache TARGET)
         set(recomp_dxil OFF)
     endif()
 
+    # XenosRecomp runs during the build, so a cross build (Android) compiles it
+    # for the host.
+    set(recomp_cc "${CMAKE_C_COMPILER}")
+    set(recomp_cxx "${CMAKE_CXX_COMPILER}")
+    if(CMAKE_CROSSCOMPILING)
+        set(RENUT_HOST_C_COMPILER clang CACHE STRING "Host C compiler for build tools")
+        set(RENUT_HOST_CXX_COMPILER clang++ CACHE STRING "Host C++ compiler for build tools")
+        set(recomp_cc "${RENUT_HOST_C_COMPILER}")
+        set(recomp_cxx "${RENUT_HOST_CXX_COMPILER}")
+        set(recomp_exe "${recomp_prefix}/build/XenosRecomp/XenosRecomp")
+    endif()
+
     ExternalProject_Add(renut_xenos_recomp
         SOURCE_DIR "${RENUT_XENOS_RECOMP_DIR}"
         BINARY_DIR "${recomp_prefix}/build"
         PREFIX "${recomp_prefix}"
         CMAKE_ARGS
             -DCMAKE_BUILD_TYPE=Release
-            -DCMAKE_C_COMPILER=${CMAKE_C_COMPILER}
-            -DCMAKE_CXX_COMPILER=${CMAKE_CXX_COMPILER}
+            -DCMAKE_C_COMPILER=${recomp_cc}
+            -DCMAKE_CXX_COMPILER=${recomp_cxx}
             -DXENOS_RECOMP_RENUT=ON
             -DXENOS_RECOMP_DXIL=${recomp_dxil}
         BUILD_COMMAND ${CMAKE_COMMAND} --build <BINARY_DIR> --target XenosRecomp --config Release
@@ -295,10 +308,23 @@ function(renut_gpu_setup TARGET)
     set_source_files_properties(${renut_imgui_sources} PROPERTIES SKIP_PRECOMPILE_HEADERS ON)
     target_include_directories(${TARGET} BEFORE PRIVATE "${RENUT_IMGUI_DIR}")
     target_compile_definitions(${TARGET} PRIVATE RENUT_RECOMP)
+    # rex::o1heap is the installed SDK's export name; a source-tree SDK
+    # (REXSDK_DIR) only has the plain target
+    if(NOT TARGET rex::o1heap)
+        add_library(rex::o1heap ALIAS o1heap)
+    endif()
     target_link_libraries(${TARGET} PRIVATE plume renut_zstd renut_smolv renut_xxhash rex::o1heap)
 
     if(WIN32)
         target_link_libraries(${TARGET} PRIVATE d3d12 dxgi)
+    elseif(ANDROID)
+        # plume's surface is the ANativeWindow; volk loads libvulkan (or the
+        # driver adrenotools picked) itself.
+        target_link_libraries(${TARGET} PRIVATE android log)
+        # plume's volk loads libvulkan itself: its dlopen is reNut's, where the
+        # picked driver stands in (android_driver.cpp). Only plume's: other code
+        # (adrenotools) reads dlopen's own machine code.
+        target_compile_definitions(plume PRIVATE dlopen=renut_plume_dlopen)
     endif()
     # Linux: volk loads libvulkan itself, and the Wayland or X11 surface is made
     # from SDL's handles (backend/native_window.cpp): no X11 or Wayland library.

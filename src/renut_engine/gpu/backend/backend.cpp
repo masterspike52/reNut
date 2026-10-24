@@ -5,8 +5,12 @@
 
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <cstdlib>
 #include <filesystem>
+#include <fstream>
+#include <iterator>
+#include <mutex>
 #include <string>
 #include <system_error>
 #include <vector>
@@ -20,6 +24,9 @@
 
 #include "renut_engine/gpu/backend/command_recorder.h"
 #include "renut_engine/gpu/log.h"
+#if defined(__ANDROID__)
+#include "renut_engine/app/android_driver.h"
+#endif
 
 REXCVAR_DEFINE_STRING(renut_gpu_backend, "d3d12", "Nuts&Bolts/Graphics",
                       "Renderer backend: d3d12 or vulkan. Takes effect after a restart. "
@@ -175,12 +182,107 @@ bool ReadsBlendConstant(const VkGraphicsPipelineCreateInfo &info) {
   return false;
 }
 
+#if defined(__ANDROID__)
+// Android's Vulkan drivers keep no disk shader cache for apps, so every start
+// compiled every pipeline again: a pipeline
+// cache kept in pipeline_cache.bin (next to the pipeline list) holds the
+// compiled shaders. Saved from whichever thread created pipelines, at most
+// every 10 s (and when Android sends the app to the background); the game is
+// killed, not shut down.
+std::string PipelineCacheFile() {
+#if defined(__ANDROID__)
+  // One per driver: a cache only loads into the driver that wrote it.
+  const std::string &driver = renut::android::LoadedDriver();
+  if (!driver.empty())
+    return "pipeline_cache_" + driver + ".bin";
+#endif
+  return "pipeline_cache.bin";
+}
+std::string g_cache_file;  // named once the driver is loaded
+VkDevice g_cache_device = VK_NULL_HANDLE;
+std::mutex g_cache_mutex;
+VkPipelineCache g_cache = VK_NULL_HANDLE;
+uint32_t g_cache_unsaved = 0;
+std::chrono::steady_clock::time_point g_cache_saved;
+
+VkPipelineCache SharedPipelineCache(VkDevice device) {
+  std::lock_guard lock(g_cache_mutex);
+  if (g_cache == VK_NULL_HANDLE) {
+    std::vector<char> data;
+    g_cache_device = device;
+    g_cache_file = PipelineCacheFile();
+    if (std::ifstream in{g_cache_file, std::ios::binary})
+      data.assign(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+    VkPipelineCacheCreateInfo info{VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO};
+    info.initialDataSize = data.size();
+    info.pInitialData = data.data();
+    if (vkCreatePipelineCache(device, &info, nullptr, &g_cache) != VK_SUCCESS) {
+      info.initialDataSize = 0;  // stale or from another driver
+      vkCreatePipelineCache(device, &info, nullptr, &g_cache);
+    }
+    g_cache_saved = std::chrono::steady_clock::now();
+    RGPU_INFO("Pipeline cache: {} KB loaded from {}", data.size() >> 10, g_cache_file);
+  }
+  return g_cache;
+}
+
+void SavePipelineCache(VkDevice device, uint32_t created, bool now_please = false) {
+  std::lock_guard lock(g_cache_mutex);
+  g_cache_unsaved += created;
+  const auto now = std::chrono::steady_clock::now();
+  if (!g_cache_unsaved || g_cache == VK_NULL_HANDLE ||
+      (!now_please && now - g_cache_saved < std::chrono::seconds(10)))
+    return;
+  size_t size = 0;
+  vkGetPipelineCacheData(device, g_cache, &size, nullptr);
+  std::vector<char> data(size);
+  if (vkGetPipelineCacheData(device, g_cache, &size, data.data()) != VK_SUCCESS)
+    return;
+  const std::string tmp = g_cache_file + ".tmp";
+  {
+    std::ofstream out(tmp, std::ios::binary | std::ios::trunc);
+    out.write(data.data(), std::streamsize(size));
+    if (!out)
+      return;
+  }
+  std::error_code ec;
+  std::filesystem::rename(tmp, g_cache_file, ec);
+  if (ec) {  // filesystems that do not rename over an existing file
+    std::filesystem::remove(g_cache_file, ec);
+    std::filesystem::rename(tmp, g_cache_file, ec);
+  }
+  g_cache_unsaved = 0;
+  g_cache_saved = now;
+  RGPU_INFO("Pipeline cache: {} KB saved", size >> 10);
+}
+#endif
+
+VkResult CreateGraphicsPipelinesImpl(VkDevice device, VkPipelineCache cache, uint32_t count,
+                                     const VkGraphicsPipelineCreateInfo *infos,
+                                     const VkAllocationCallbacks *allocator, VkPipeline *pipelines);
+
 // Any thread (the pipeline prebuild workers create pipelines too).
 VKAPI_ATTR VkResult VKAPI_CALL CreateGraphicsPipelines(VkDevice device, VkPipelineCache cache,
                                                        uint32_t count,
                                                        const VkGraphicsPipelineCreateInfo *infos,
                                                        const VkAllocationCallbacks *allocator,
                                                        VkPipeline *pipelines) {
+#if defined(__ANDROID__)
+  if (cache == VK_NULL_HANDLE) {
+    const VkResult result =
+        CreateGraphicsPipelinesImpl(device, SharedPipelineCache(device), count, infos, allocator,
+                                    pipelines);
+    if (result == VK_SUCCESS)
+      SavePipelineCache(device, count);
+    return result;
+  }
+#endif
+  return CreateGraphicsPipelinesImpl(device, cache, count, infos, allocator, pipelines);
+}
+
+VkResult CreateGraphicsPipelinesImpl(VkDevice device, VkPipelineCache cache, uint32_t count,
+                                     const VkGraphicsPipelineCreateInfo *infos,
+                                     const VkAllocationCallbacks *allocator, VkPipeline *pipelines) {
   if (!std::any_of(infos, infos + count,
                    [](const VkGraphicsPipelineCreateInfo &info) { return ReadsBlendConstant(info); })) {
     return g_create_graphics_pipelines(device, cache, count, infos, allocator, pipelines);
@@ -255,6 +357,13 @@ void RouteVulkanPipelineCreation() {
 
 } // namespace
 
+void FlushPipelineCache() {
+#if defined(__ANDROID__)
+  if (g_cache_device != VK_NULL_HANDLE)
+    SavePipelineCache(g_cache_device, 0, true);
+#endif
+}
+
 Backend ActiveBackend() {
   static const Backend backend = ResolveBackend();
   return backend;
@@ -278,6 +387,10 @@ std::unique_ptr<plume::RenderInterface> CreateRenderInterface([[maybe_unused]] p
 #endif
   if (REXCVAR_GET(renut_vulkan_debug_layers))
     EnableVulkanDebugLayers();
+#if defined(__ANDROID__)
+  // A custom driver the manager picked (Turnip...), before plume loads volk.
+  renut::android::LoadVulkanDriver();
+#endif
 #if defined(PLUME_SDL_VULKAN_ENABLED)
   auto render_interface = plume::CreateVulkanInterface(window);
 #else

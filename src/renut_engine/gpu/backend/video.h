@@ -139,6 +139,11 @@ struct VideoState {
   std::vector<std::unique_ptr<plume::RenderFramebuffer>> swap_framebuffers;
   std::vector<std::unique_ptr<plume::RenderCommandSemaphore>> present_semaphores;
   std::atomic<bool> resize_requested{false};
+  // Android: the app is in the background; the swapchain is gone (its surface
+  // is about to be) and guest presents wait.
+  std::atomic<bool> suspended{false};
+  // Android side menu: guest presents wait, the overlay keeps presenting.
+  std::atomic<bool> paused{false};
 
   // Bindless tables, shared by every pipeline layout.
   std::unique_ptr<plume::RenderDescriptorSet> texture_set;
@@ -250,6 +255,13 @@ public:
 
   // Called from the UI thread on window resize; applied at the next present.
   static void RequestResize();
+
+  // Android background/foreground: drops the swapchain and holds guest
+  // presents (pausing the game) until resumed, then builds the swapchain
+  // again on the new surface.
+  static void SetSuspended(bool suspended);
+  // Holds guest presents (pausing the game) with the overlay still drawn.
+  static void SetPaused(bool paused);
 
   static void SetOverlayHook(OverlayHook hook);
 

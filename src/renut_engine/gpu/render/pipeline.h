@@ -101,4 +101,13 @@ struct PipelineCounts {
 };
 PipelineCounts PipelineCountsLocked();
 
+// For the compile overlay, any thread: pipelines building now, queued for the
+// prebuild workers, and built this session.
+struct PipelineCompileStatus {
+  uint32_t compiling = 0;
+  uint32_t queued = 0;
+  uint32_t compiled = 0;
+};
+PipelineCompileStatus GetPipelineCompileStatus();
+
 } // namespace renut::gpu

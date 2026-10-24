@@ -25,6 +25,7 @@
  * scales the band starts for those two calls, so the patches and their
  * density switches come that many times farther away.
  */
+#include "renut_engine/app/platform_defaults.h"
 #include <rex/cvar.h>
 #include <rex/hook.h>
 #include <rex/types.h>
@@ -33,13 +34,13 @@
 #include <cstring>
 #include <string>
 
-REXCVAR_DEFINE_STRING(renut_lod_distance, "2x", "Nuts&Bolts/Graphics",
+REXCVAR_DEFINE_STRING(renut_lod_distance, RENUT_DEFAULT("2x", "1x"), "Nuts&Bolts/Graphics",
                       "How far models keep their detailed meshes: 1x is the game's, 2x and 4x "
                       "switch to the simpler ones that many times farther away (less pop-in), Max "
                       "always draws the most detailed.")
     .allowed({"1x", "2x", "4x", "Max"});
 
-REXCVAR_DEFINE_STRING(renut_grass_distance, "2x", "Nuts&Bolts/Graphics",
+REXCVAR_DEFINE_STRING(renut_grass_distance, RENUT_DEFAULT("2x", "1x"), "Nuts&Bolts/Graphics",
                       "How far the level's grass is drawn, and its density kept: 1x is the "
                       "game's, 2x, 4x and 8x draw it that many times farther away (less pop-in, "
                       "more grass to draw).")

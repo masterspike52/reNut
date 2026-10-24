@@ -1,6 +1,7 @@
 #pragma once
 #include <rex/cvar.h>
 #include "imgui.h"
+#include "renut_engine/app/config_file.h"
 #include "renut_engine/gpu/overlay/overlay_ui.h"
 
 #include <algorithm>
@@ -143,7 +144,7 @@ private:
         if (unsaved_)
             ImGui::PopStyleColor(2);
         if (save) {
-            rex::cvar::SaveConfig(config_path_);
+            renut::config::Save(config_path_);
             unsaved_ = false;
             saved_ = true;
         }

@@ -49,6 +49,10 @@
 #include "host_shaders/target_readback_cs.dxil.h"
 #include "host_shaders/texture_mip_ps.dxil.h"
 #endif
+#if defined(__ANDROID__)
+#include <SDL3/SDL_events.h>
+#include "renut_engine/app/android_driver.h"
+#endif
 
 namespace renut::gpu {
 
@@ -59,7 +63,12 @@ VideoState &State() {
 
 namespace {
 
+#if defined(__ANDROID__)
+// The format every Android surface has.
+constexpr plume::RenderFormat kSwapChainFormat = plume::RenderFormat::R8G8B8A8_UNORM;
+#else
 constexpr plume::RenderFormat kSwapChainFormat = plume::RenderFormat::B8G8R8A8_UNORM;
+#endif
 
 bool BuildUtilityLayout(VideoState &s) {
   plume::RenderDescriptorSetBuilder textures;
@@ -345,6 +354,22 @@ std::unique_ptr<plume::RenderDescriptorSet> CreateTargetReadbackSet(VideoState &
 
 namespace detail {
 
+bool CreateSwapChain(VideoState &s, plume::RenderWindow window) {
+  // One image beyond the frames in flight, so acquiring never waits on scanout.
+  plume::RenderSwapChainDesc swap_desc(window, kSwapChainFormat, kFramesInFlight + 1, false,
+                                       kFramesInFlight);
+  s.swap_chain = s.queue->createSwapChain(swap_desc);
+  // plume's Vulkan swapchain is created lazily by resize().
+  if (s.swap_chain && IsVulkan())
+    s.swap_chain->resize();
+  if (!s.swap_chain || s.swap_chain->isEmpty()) {
+    RGPU_ERROR("Swapchain creation failed");
+    s.swap_chain.reset();
+    return false;
+  }
+  return BuildSwapChainTargets(s);
+}
+
 bool BuildSwapChainTargets(VideoState &s) {
   s.swap_framebuffers.clear();
   s.present_semaphores.clear();
@@ -539,11 +564,29 @@ void SubmitAndAdvance(VideoState &s, plume::RenderCommandSemaphore *wait,
 
 } // namespace detail
 
+#if defined(__ANDROID__)
+namespace {
+// SDL sends these from the activity's thread, before the surface goes and
+// after the app is back.
+bool SDLCALL WatchAppLifecycle(void *, SDL_Event *event) {
+  if (event->type == SDL_EVENT_WILL_ENTER_BACKGROUND)
+    Video::SetSuspended(true);
+  else if (event->type == SDL_EVENT_DID_ENTER_FOREGROUND)
+    Video::SetSuspended(false);
+  return true;
+}
+} // namespace
+#endif
+
 bool Video::CreateHostDevice() {
   auto &s = State();
   std::lock_guard lock(s.mutex);
   if (s.host_ready)
     return true;
+#if defined(__ANDROID__)
+  static const bool watching = SDL_AddEventWatch(WatchAppLifecycle, nullptr);
+  (void)watching;
+#endif
 
   plume::RenderWindow render_window{};
   if (!GetNativeRenderWindow(render_window))
@@ -576,8 +619,18 @@ bool Video::CreateHostDevice() {
   s.device = s.render_interface->createDevice();
   if (!s.device) {
     RGPU_ERROR("{} device creation failed", BackendName(ActiveBackend()));
+#if defined(__ANDROID__)
+    // The custom driver has no usable device: start over on the system one.
+    if (!renut::android::LoadedDriver().empty()) {
+      renut::android::SelectDriver({});
+      renut::android::RestartApp();
+    }
+#endif
     return false;
   }
+#if defined(__ANDROID__)
+  renut::android::MarkDriverWorking();
+#endif
   s.backend_description =
       std::string(BackendName(ActiveBackend())) + " on " + s.device->getDescription().name;
   RGPU_INFO("Renderer: {}", s.backend_description);
@@ -603,18 +656,7 @@ bool Video::CreateHostDevice() {
       s.recorders[i] = new CommandRecorder(s.command_lists[i].get());
   }
 
-  // One image beyond the frames in flight, so acquiring never waits on scanout.
-  plume::RenderSwapChainDesc swap_desc(render_window, kSwapChainFormat, kFramesInFlight + 1, false,
-                                       kFramesInFlight);
-  s.swap_chain = s.queue->createSwapChain(swap_desc);
-  // plume's Vulkan swapchain is created lazily by resize().
-  if (s.swap_chain && IsVulkan())
-    s.swap_chain->resize();
-  if (!s.swap_chain || s.swap_chain->isEmpty()) {
-    RGPU_ERROR("Swapchain creation failed");
-    return false;
-  }
-  if (!detail::BuildSwapChainTargets(s))
+  if (!detail::CreateSwapChain(s, render_window))
     return false;
 
   if (!BuildUtilityLayout(s) || !BuildSamplers(s) || !BuildNullTexture(s) ||

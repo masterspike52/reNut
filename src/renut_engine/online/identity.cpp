@@ -12,6 +12,7 @@
  * XDK wrappers the game links. Player 1's online XUID comes from its online
  * ID, and its gamertag is renut_gamertag when set.
  */
+#include "renut_engine/app/config_file.h"
 #include "renut_engine/online/online.h"
 
 #include <algorithm>
@@ -173,7 +174,7 @@ std::string PlayerName() {
 
 void SetPlayerName(std::string_view name) {
   rex::cvar::SetFlagByName("renut_gamertag", CleanName(name));
-  rex::cvar::SaveConfig(renut::paths::WritableFolder() / "renut.toml");
+  renut::config::Save(renut::paths::WritableFolder() / "renut.toml");
 }
 
 uint64_t PlayerXuid() {

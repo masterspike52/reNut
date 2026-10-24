@@ -12,6 +12,9 @@ namespace renut::gpu::detail {
 // (Re)builds swapchain framebuffers and per-image present semaphores.
 bool BuildSwapChainTargets(VideoState &s);
 
+// Creates the swapchain on the window's current surface, with its targets.
+bool CreateSwapChain(VideoState &s, plume::RenderWindow window);
+
 // Frees everything retired into 'slot' and rewinds its upload ring. Only once
 // the slot's fence has been waited.
 void DrainSlot(VideoState &s, uint32_t slot);

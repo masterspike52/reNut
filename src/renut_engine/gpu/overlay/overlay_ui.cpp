@@ -700,7 +700,9 @@ bool Start(UIThreadRunner run_on_ui_thread) {
   SDL_AddEventWatch(OverlayEventWatch, nullptr);
   // Text fields get typed characters only while SDL's text input is on; SDL
   // wants that switched on from its video thread, the UI thread.
+#if !defined(__ANDROID__)  // there it brings up the on-screen keyboard
   g_run_on_ui([] { SDL_StartTextInput(g_sdl_window); });
+#endif
 #endif
   StartPump();
   return true;

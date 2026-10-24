@@ -61,6 +61,7 @@
 #include <unordered_map>
 #include <vector>
 
+#include "renut_engine/app/config_file.h"
 #include "renut_engine/app/renut_logging.h"
 #include "renut_engine/game/graphics_menu.h"
 
@@ -360,7 +361,7 @@ bool StepOption(const Option &option, int dir) {
   if (!rex::cvar::SetFlagByName(option.cvar, next))
     return false;
   if (!g_config_path.empty())
-    rex::cvar::SaveConfig(g_config_path);
+    renut::config::Save(g_config_path);
   return true;
 }
 

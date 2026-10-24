@@ -27,6 +27,16 @@ currently the only devices supported are linux devices and windows devices, i ha
 
 
 
+Android
+--------------------------------------
+* arm64, Android 11 or newer, Vulkan. Get the apk from <a href="https://github.com/etonedemid/reNut-android/releases">reNut-android releases</a>
+
+* copy your iso to /sdcard/reNut or /sdcard/Download, use Extract on the Set Up Game page, then Play. Saves, the workshop and custom Adreno drivers (zips in /sdcard/reNut/drivers) are in the same menu
+
+* to build it: android/configure.sh, then android/build.sh (Android SDK, NDK 29 and a host build of the rexglue CLI for codegen). The rexglue SDK is used as is
+
+
+
  How to play
  ---------------------------------------------------
  * acquire your banjo-kazooie: nuts and bolts (usa) iso (you do not need the update for its not supported)

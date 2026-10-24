@@ -14,6 +14,7 @@
 #include "renut_engine/perf/frame_stats.h"
 #include "renut_engine/gpu/backend/render_profile.h"
 #include "renut_engine/gpu/guest/guest_memory.h"
+
 #include "renut_engine/gpu/log.h"
 #include "renut_engine/gpu/backend/video.h"
 

@@ -1,6 +1,7 @@
 /**
  * @file    gpu/render/graphics_options.cpp
  */
+#include "renut_engine/app/platform_defaults.h"
 #include "renut_engine/gpu/render/graphics_options.h"
 
 #include <atomic>
@@ -17,7 +18,7 @@
 #include "renut_engine/gpu/log.h"
 #include "renut_engine/gpu/render/format.h"
 
-REXCVAR_DEFINE_STRING(renut_shadow_resolution, "Resolution", "Nuts&Bolts/Graphics",
+REXCVAR_DEFINE_STRING(renut_shadow_resolution, RENUT_DEFAULT("Resolution", "1x"), "Nuts&Bolts/Graphics",
                       "Shadow map resolution, as a multiple of the console's: Resolution follows "
                       "renut_resolution; 1x is the console's; 2x, 3x and 4x are sharper.")
     .allowed({"Resolution", "1x", "2x", "3x", "4x"});
@@ -32,7 +33,7 @@ REXCVAR_DEFINE_STRING(renut_anisotropic_filtering, "Game", "Nuts&Bolts/Graphics"
                       "16x.")
     .allowed({"Game", "2x", "4x", "8x", "16x"});
 
-REXCVAR_DEFINE_STRING(renut_post_process_precision, "High", "Nuts&Bolts/Graphics",
+REXCVAR_DEFINE_STRING(renut_post_process_precision, RENUT_DEFAULT("High", "Game"), "Nuts&Bolts/Graphics",
                       "Precision of the bloom, depth of field and SSAO buffers: Game keeps the "
                       "console's 8 bits (faint glow shows as blobs sliding over dark areas), High "
                       "uses 16 bits.")

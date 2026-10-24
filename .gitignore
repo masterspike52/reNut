@@ -12,6 +12,7 @@ cmake/eos_credentials.cmake
 # their own default.xex and bundles)
 # ---------------------------------------------------------------------------
 /assets/
+/assets
 # rexglue codegen output, regenerated from assets/default.xex.
 /generated/
 # Dumped game shaders (the build re-dumps them from assets/) and their
@@ -54,6 +55,7 @@ cmake/eos_credentials.cmake
 # ---------------------------------------------------------------------------
 /docs/*
 !/docs/*.md
+!/docs/android/
 !/docs/modding/
 
 # ---------------------------------------------------------------------------

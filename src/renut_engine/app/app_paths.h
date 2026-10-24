@@ -4,7 +4,10 @@
 // an AppImage runs from a read-only mount, so there it is the user data
 // folder the SDK keeps saves in ($XDG_DATA_HOME/renut, or
 // ~/.local/share/renut), and the working directory is moved there so the
-// paths reNut writes relative to it land there too.
+// paths reNut writes relative to it land there too. On Android the executable
+// is app_process: there it is the app's external files directory, which
+// SDL_main makes the user data folder and the working directory
+// (android_main.cpp).
 
 #include <cstdlib>
 #include <filesystem>
@@ -24,7 +27,19 @@ inline bool IsAppImage() {
 #endif
 }
 
+// Not next to the executable.
+inline bool InUserFolder() {
+#if defined(__ANDROID__)
+	return true;
+#else
+	return IsAppImage();
+#endif
+}
+
 inline std::filesystem::path WritableFolder() {
+#if defined(__ANDROID__)
+	return rex::filesystem::GetUserFolder();
+#endif
 	if (IsAppImage())
 		return rex::filesystem::GetUserFolder() / "renut";
 	return rex::filesystem::GetExecutableFolder();

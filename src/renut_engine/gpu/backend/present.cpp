@@ -5,6 +5,7 @@
  */
 #include <algorithm>
 #include <chrono>
+#include <condition_variable>
 #include <mutex>
 
 #include <plume_render_interface.h>
@@ -14,6 +15,7 @@
 #include "renut_engine/gpu/backend/backend.h"
 #include "renut_engine/gpu/backend/command_recorder.h"
 #include "renut_engine/gpu/backend/gpu_profile.h"
+#include "renut_engine/gpu/backend/native_window.h"
 #include "renut_engine/gpu/backend/smaa.h"
 #include "renut_engine/gpu/render/draw.h"
 #include "renut_engine/gpu/render/graphics_options.h"
@@ -141,6 +143,16 @@ void PresentLocked(VideoState &s, const PresentImage *image) {
   }
   // Logs, once, why the GPU stopped if an earlier submission faulted.
   ReportDeviceLost(s.device.get());
+  if (!s.swap_chain) {
+    // Back from the background (Android): a swapchain on the new surface.
+    plume::RenderWindow window{};
+    if (s.suspended.load(std::memory_order_acquire) || !GetNativeRenderWindow(window) ||
+        !detail::CreateSwapChain(s, window)) {
+      if (s.list_open)
+        detail::SubmitAndAdvance(s, nullptr, nullptr);
+      return;
+    }
+  }
   ApplyVsync(s);
   if (s.swap_chain->needsResize() || s.resize_requested.exchange(false, std::memory_order_acq_rel))
     RebuildSwapChain(s);
@@ -226,6 +238,9 @@ void PresentLocked(VideoState &s, const PresentImage *image) {
 
 namespace {
 
+std::mutex g_suspend_mutex;
+std::condition_variable g_suspend_cv;
+
 // A guest that has not presented for this long is stalled (loading, movie
 // decode); the UI pump then presents the overlay on its own.
 constexpr int64_t kGuestStallMs = 100;
@@ -238,10 +253,55 @@ int64_t NowMs() {
 
 } // namespace
 
+void Video::SetSuspended(bool suspended) {
+  auto &s = State();
+  if (!suspended) {
+    {
+      std::lock_guard lock(g_suspend_mutex);
+      s.suspended.store(false, std::memory_order_release);
+    }
+    g_suspend_cv.notify_all();
+    RGPU_INFO("Foreground: resuming");
+    return;
+  }
+  s.suspended.store(true, std::memory_order_release);
+  FlushPipelineCache();  // Android may kill a background app
+  std::lock_guard lock(s.mutex);
+  if (!s.swap_chain)
+    return;
+  // The surface goes away right after this: nothing may still use it.
+  if (s.list_open)
+    detail::SubmitAndAdvance(s, nullptr, nullptr);
+  detail::WaitAllSubmitted(s);
+  s.swap_framebuffers.clear();
+  s.present_semaphores.clear();
+  s.swap_chain.reset();
+  RGPU_INFO("Background: swapchain released, game paused");
+}
+
+void Video::SetPaused(bool paused) {
+  auto &s = State();
+  {
+    std::lock_guard lock(g_suspend_mutex);
+    s.paused.store(paused, std::memory_order_release);
+  }
+  if (!paused)
+    g_suspend_cv.notify_all();
+}
+
 void Video::Present(const PresentImage *image) {
   auto &s = State();
   if (s.shutting_down.load(std::memory_order_acquire))
     return;
+  if (s.suspended.load(std::memory_order_acquire) || s.paused.load(std::memory_order_acquire)) {
+    // Holding the guest's present pauses the game (background, side menu).
+    std::unique_lock lock(g_suspend_mutex);
+    g_suspend_cv.wait(lock, [&s] {
+      return (!s.suspended.load(std::memory_order_acquire) &&
+              !s.paused.load(std::memory_order_acquire)) ||
+             s.shutting_down.load(std::memory_order_acquire);
+    });
+  }
   std::lock_guard lock(s.mutex);
   if (!s.host_ready || s.shutting_down.load(std::memory_order_acquire))
     return;
@@ -251,7 +311,7 @@ void Video::Present(const PresentImage *image) {
 
 void Video::PresentOverlayOnly() {
   auto &s = State();
-  if (s.shutting_down.load(std::memory_order_acquire))
+  if (s.shutting_down.load(std::memory_order_acquire) || s.suspended.load(std::memory_order_acquire))
     return;
   const int64_t now = NowMs();
   if (s.guest_ready &&

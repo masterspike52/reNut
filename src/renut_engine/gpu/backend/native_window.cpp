@@ -83,12 +83,24 @@ SDL_Window *FindGameSdlWindow() {
 } // namespace
 
 bool GetNativeRenderWindow(plume::RenderWindow &out) {
+#if defined(__ANDROID__)
+  SDL_Window *sdl_window = FindGameSdlWindow();
+  out = sdl_window ? static_cast<ANativeWindow *>(SDL_GetPointerProperty(
+                         SDL_GetWindowProperties(sdl_window), SDL_PROP_WINDOW_ANDROID_WINDOW_POINTER, nullptr))
+                   : nullptr;
+  if (!out) {
+    RGPU_ERROR("SDL window has no ANativeWindow yet");
+    return false;
+  }
+  return true;
+#else
   out = FindGameSdlWindow();
   if (!out) {
     RGPU_ERROR("No SDL window for the Vulkan surface");
     return false;
   }
   return true;
+#endif
 }
 
 bool GetRenderWindowPixelSize(uint32_t &width, uint32_t &height) {
@@ -109,7 +121,7 @@ SDL_Window *GetGameSdlWindow() {
 
 } // namespace renut::gpu
 
-#if !defined(_WIN32)
+#if !defined(_WIN32) && !defined(__ANDROID__)
 
 // plume's Vulkan surface (its PLUME_SDL_VULKAN_ENABLED path, through
 // gpu/backend/sdl2_vulkan/SDL_vulkan.h), on whichever video driver SDL chose:

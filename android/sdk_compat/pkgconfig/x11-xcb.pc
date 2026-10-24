@@ -1,0 +1,5 @@
+Name: x11-xcb
+Description: none on Android: the SDK asks pkg-config for it on every Linux build (see ../xcb/xcb.h)
+Version: 1.0
+Libs:
+Cflags:

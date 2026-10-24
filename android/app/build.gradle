@@ -1,0 +1,43 @@
+plugins {
+    id 'com.android.application'
+}
+
+// SDL's Java side, used as is from the SDK's copy of SDL.
+def sdlJava = "${rootDir}/../../rexglue-sdk/thirdparty/sdl3/android-project/app/src/main/java"
+if (project.hasProperty('REXSDK_DIR'))
+    sdlJava = "${REXSDK_DIR}/thirdparty/sdl3/android-project/app/src/main/java"
+
+android {
+    namespace = 'com.rexglue.renut'
+    compileSdk = 35
+    defaultConfig {
+        applicationId = 'com.rexglue.renut'
+        minSdk = 30
+        targetSdk = 35
+        versionCode = 1
+        versionName = '0.1.0'
+        ndk { abiFilters 'arm64-v8a' }
+    }
+    buildTypes {
+        release {
+            minifyEnabled = false
+            // Personal builds: the debug key keeps reinstalls simple.
+            signingConfig = signingConfigs.debug
+        }
+    }
+    sourceSets.main {
+        java.srcDirs += sdlJava
+        // librenut.so and friends, put there by build.sh
+        jniLibs.srcDirs = ['libs']
+    }
+    packaging {
+        // adrenotools dlopens its hooks from nativeLibraryDir, so the
+        // libraries must be extracted to files.
+        jniLibs.useLegacyPackaging = true
+    }
+    compileOptions {
+        sourceCompatibility = JavaVersion.VERSION_17
+        targetCompatibility = JavaVersion.VERSION_17
+    }
+    lint { abortOnError = false }
+}
