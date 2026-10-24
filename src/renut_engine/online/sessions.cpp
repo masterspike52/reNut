@@ -7,7 +7,7 @@
  * XSESSION_INFO is a session ID (XNKID), the host's XNADDR and a key exchange
  * key (XNKEY), 60 bytes. The session the game hosts with presence (the online
  * menu's, XSessionCreate flags 0x23) is advertised to friends (friends.cpp),
- * and a friend's game joining it searches for it by ID (sub_826EA3D8), which is
+ * and a friend's game joining it searches for it by ID (sub_826C6EC0), which is
  * answered from that friend's presence.
  *
  * XNADDR is the address N&B's peers know each other by; reNut makes it from the
@@ -30,7 +30,7 @@
 #include "renut_engine/online/online_log.h"
 #include "renut_engine/online/xnaddr.h"
 
-REX_EXTERN(__imp__sub_82BEEE28);  // XSessionCreate
+REX_EXTERN(__imp__sub_82C51750);  // XSessionCreate
 REX_EXTERN(__imp__rex_XSessionDelete);
 REX_EXTERN(__imp__rex_XSessionSearchByID);
 REX_EXTERN(__imp__rex_XNetGetTitleXnAddr);
@@ -163,14 +163,14 @@ REX_HOOK_RAW(rex_XSessionMigrateHost) {
 // DWORD XSessionCreate(DWORD flags, DWORD user, DWORD public_slots,
 //                      DWORD private_slots, ULONGLONG *nonce, XSESSION_INFO *info,
 //                      XOVERLAPPED *overlapped, HANDLE *session)
-REX_HOOK_RAW(sub_82BEEE28) {
+REX_HOOK_RAW(sub_82C51750) {
   const uint32_t args[6] = {ctx.r3.u32, ctx.r4.u32, ctx.r5.u32,
                             ctx.r6.u32, ctx.r7.u32, ctx.r8.u32};
   const uint32_t flags = ctx.r3.u32;
   const uint32_t public_slots = ctx.r5.u32;
   const uint32_t nonce = ctx.r7.u32;
   const uint32_t info = ctx.r8.u32;
-  __imp__sub_82BEEE28(ctx, base);
+  __imp__sub_82C51750(ctx, base);
   TraceCall("XSessionCreate", args, ctx.r3.u32);
   if (ctx.r3.u32 == X_ERROR_SUCCESS || ctx.r3.u32 == X_ERROR_IO_PENDING) {
     if (g_sessions.fetch_add(1) == 0)

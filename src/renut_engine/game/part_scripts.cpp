@@ -52,20 +52,23 @@ constexpr uint32_t kMotionCentres[] = {0x10, 0x20};
 constexpr uint32_t kMotionVelocity = 0x90;
 constexpr uint32_t kMotionAngularVelocity = 0xA0;
 
-// Effects (IDA): sub_823DC870(level, const u32 *aid, const vec4 *pos,
+// Effects (IDA): sub_823A9100(level, const u32 *aid, const vec4 *pos,
 // double life (0: the effect's own), int, const vec4 *dir, int) spawns a
-// particle effect through the level's effect system (level + 3112; its time
-// scale at + 2868). Callers pass an entity's level, entity + 76 (sub_822D44C8;
-// the horn reads its vehicle's the same way). Effect names are game asset refs (gameAssetRefGetAid, 0x82254D10):
+// particle effect through the level's effect system (level + 3120; its time
+// scale at + 2868). Callers pass an entity's level, entity + 76 (sub_822A3F70;
+// the horn reads its vehicle's the same way). Effect names are game asset refs (gameAssetRefGetAid, 0x82223868):
 // a list of tables at kAssetRefs, {?, next, count, entries}, entries
 // {char name[64], u32 aid}.
-constexpr uint32_t kSpawnEffect = 0x823DC870;
+constexpr uint32_t kSpawnEffect = 0x823A9100;
 constexpr uint32_t kEntityLevel = 76;      // entity + 76: the level it is in
-constexpr uint32_t kLevelEffects = 3112;   // level + 3112: its effect system
-// sub_822C1228(const u32 *aid): whether the asset is there, without asking the
-// asset manager for it (an asset it can't find stops the game).
-constexpr uint32_t kAssetExists = 0x822C1228;
-constexpr uint32_t kAssetRefs = 0x82F84B78;
+constexpr uint32_t kLevelEffects = 3120;   // level + 3120: its effect system
+// Whether an asset is there, without asking the asset manager for it (an
+// asset it can't find stops the game): sub_821DDBF0(&query, 0xFF), the query
+// {off_82001AF0, aid} (any provider). The game builds it inline, as here.
+constexpr uint32_t kAssetQuery = 0x821DDBF0;
+constexpr uint32_t kAssetQueryVtable = 0x82001AF0;
+constexpr uint32_t kAnyProvider = 0xFF;
+constexpr uint32_t kAssetRefs = 0x82DF1CD8;
 constexpr uint32_t kAssetRefEntrySize = 68;
 constexpr uint32_t kAssetRefAid = 64;
 
@@ -77,7 +80,7 @@ constexpr int kMaxErrors = 20;
 uint8_t *g_base = nullptr;     // guest memory, for the API during a call
 PPCContext *g_ctx = nullptr;  // the calling callback's guest context, during a call
 uint32_t g_vehicle = 0;       // the calling part's vehicle, during a call (0: none)
-uint32_t g_fx_scratch = 0;    // guest: a vec4 (16-byte aligned), then an aid word
+uint32_t g_fx_scratch = 0;    // guest: a vec4 (16-byte aligned), an aid word, an asset query
 lua_State *g_lua = nullptr;
 
 struct Script {
@@ -365,10 +368,14 @@ int FxPlay(lua_State *L) {
   if (!g_fx_scratch && !(g_fx_scratch = REX_KERNEL_MEMORY()->SystemHeapAlloc(32, 16)))
     return luaL_error(L, "fx.play: no guest memory");
   StoreWord(g_fx_scratch + 16, aid);
+  // The asset query at + 24: {vtable, aid}.
+  StoreWord(g_fx_scratch + 24, kAssetQueryVtable);
+  StoreWord(g_fx_scratch + 28, aid);
   PPCContext &ctx = *g_ctx;
   auto *dispatcher = REX_KERNEL_STATE()->function_dispatcher();
-  ctx.r3.u64 = g_fx_scratch + 16;
-  if (::PPCFunc *exists = dispatcher->GetFunction(kAssetExists))
+  ctx.r3.u64 = g_fx_scratch + 24;
+  ctx.r4.u64 = kAnyProvider;
+  if (::PPCFunc *exists = dispatcher->GetFunction(kAssetQuery))
     exists(ctx, g_base);
   if (!(ctx.r3.u32 & 0xFF)) {
     static std::unordered_map<uint32_t, bool> logged;

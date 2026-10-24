@@ -3,10 +3,10 @@
  * @brief   Player 1 signed in to Live, with the privileges online play needs.
  *
  * The SDK's XAM has player 1 signed in locally only, denies every privilege
- * and reports no network link. N&B's profile refresh (sub_82209B88) treats a
+ * and reports no network link. N&B's profile refresh (sub_821D9068) treats a
  * player as online when XUserGetSigninInfo says SignedInToLive and the link
- * is up (XNetGetEthernetLinkStatus, polled into byte_82FAD2B9 by
- * sub_8227E710), and then asks for the multiplayer, user-created-content,
+ * is up (XNetGetEthernetLinkStatus, polled into byte_82E1AA99 by
+ * sub_8224C4B8), and then asks for the multiplayer, user-created-content,
  * profile-viewing and communications privileges. With renut_online on and
  * signed in to EOS (eos.h), these are answered here for player 1, through the
  * XDK wrappers the game links. Player 1's online XUID comes from its online
@@ -94,22 +94,23 @@ void StoreName(uint8_t *base, uint32_t va, uint32_t capacity, const std::string 
   std::memcpy(base + va, name.data(), std::min<size_t>(name.size(), capacity - 1));
 }
 
-// N&B's players: a std::map at 0x82FAFEB0 (its head node at +4; nodes: left
-// +0, parent +4, right +8, the player at +16, is-head byte +21), each player
-// with its controller (user index) at +108 and its gamertag, a std::string, at
-// +12 (text +16, inline below 16 characters; length +32; capacity +36).
-// playerSlotForPad (0x8220DCF0) looks one up.
-constexpr uint32_t kPlayersMapHead = 0x82FAFEB4;
+// N&B's players: a std::map (checked iterators, its proxy at 0x82E293DC) whose
+// head node is at 0x82E293F4 (nodes: left +0, parent +4, right +8, the player
+// at +16, is-head byte +21), each player with its controller (user index) at
+// +128 and its gamertag, a std::string, at +12 (text +16, inline below 16
+// characters; length +32; capacity +36). playerSlotForPad (0x821DD268) looks
+// one up.
+constexpr uint32_t kPlayersMapHead = 0x82E293F4;
 constexpr uint32_t kNodeLeftOffset = 0;
 constexpr uint32_t kNodeParentOffset = 4;
 constexpr uint32_t kNodeRightOffset = 8;
 constexpr uint32_t kNodePlayerOffset = 16;
 constexpr uint32_t kNodeIsHeadOffset = 21;
-constexpr uint32_t kPlayerUserOffset = 108;
+constexpr uint32_t kPlayerUserOffset = 128;
 constexpr uint32_t kPlayerNameOffset = 16;
 constexpr uint32_t kPlayerNameLengthOffset = 32;
 constexpr uint32_t kPlayerNameCapacityOffset = 36;
-constexpr uint32_t kPlayerRenameOffset = 204;
+constexpr uint32_t kPlayerRenameOffset = 224;
 
 uint32_t PlayerOfUser(const uint8_t *base, uint32_t user) {
   const uint32_t head = Load32(base, kPlayersMapHead);
@@ -133,10 +134,10 @@ uint32_t PlayerOfUser(const uint8_t *base, uint32_t user) {
   return 0;
 }
 
-// N&B's profile refresh (sub_82209B88) takes a player whose gamertag changed
+// N&B's profile refresh (sub_821D9068) takes a player whose gamertag changed
 // for another profile signed in: it drops that player and makes a new one,
 // which has no controller until START is pressed again. A player marked for
-// renaming (+204) takes the new gamertag instead, which is what renaming in
+// renaming (+224) takes the new gamertag instead, which is what renaming in
 // the Online window is.
 void RenameGamePlayer(uint8_t *base, uint32_t user, const std::string &name) {
   const uint32_t player = PlayerOfUser(base, user);

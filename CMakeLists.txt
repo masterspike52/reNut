@@ -44,6 +44,7 @@ set(RENUT_SOURCES
 	src/renut_engine/online/qos.cpp
 	src/renut_engine/online/transport.cpp
 	src/renut_engine/app/crash_dump.cpp
+	src/renut_engine/app/dlc_install.cpp
 	src/renut_engine/mods/custom_parts.cpp
 	src/renut_engine/mods/json.cpp
 	src/renut_engine/mods/mod_device.cpp

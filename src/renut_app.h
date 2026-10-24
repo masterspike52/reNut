@@ -10,6 +10,7 @@
 #include "renut_engine/gpu/overlay/app_integration.h"
 #include "renut_engine/app/crash_dump.h"
 #include "renut_engine/app/app_paths.h"
+#include "renut_engine/app/dlc_install.h"
 #include "renut_engine/mods/mod_loader.h"
 #include "renut_engine/game/mouse_camera.h"
 #include "renut_engine/game/keyboard_input.h"
@@ -63,8 +64,10 @@ public:
     // }
 
     // The game folder is mounted and the XEX loaded; the game has not
-    // started yet, so .nbpatch mods can still change what GAME: serves.
+    // started yet, so .nbpatch mods can still change what GAME: serves, and
+    // DLC packages installed now are there when it looks for them.
     void OnPostSetup() override {
+        renut::dlc::InstallPackages(runtime());
         renut::mods::LoadMods(runtime());
     }
 
@@ -134,6 +137,7 @@ public:
         renut::game::AttachKeyboard(window());
 
         path_wizard_->Init(app_name_, defaults, [resume](rex::PathConfig resolved) {
+            renut::dlc::SetUserDataRoot(resolved.user_data_root);
             resume(resolved);
             });
         return std::nullopt;

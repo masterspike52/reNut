@@ -3613,10 +3613,10 @@ void ClearStateLocked(const u8 *device_state, u32 flags, const ClearRect *rect,
   if (!GatherTargets(device, targets))
     return;
 
-  // D3D clamps clears to the viewport (CDevice viewport floats at 0x3168).
+  // D3D clamps clears to the viewport (CDevice viewport floats at 0x3170).
   ClearRect r = rect ? *rect : ClearRect{0, 0, int32_t(targets.width), int32_t(targets.height)};
-  const float vx = device.F32(0x3168), vy = device.F32(0x316C);
-  const float vw = device.F32(0x3170), vh = device.F32(0x3174);
+  const float vx = device.F32(0x3170), vy = device.F32(0x3174);
+  const float vw = device.F32(0x3178), vh = device.F32(0x317C);
   if (vw > 0.0f && vh > 0.0f) {
     int32_t vx2 = int32_t(vx + vw), vy2 = int32_t(vy + vh);
     // A target grown for tiling: D3D bounds the viewport by the tile-sized

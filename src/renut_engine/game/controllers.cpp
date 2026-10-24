@@ -8,8 +8,8 @@
  * seen twice) is a player without a profile, and the game asks for a sign-in.
  *
  * All of N&B's controller access goes through its three XInput wrappers
- * (IDA: XInputGetState 0x8220F200 from inputPollAllPads, XInputGetKeystroke
- * 0x821FD318 from the XUI readers, XInputSetState 0x8228F1B8 from
+ * (IDA: XInputGetState 0x821DE800 from inputPollAllPads, XInputGetKeystroke
+ * 0x821CC9E8 from the XUI readers, XInputSetState 0x8225CFD0 from
  * rumbleSendPort). Here:
  * - player 1 is the first controller to press A or START (in its state or as
  *   a keystroke), for as long as it stays connected; until one has, the first
@@ -20,7 +20,7 @@
  * - the host slots are probed whenever the game reads player 1's state, and
  *   keystrokes and rumble go through the same mapping.
  * The XUI menus read keystrokes of any user (XUSER_INDEX_ANY, or
- * XINPUT_FLAG_ANYUSER: sub_82279D80, sub_823E9600, sub_823E8C98), which the
+ * XINPUT_FLAG_ANYUSER: sub_82247D88, sub_823B7660, sub_823B6D10), which the
  * SDK answers from host slot 0 alone, as user 0; those are read here from
  * every host slot in turn. The bound keys' keystrokes (keyboard_input.cpp)
  * come first, as player 1's.
@@ -63,7 +63,7 @@ REXCVAR_DEFINE_BOOL(renut_disable_extra_controllers, true, "Nuts&Bolts/Input",
 REX_EXTERN(__imp__rex_XInputGetState);
 REX_EXTERN(__imp__rex_XInputGetKeystroke);
 REX_EXTERN(__imp__rex_XInputSetState);
-REX_EXTERN(__imp__sub_826EC1E8);  // makes the game's player for a user
+REX_EXTERN(__imp__sub_826C8DA8);  // makes the game's player for a user
 
 namespace {
 
@@ -443,13 +443,13 @@ REX_HOOK_RAW(rex_XInputSetState) {
 }
 
 // The game's player for a user (r3), made when its profile signs in, and made
-// anew by the profile refresh (sub_82209B88) when it takes the profile for
+// anew by the profile refresh (sub_821D9068) when it takes the profile for
 // another (its gamertag changed): the old player and its controller are
 // dropped then.
-REX_HOOK_RAW(sub_826EC1E8) {
+REX_HOOK_RAW(sub_826C8DA8) {
   static uint32_t made[kUserCount] = {};
   const uint32_t user = ctx.r3.u32;
-  __imp__sub_826EC1E8(ctx, base);
+  __imp__sub_826C8DA8(ctx, base);
   if (user >= kUserCount)
     return;
   if (made[user]++ == 0)

@@ -2,11 +2,11 @@
  * @file    game/thread_slots.cpp
  * @brief   N&B's thread slots, given back when their threads have exited.
  *
- * N&B keeps a table of the threads it has seen (sub_82240400; filled in by
- * sub_823DFD98): 27 entries of {handle, thread ID, slot} at 0x82F9E970, the
+ * N&B keeps a table of the threads it has seen (sub_8220F350; filled in by
+ * sub_823ADCB8): 27 entries of {handle, thread ID, slot} at 0x82E0BAD0, the
  * first 6 its own threads', the other 21 given to any other thread the first
  * time it asks for its slot. Its allocator picks the thread's heap by that slot
- * (meInternalAlloc_82364020: dword_82F9DD10[slot]). Nothing gives an entry
+ * (meInternalAlloc_82332A08: dword_82E0AE70[slot]). Nothing gives an entry
  * back: on the console a thread's ID is used again once it has exited, but the
  * SDK gives every thread a new ID. Short-lived threads (each area change makes
  * some) use the 21 entries up over a long session; the next new thread then
@@ -26,17 +26,17 @@
 
 #include "renut_engine/app/renut_logging.h"
 
-REX_EXTERN(__imp__sub_82240400);  // a thread's slot, by thread ID
+REX_EXTERN(__imp__sub_8220F350);  // a thread's slot, by thread ID
 
 namespace {
 
-constexpr uint32_t kTableVa = 0x82F9E970;
+constexpr uint32_t kTableVa = 0x82E0BAD0;
 constexpr uint32_t kEntrySize = 12;
 constexpr uint32_t kEntryHandleOffset = 0;
 constexpr uint32_t kEntryThreadIdOffset = 4;
 constexpr uint32_t kEntryCount = 27;
 constexpr uint32_t kFirstSharedEntry = 6;
-constexpr uint32_t kNoSlot = 27;  // what sub_82240400 returns with the table full
+constexpr uint32_t kNoSlot = 27;  // what sub_8220F350 returns with the table full
 constexpr uint32_t kFreeThreadId = 0xFFFFFFFF;
 
 uint32_t Load32(const uint8_t *base, uint32_t va) {
@@ -67,11 +67,11 @@ uint32_t FreeExitedThreads(uint8_t *base) {
 
 } // namespace
 
-// int sub_82240400(DWORD thread_id): the thread's slot, an entry taken for it
+// int sub_8220F350(DWORD thread_id): the thread's slot, an entry taken for it
 // the first time.
-REX_HOOK_RAW(sub_82240400) {
+REX_HOOK_RAW(sub_8220F350) {
   const uint32_t thread_id = ctx.r3.u32;
-  __imp__sub_82240400(ctx, base);
+  __imp__sub_8220F350(ctx, base);
   if (ctx.r3.u32 != kNoSlot)
     return;
   const uint32_t freed = FreeExitedThreads(base);
@@ -80,5 +80,5 @@ REX_HOOK_RAW(sub_82240400) {
   if (!freed)
     return;
   ctx.r3.u64 = thread_id;
-  __imp__sub_82240400(ctx, base);
+  __imp__sub_8220F350(ctx, base);
 }

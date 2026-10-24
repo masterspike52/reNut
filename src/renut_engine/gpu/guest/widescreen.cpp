@@ -32,35 +32,35 @@ constexpr uint32_t kNativeHeight = 720;
 constexpr double kNativeAspect = 16.0 / 9.0;
 constexpr double kMaxAspect = 32.0 / 9.0;
 
-// Camera projection aspect modes (sub_82239C40): the active camera's mode at
+// Camera projection aspect modes (sub_82208C50): the active camera's mode at
 // +0x6C, where 3 means the console's (0 = 4:3, 1 = 16:9, 2 = 2.35:1).
-constexpr u32 kActiveCameraVa = 0x82FADD20;
+constexpr u32 kActiveCameraVa = 0x82E1B5F0;
 constexpr u32 kCameraAspectModeOffset = 0x6C;
-constexpr u32 kConsoleAspectModeVa = 0x82FADDE8;
+constexpr u32 kConsoleAspectModeVa = 0x82E1B6B8;
 constexpr u32 kAspectModeConsole = 3;
 constexpr u32 kAspectMode4x3 = 0;
 
-// sub_823191B8's buffers: pools of 1280x736 32bpp texels (0x398000 bytes)
+// sub_822E8660's buffers: pools of 1280x736 32bpp texels (0x398000 bytes)
 // and a 0x730000-byte one, created once (kPoolsCreatedVa) and freed by
-// sub_823ED2A8. Their sizes are kept for placing textures at a pool's end.
-constexpr u32 kPoolsCreatedVa = 0x82F835E8;
+// sub_823BB220. Their sizes are kept for placing textures at a pool's end.
+constexpr u32 kPoolsCreatedVa = 0x82DF0748;
 constexpr u32 kScreenPoolBytes = 0x398000;
 constexpr u32 kImagePoolBytes = 0x730000;
-constexpr u32 kScratchPoolSizeVa = 0x82F835B0;
-constexpr u32 kScratchPoolVa = 0x82F835B4;
-constexpr u32 kCopyPoolSizeVa = 0x82F835B8;
-constexpr u32 kDepthPoolSizeVa = 0x82F835D0;
-// Scratch textures over the scratch pool sized for 1280 (sub_82319650 /
-// sub_82230E18 pick them by the camera viewport): the whole screen at its
+constexpr u32 kScratchPoolSizeVa = 0x82DF0710;
+constexpr u32 kScratchPoolVa = 0x82DF0714;
+constexpr u32 kCopyPoolSizeVa = 0x82DF0718;
+constexpr u32 kDepthPoolSizeVa = 0x82DF0730;
+// Scratch textures over the scratch pool sized for 1280 (sub_822E8AE8 /
+// sub_821FFF38 pick them by the camera viewport): the whole screen at its
 // start, the split-screen halves at its end.
-constexpr u32 kScreenScratchVa = 0x82F8336C;      // 1280x720
-constexpr u32 kHalfWidthScratchVa = 0x82F833A0;   // 640x720
-constexpr u32 kTopScratchVa = 0x82F833D4;         // 1280x352
-constexpr u32 kBottomScratchVa = 0x82F83408;      // 1280x368
+constexpr u32 kScreenScratchVa = 0x82DF04CC;      // 1280x720
+constexpr u32 kHalfWidthScratchVa = 0x82DF0500;   // 640x720
+constexpr u32 kTopScratchVa = 0x82DF0534;         // 1280x352
+constexpr u32 kBottomScratchVa = 0x82DF0568;      // 1280x368
 
 std::atomic<uint32_t> g_screen_width{0};
 
-// sub_823191B8 is creating its pools on this thread.
+// sub_822E8660 is creating its pools on this thread.
 thread_local bool t_sizing_pools = false;
 
 u32 LoadU32(u32 va) {
@@ -113,7 +113,7 @@ bool Widened() {
 }
 
 // Room for one screen of 32bpp texels, tiled (32-texel rows) or linear
-// (64-texel rows): what each of sub_823191B8's 1280x736 pools holds.
+// (64-texel rows): what each of sub_822E8660's 1280x736 pools holds.
 u32 ScreenPoolBytes() {
   const u32 bytes = AlignUp(AlignUp(GuestScreenWidth(), 64) * AlignUp(kNativeHeight, 32) * 4, 0x1000);
   return std::max(bytes, kScreenPoolBytes);
@@ -131,7 +131,7 @@ void SetTexture2D(u32 header_va, u32 width, u32 height, u32 base_address) {
   fetch.dword[2] = (fetch.dword[2].get() & ~0x3FFFFFFu) | ((height - 1) << 13) | (width - 1);
 }
 
-// After sub_823191B8 made its pools (at the sizes PoolAllocationBytes gave):
+// After sub_822E8660 made its pools (at the sizes PoolAllocationBytes gave):
 // their recorded sizes, and the scratch textures it sized for 1280.
 void WidenScratchTextures() {
   const u32 width = GuestScreenWidth();
@@ -152,8 +152,8 @@ void WidenScratchTextures() {
   RGPU_INFO("Widescreen: screen pools {:#x} bytes", pool_bytes);
 }
 
-// sub_823191B8's pool allocations, sized for the wider screen. The image
-// pool keeps its recorded size: sub_82575010 puts a screen texture at its
+// sub_822E8660's pool allocations, sized for the wider screen. The image
+// pool keeps its recorded size: sub_82558A80 puts a screen texture at its
 // recorded size less one 1280 screen, so only the room past it grows.
 u32 PoolAllocationBytes(u32 bytes) {
   if (bytes == kScreenPoolBytes)
@@ -186,7 +186,7 @@ float XuiOffset() {
 }
 
 // XUI's root stays 1280x720 (the game's scenes are laid out for it, from its
-// left edge: on a wider root they sat at the screen's left). sub_82208338
+// left edge: on a wider root they sat at the screen's left). sub_821D7858
 // scales XUI's view by the render target over 1280x720, which on a wider
 // screen would stretch XUI sideways: the view keeps the vertical scale on
 // both axes and is moved right by XuiOffset, so the 16:9 layout is centred.
@@ -208,11 +208,11 @@ void CenterXuiView(u32 matrix_va) {
   }
 }
 
-// sub_823E92E8 (XUI start) is sizing XUI's root on this thread, and the root.
+// sub_823B7338 (XUI start) is sizing XUI's root on this thread, and the root.
 thread_local bool t_sizing_xui_root = false;
 std::atomic<u32> g_xui_root{0};
-// A marker (sub_825E2028, sub_825C5AF8: a world position projected to screen
-// pixels by sub_823DBB50, kept in the safe area) is placing its XUI element.
+// A marker (sub_825CA958, sub_825AB958: a world position projected to screen
+// pixels by sub_823A8438, kept in the safe area) is placing its XUI element.
 thread_local bool t_placing_marker = false;
 
 } // namespace
@@ -236,73 +236,73 @@ uint32_t GuestScreenWidth() {
 
 using namespace renut::gpu;
 
-// void sub_823ED828(int query, int *mode, DWORD *width, DWORD *height,
+// void sub_823BB7C0(int query, int *mode, DWORD *width, DWORD *height,
 //                   BOOL *hidef): the screen size for the video mode, 1280x720
 // for every HD mode. Widened here.
-REX_EXTERN(__imp__sub_823ED828);
-REX_HOOK_RAW(sub_823ED828) {
+REX_EXTERN(__imp__sub_823BB7C0);
+REX_HOOK_RAW(sub_823BB7C0) {
   const u32 width_va = ctx.r5.u32;
   const u32 height_va = ctx.r6.u32;
-  __imp__sub_823ED828(ctx, base);
+  __imp__sub_823BB7C0(ctx, base);
   if (width_va && height_va && LoadU32(width_va) == kNativeWidth &&
       LoadU32(height_va) == kNativeHeight)
     StoreU32(width_va, GuestScreenWidth());
 }
 
-// void sub_823191B8(): the screen pools and the textures over them, once.
-REX_EXTERN(__imp__sub_823191B8);
-REX_HOOK_RAW(sub_823191B8) {
+// void sub_822E8660(): the screen pools and the textures over them, once.
+REX_EXTERN(__imp__sub_822E8660);
+REX_HOOK_RAW(sub_822E8660) {
   const bool creates = LoadU32(kPoolsCreatedVa) == 0;
   t_sizing_pools = creates && Widened();
-  __imp__sub_823191B8(ctx, base);
+  __imp__sub_822E8660(ctx, base);
   if (t_sizing_pools)
     WidenScratchTextures();
   t_sizing_pools = false;
 }
 
-// LPVOID sub_82364C78(SIZE_T size, int alignment, DWORD protect): the game's
+// LPVOID sub_82333708(SIZE_T size, int alignment, DWORD protect): the game's
 // XPhysicalAlloc.
-REX_EXTERN(__imp__sub_82364C78);
-REX_HOOK_RAW(sub_82364C78) {
+REX_EXTERN(__imp__sub_82333708);
+REX_HOOK_RAW(sub_82333708) {
   if (t_sizing_pools)
     ctx.r3.u64 = PoolAllocationBytes(ctx.r3.u32);
-  __imp__sub_82364C78(ctx, base);
+  __imp__sub_82333708(ctx, base);
 }
 
-// float sub_82239C40(): the active camera's projection aspect.
-REX_EXTERN(__imp__sub_82239C40);
-REX_HOOK_RAW(sub_82239C40) {
-  __imp__sub_82239C40(ctx, base);
+// float sub_82208C50(): the active camera's projection aspect.
+REX_EXTERN(__imp__sub_82208C50);
+REX_HOOK_RAW(sub_82208C50) {
+  __imp__sub_82208C50(ctx, base);
   WidenAspect(ctx, CameraAspectMode());
 }
 
-// float sub_82236148(): the projection aspect for the console's mode.
-REX_EXTERN(__imp__sub_82236148);
-REX_HOOK_RAW(sub_82236148) {
-  __imp__sub_82236148(ctx, base);
+// float sub_822050D0(): the projection aspect for the console's mode.
+REX_EXTERN(__imp__sub_822050D0);
+REX_HOOK_RAW(sub_822050D0) {
+  __imp__sub_822050D0(ctx, base);
   WidenAspect(ctx, LoadU32(kConsoleAspectModeVa));
 }
 
-// HRESULT XuiRenderSetViewTransform(HXUIDC, const D3DXMATRIX *) [0x82205C88]
-REX_EXTERN(__imp__sub_82205C88);
-REX_HOOK_RAW(sub_82205C88) {
+// HRESULT XuiRenderSetViewTransform(HXUIDC, const D3DXMATRIX *) [0x821D55E8]
+REX_EXTERN(__imp__sub_821D55E8);
+REX_HOOK_RAW(sub_821D55E8) {
   CenterXuiView(ctx.r4.u32);
-  __imp__sub_82205C88(ctx, base);
+  __imp__sub_821D55E8(ctx, base);
 }
 
-// int sub_823E92E8(app): starts XUI; its root (app + 8) is sized to the back
+// int sub_823B7338(app): starts XUI; its root (app + 8) is sized to the back
 // buffer with XuiElementSetBounds.
-REX_EXTERN(__imp__sub_823E92E8);
-REX_HOOK_RAW(sub_823E92E8) {
+REX_EXTERN(__imp__sub_823B7338);
+REX_HOOK_RAW(sub_823B7338) {
   t_sizing_xui_root = true;
-  __imp__sub_823E92E8(ctx, base);
+  __imp__sub_823B7338(ctx, base);
   t_sizing_xui_root = false;
 }
 
-// HRESULT XuiElementSetBounds(HXUIOBJ, float width, float height) [0x829CA2A8]:
+// HRESULT XuiElementSetBounds(HXUIOBJ, float width, float height) [0x82A27180]:
 // XUI's root keeps the game's 1280 wide.
-REX_EXTERN(__imp__sub_829CA2A8);
-REX_HOOK_RAW(sub_829CA2A8) {
+REX_EXTERN(__imp__sub_82A27180);
+REX_HOOK_RAW(sub_82A27180) {
   if (Widened()) {
     const u32 object = ctx.r3.u32;
     if (t_sizing_xui_root)
@@ -311,31 +311,31 @@ REX_HOOK_RAW(sub_829CA2A8) {
         std::fabs(float(ctx.f1.f64) - float(GuestScreenWidth())) < 1.0f)
       ctx.f1.f64 = double(kNativeWidth);
   }
-  __imp__sub_829CA2A8(ctx, base);
+  __imp__sub_82A27180(ctx, base);
 }
 
 // A marker's screen position (screen pixels, from the screen's left) goes to
 // its element in XUI's centred 1280-wide space.
-REX_EXTERN(__imp__sub_825E2028);
-REX_HOOK_RAW(sub_825E2028) {
+REX_EXTERN(__imp__sub_825CA958);
+REX_HOOK_RAW(sub_825CA958) {
   t_placing_marker = true;
-  __imp__sub_825E2028(ctx, base);
+  __imp__sub_825CA958(ctx, base);
   t_placing_marker = false;
 }
 
-REX_EXTERN(__imp__sub_825C5AF8);
-REX_HOOK_RAW(sub_825C5AF8) {
+REX_EXTERN(__imp__sub_825AB958);
+REX_HOOK_RAW(sub_825AB958) {
   t_placing_marker = true;
-  __imp__sub_825C5AF8(ctx, base);
+  __imp__sub_825AB958(ctx, base);
   t_placing_marker = false;
 }
 
-// HRESULT XuiElementSetPosition(HXUIOBJ, const D3DXVECTOR3 *) [0x82267268]
-REX_EXTERN(__imp__sub_82267268);
-REX_HOOK_RAW(sub_82267268) {
+// HRESULT XuiElementSetPosition(HXUIOBJ, const D3DXVECTOR3 *) [0x82235C88]
+REX_EXTERN(__imp__sub_82235C88);
+REX_HOOK_RAW(sub_82235C88) {
   if (t_placing_marker && Widened()) {
     if (auto *position = GuestPtr<be_f32>(ctx.r4.u32))
       position[0] = position[0].get() - XuiOffset();
   }
-  __imp__sub_82267268(ctx, base);
+  __imp__sub_82235C88(ctx, base);
 }

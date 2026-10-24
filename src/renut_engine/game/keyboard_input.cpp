@@ -2,7 +2,7 @@
  * @file    game/keyboard_input.cpp
  * @brief   Bound keys and mouse buttons play player 1's pad, for every action.
  *
- * N&B's input (IDA): inputPollAllPads -> padApplyXInputState (0x8239FF20)
+ * N&B's input (IDA): inputPollAllPads -> padApplyXInputState (0x8236CB80)
  * turns each port's XInput state into a pad record in g_padInputs[port] + 52:
  * a current index at + 0 and two 40-byte entries at + 4 + 40 * index:
  *   + 0 pressed (now & ~before), + 4 released (before & ~now),
@@ -10,7 +10,7 @@
  *       0x10000 / 0x20000 for the left / right trigger past 32;
  *   + 16 / + 20 left stick x / y, + 24 / + 28 right stick (padFilterStick:
  *       -1..1, y up, length at most 1); + 32 / + 36 triggers (0..1).
- * Every record takes a new entry through padStatePush (sub_821FBD90). The game
+ * Every record takes a new entry through padStatePush (sub_821CB628). The game
  * reads player 1's input from his port's record:
  * - in play, through his input device (inputDeviceCreatePlayerPad, type 3),
  *   whose update copies g_padInputs[player + 108]'s current entry into its own
@@ -25,8 +25,8 @@
  * recomputed from both), the movement keys as a full-strength left stick, the
  * trigger keys as full triggers. The controller keeps working alongside.
  *
- * The XUI menus read keystrokes instead (XInputGetKeystroke: sub_82279D80,
- * sub_823E9600, sub_823E8C98 -> XuiProcessInput). The keys make player 1's:
+ * The XUI menus read keystrokes instead (XInputGetKeystroke: sub_82247D88,
+ * sub_823B7660, sub_823B6D10 -> XuiProcessInput). The keys make player 1's:
  * VK_PAD_* down and up as they are pressed and let go, and repeats while held
  * (as XInput's), the movement keys as the left stick's directions;
  * controllers.cpp hands them out before the controllers' own.
@@ -92,15 +92,15 @@ REXCVAR_DEFINE_STRING(renut_key_dpad_down, "Down", "Nuts&Bolts/Keyboard", "D-pad
 REXCVAR_DEFINE_STRING(renut_key_dpad_left, "Left", "Nuts&Bolts/Keyboard", "D-pad left.");
 REXCVAR_DEFINE_STRING(renut_key_dpad_right, "Right", "Nuts&Bolts/Keyboard", "D-pad right.");
 
-REX_EXTERN(__imp__sub_821FBD90);  // padStatePush
+REX_EXTERN(__imp__sub_821CB628);  // padStatePush
 
 namespace {
 
 // Guest data.
-constexpr uint32_t kPadInputs = 0x82F9DFF8;       // g_padInputs[port]
-constexpr uint32_t kConnectedPadMask = 0x82F9DFEC;  // g_connectedPadMask
-constexpr uint32_t kPadPortBits = 0x8212A96C;     // g_padPortBits[port]
-constexpr uint32_t kPlayerProfiles = 0x82FAD9F0;  // dword_82FAD9F0[player]: player slots
+constexpr uint32_t kPadInputs = 0x82E0B158;       // g_padInputs[port]
+constexpr uint32_t kConnectedPadMask = 0x82E0B14C;  // g_connectedPadMask
+constexpr uint32_t kPadPortBits = 0x821051D8;     // g_padPortBits[port]
+constexpr uint32_t kPlayerProfiles = 0x82E1B280;  // dword_82E1B280[player]: player slots
 constexpr uint32_t kPorts = 4;
 constexpr uint32_t kPadRecord = 52;               // g_padInputs[port] + 52: the port's record
 constexpr uint32_t kPlayerPort = 108;             // player slot + 108: his port
@@ -393,7 +393,7 @@ bool NextKeystroke(uint16_t &virtual_key, uint16_t &flags) {
 } // namespace renut::game
 
 // BOOL padStatePush(record, entry): makes 'entry' the record's current one.
-REX_HOOK_RAW(sub_821FBD90) {
+REX_HOOK_RAW(sub_821CB628) {
   const uint32_t record = ctx.r3.u32;
   const uint32_t entry = ctx.r4.u32;
   // Nothing held (keyboard off, or an overlay window taking the keys) still
@@ -401,7 +401,7 @@ REX_HOOK_RAW(sub_821FBD90) {
   const bool active = KeysActive();
   const uint32_t port = entry ? PortOfRecord(base, record) : kPorts;
   if (port == kPorts) {
-    __imp__sub_821FBD90(ctx, base);
+    __imp__sub_821CB628(ctx, base);
     return;
   }
   // Only the keyboard's port plays the keys; keys still held when it changes
@@ -411,7 +411,7 @@ REX_HOOK_RAW(sub_821FBD90) {
   const uint32_t move = keyboard_port ? g_move.load(std::memory_order_relaxed) : 0;
   uint32_t &previous = g_previous[port];
   if (!buttons && !(move & ~kMoveWalk) && !previous) {
-    __imp__sub_821FBD90(ctx, base);
+    __imp__sub_821CB628(ctx, base);
     return;
   }
 
@@ -449,6 +449,6 @@ REX_HOOK_RAW(sub_821FBD90) {
   if (buttons & kRightTrigger)
     StoreFloat(base, entry + 36, 1.0f);
 
-  __imp__sub_821FBD90(ctx, base);
+  __imp__sub_821CB628(ctx, base);
   std::memcpy(base + entry, saved, kEntrySize);
 }

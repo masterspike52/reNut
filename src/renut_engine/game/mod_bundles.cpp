@@ -3,14 +3,17 @@
  * @brief   Loads the bundles .nbpatch part mods add (their parts' models,
  *          collision, footprints and textures) with the game's common bundle.
  *
- * N&B (IDA): at boot sub_82363BB0 loads the common bundle,
- * assetDbBundleLoadBundle(0, &aid_bundle_banjox_common) (GAME:bundle\4f\685374,
- * a CAFF: every asset its manifest lists is opened and kept, sub_822C2B58),
- * then its stream archive, sub_822BDF68(0, &aid_streambundle_banjox_common,
- * wait 1) (GAME:bundle\50\685374, assets opened on demand). Each registers
- * the bundle as a provider of the asset manager (dword_82F7BFBC + 16), which
- * every open by asset id searches in order, and takes a slot of the bundle
- * table 0x82F7BB50 (128 of {u32 id, u32 references}); owner 0 is no level's,
+ * N&B (IDA): at boot appMainBoot (0x8223AD58) loads the common stream
+ * archive, sub_8228BAC8(0, &aid_streambundle_banjox_common, wait 0)
+ * (GAME:bundle\50\685374, assets opened on demand), then the common bundle,
+ * assetDbBundleLoadBundle(0, &aid_bundle_banjox_common, open 1, dlc 0,
+ * update 0) (GAME:bundle\4f\685374, a CAFF: with 'open' every asset its
+ * manifest lists is opened and kept, sub_82290A88; 'dlc' checks the
+ * signed-in profile's content first, 'update' reads UPDATE:\<id> instead).
+ * Each registers the bundle as a provider of the asset manager
+ * (dword_82DE9328 + 16), which every open by asset id searches in order, and
+ * takes a slot of the bundle table 0x82DE8D70 (128 of {u32 id,
+ * u32 references}); owner 0 is no level's,
  * so no level change lets them go. Vehicles stream their parts' models and
  * collision by id (Bundle/50) and streamed models find their textures by name
  * among the resident bundles, so a mod's parts can bring their own:
@@ -19,7 +22,7 @@
  *
  * Here each mod bundle (mods/custom_parts.h ModBundles) is loaded the same
  * way right after the common bundle of its kind, while the game's allocator
- * is still set up for the common bundles (sub_82363BB0 switches it after).
+ * is still set up for the common bundles (boot switches it after).
  */
 #include <rex/hook.h>
 #include <rex/system/kernel_state.h>
@@ -34,7 +37,7 @@
 #include "renut_engine/mods/custom_parts.h"
 
 REX_EXTERN(__imp__assetDbBundleLoadBundle);
-REX_EXTERN(__imp__sub_822BDF68);  // loads a stream archive (Bundle/50)
+REX_EXTERN(__imp__sub_8228BAC8);  // loads a stream archive (Bundle/50)
 
 namespace {
 
@@ -43,7 +46,7 @@ constexpr uint32_t kCommonStream = 0x50685374;  // aid_streambundle_banjox_commo
 constexpr uint32_t kTypeBundle = 0x4F;
 constexpr uint32_t kTypeStream = 0x50;
 // The loaded bundles: {u32 id, u32 references} x 128.
-constexpr uint32_t kBundleTable = 0x82F7BB50;
+constexpr uint32_t kBundleTable = 0x82DE8D70;
 constexpr uint32_t kBundleSlots = 128;
 
 uint32_t Load32(const uint8_t *base, uint32_t va) {
@@ -71,7 +74,7 @@ uint32_t g_id_va = 0;  // guest word holding the id being loaded
 // Loads the mod bundles of one kind (kTypeBundle or kTypeStream) through the
 // game's own loader. The caller's registers are put back.
 void LoadModBundles(PPCContext &ctx, uint8_t *base, uint32_t type) {
-  const auto r3 = ctx.r3, r4 = ctx.r4, r5 = ctx.r5;
+  const auto r3 = ctx.r3, r4 = ctx.r4, r5 = ctx.r5, r6 = ctx.r6, r7 = ctx.r7;
   for (const renut::mods::ModBundle &bundle : renut::mods::ModBundles()) {
     if (bundle.id >> 24 != type)
       continue;
@@ -88,10 +91,15 @@ void LoadModBundles(PPCContext &ctx, uint8_t *base, uint32_t type) {
     ctx.r3.u64 = 0;  // no owner: kept for the session
     ctx.r4.u64 = g_id_va;
     if (type == kTypeBundle) {
+      // As boot loads the common bundle: its assets opened, no DLC check,
+      // from GAME:.
+      ctx.r5.u64 = 1;
+      ctx.r6.u64 = 0;
+      ctx.r7.u64 = 0;
       __imp__assetDbBundleLoadBundle(ctx, base);
     } else {
       ctx.r5.u64 = 1;  // wait until it is ready
-      __imp__sub_822BDF68(ctx, base);
+      __imp__sub_8228BAC8(ctx, base);
     }
     if (IsLoaded(base, bundle.id))
       RNUT_INFO("mods: {}: bundle {}/{:06x} loaded", bundle.mod, folder, bundle.id & 0xFFFFFF);
@@ -102,12 +110,14 @@ void LoadModBundles(PPCContext &ctx, uint8_t *base, uint32_t type) {
   ctx.r3 = r3;
   ctx.r4 = r4;
   ctx.r5 = r5;
+  ctx.r6 = r6;
+  ctx.r7 = r7;
 }
 
 } // namespace
 
-// assetDbBundleLoadBundle(owner, const u32 *id): loads a resident bundle
-// (Bundle/4f) and waits for it.
+// assetDbBundleLoadBundle(owner, const u32 *id, open, dlc, update): loads a
+// resident bundle (Bundle/4f) and waits for it.
 REX_HOOK_RAW(assetDbBundleLoadBundle) {
   const uint32_t owner = ctx.r3.u32;
   const uint32_t id = ctx.r4.u32 ? Load32(base, ctx.r4.u32) : 0;
@@ -116,12 +126,12 @@ REX_HOOK_RAW(assetDbBundleLoadBundle) {
     LoadModBundles(ctx, base, kTypeBundle);
 }
 
-// sub_822BDF68(owner, const u32 *id, int wait): loads a stream archive
+// sub_8228BAC8(owner, const u32 *id, int wait): loads a stream archive
 // (Bundle/50), waiting for it when 'wait'.
-REX_HOOK_RAW(sub_822BDF68) {
+REX_HOOK_RAW(sub_8228BAC8) {
   const uint32_t owner = ctx.r3.u32;
   const uint32_t id = ctx.r4.u32 ? Load32(base, ctx.r4.u32) : 0;
-  __imp__sub_822BDF68(ctx, base);
+  __imp__sub_8228BAC8(ctx, base);
   if (id == kCommonStream && !owner && !renut::mods::ModBundles().empty() && !g_streams_loaded.exchange(true))
     LoadModBundles(ctx, base, kTypeStream);
 }

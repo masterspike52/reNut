@@ -3,30 +3,30 @@
  * @brief   Co-op in Showdown Town on N&B's own multiplayer.
  *
  * N&B (IDA): an online match starts by pushing its game entry's scene script
- * (sub_824D3B48: the script from sub_824D46D8, e.g.
- * aid_script_banjox_live_testtrack_airbrawl, then appScenePush_822BBFE8, which
- * copies the script's asset id into the pending scene dword_82FAB038). While
- * the match runs the game is in multiplayer (byte_82FAC650) on the in-game
- * session ("Slave", dword_82E5EDE0, set up by sub_824D6A90): the networked
- * entities get network objects at level start (sub_8221CCB0), each player's
+ * (sub_824B15C8: the script from sub_824B2158, e.g.
+ * aid_script_banjox_live_testtrack_airbrawl, then appScenePush_82289720, which
+ * copies the script's asset id into the pending scene dword_82E18130). While
+ * the match runs the game is in multiplayer (byte_82E19934) on the in-game
+ * session ("Slave", dword_82D99B58, set up by sub_824B4180): the networked
+ * entities get network objects at level start (sub_821EBE98), each player's
  * Banjo, vehicle, blocks, weapons and shots are replicated (NetObj types
- * registered from 0x82FAEF98), and another player's Banjo is built from its
- * network object with the normal spawner (sub_823F8C68 → sub_8239D9F0).
+ * registered from 0x82E289B0), and another player's Banjo is built from its
+ * network object with the normal spawner (sub_823D1AD8 → sub_8236A570).
  *
  * In a co-op session (coop.h) a match's scene is Showdown Town instead of its
- * arena: the host's, the town script LoadShowdownTown_82564808 would load for
- * its progress (the entries of dword_82FA30A4, picked by sub_824104C0), which
+ * arena: the host's, the town script LoadShowdownTown_82548080 would load for
+ * its progress (the entries of dword_82E10214, picked by sub_823EA9F0), which
  * joiners get from its presence so everyone loads the same town.
  * renut_coop_town does the same for any online match (testing).
  *
- * Joining: the game takes an accepted invite in sub_822848E0 (each frame:
+ * Joining: the game takes an accepted invite in sub_822527D8 (each frame:
  * XNotifyGetNext for XN_LIVE_INVITE_ACCEPTED, then XInviteGetAcceptedInfo):
- * a pending invite is cancelled (sub_826CD0C8), then +33 = 1, +36 the user,
+ * a pending invite is cancelled (sub_826ABB00), then +33 = 1, +36 the user,
  * +40 the host's XSESSION_INFO (60 bytes: XNKID, XNADDR, XNKEY), +100 whether
  * it came from a game invite; the game then joins that session. A co-op join
  * is put there the same way, with the friend's hosted session.
  *
- * Town scripts: op 141 of sceneScript2GroupsExecute (sub_823CDD18; r3 the op,
+ * Town scripts: op 141 of sceneScript2GroupsExecute (sub_8239AA58; r3 the op,
  * its record + 4 id, + 8 marker, + 12 keep driver; r4 the scene) gives player
  * 1 its vehicle again, at the marker or, with none, where its current vehicle
  * is (the scene's vehicle per user, scene + 2628 + 8 × user; + 0x50 position,
@@ -34,31 +34,32 @@
  * script runs it, which read through a null pointer (+ 0xC0): the op is left
  * out then, and the player starts on foot.
  *
- * Spawning: a player marker (markerPlayerExecute, sub_82516C70) in
+ * Spawning: a player marker (markerPlayerExecute, sub_824F40E8) in
  * multiplayer only spawns a Banjo for a local "Player" network object whose
- * player index (+ 96) is the marker's (+ 52), found by sub_82565910(marker,
+ * player index (+ 112) is the marker's (+ 52), found by sub_82549250(marker,
  * &netobj); with none it spawns nothing. The town is made for one player, so
  * its marker matches one side only (the host was left without a Banjo, the
  * camera in the sky). When it matches nobody local in a co-op match, it is
- * asked again with the local player's index (sub_822B8BC0 for player 1,
- * dword_82FAD9F0, then that index's network object, sub_8238B150), once per
+ * asked again with the local player's index (sub_82285DC8 for player 1,
+ * dword_82E1B280, then that index's network object, sub_82357FB8), once per
  * match load.
  *
  * The town is fixed once: the host's when it starts hosting, a joiner's from
  * the host's presence when it joins (the pick can be random when the progress
  * does not decide it, and presence is briefly without the session while it
- * changes). It decides the time of day too: a scene's (sub_82533FE8, scene +
+ * changes). It decides the time of day too: a scene's (sub_825141B0, scene +
  * 17964) is the "timeofdaysettings" entry whose script it runs.
  *
  * Progress: the town is the host's. Player 1's progress is what the game saves
- * (gameSaveSave_8250BB40: sub_8250C500(player, &data) makes it, 32 bytes of
- * header, + 8/12/16 three flag sets' sizes, + 20 the counters' count, + 24/28
- * two bit sets' sizes, then each; sub_8250C670(player, data, size) loads it,
- * as the save's load sub_8250BD08 does). A joiner asks the host for its
+ * (gameSaveSave_824E8838: sub_824E9148(player, data) makes it in a zeroed
+ * buffer of sub_824E8F30() bytes, 32 bytes of header, + 8/12/16 three flag
+ * sets' sizes, + 20 the counters' count, + 24/28 two bit sets' sizes, then
+ * each; sub_824E9410(player, data, size) loads it,
+ * as the save's load sub_824E8A48 does). A joiner asks the host for its
  * progress (EOS channel 2) when it joins and after each match start; the host
  * answers from its game thread. At match start the joiner keeps its own and
  * loads the host's into player 1, but its own options (counters 242-246:
- * brightness, contrast and volumes, sub_8250BD08's defaults), and does not
+ * brightness, contrast and volumes, sub_824E8A48's defaults), and does not
  * save while it holds the host's; out of co-op its own comes back.
  *
  * Challenges: each player plays their own copy (coop::OfflineChallenge: the
@@ -67,7 +68,7 @@
  * the players in its scene, who get a prompt (overlay) and join with BACK
  * within kJoinWindow, which starts the same challenge on their game
  * (challengeManBegin on their scene's manager). The players' "ready"
- * (sub_82520598) is held until all of them are (the starter tells them to
+ * (sub_824FE248) is held until all of them are (the starter tells them to
  * go), so their challenges start together; each has its own opponents,
  * objectives and result.
  */
@@ -100,27 +101,28 @@ REXCVAR_DEFINE_BOOL(renut_coop_town, false, "Nuts&Bolts/Online",
                     "Co-op test: every online match (not only co-op ones) takes place in Showdown "
                     "Town instead of its arena, on the game's own multiplayer.");
 
-REX_EXTERN(__imp__sub_824D3B48);  // online match start: push the game entry's scene script
-REX_EXTERN(__imp__sub_822848E0);  // each frame: accepted invites, ...
-REX_EXTERN(__imp__sub_823CDD18);  // sceneScript2GroupsExecute: a scene script op
-REX_EXTERN(__imp__sub_82565910);  // player marker: the local Player network object for it
+REX_EXTERN(__imp__sub_824B15C8);  // online match start: push the game entry's scene script
+REX_EXTERN(__imp__sub_822527D8);  // each frame: accepted invites, ...
+REX_EXTERN(__imp__sub_8239AA58);  // sceneScript2GroupsExecute: a scene script op
+REX_EXTERN(__imp__sub_82549250);  // player marker: the local Player network object for it
 REX_EXTERN(__imp__gameSaveSave);  // saves a player's progress
-REX_EXTERN(__imp__sub_822ABC28);  // writes the achievements a player's progress has
+REX_EXTERN(__imp__sub_82278D78);  // writes the achievements a player's progress has
 REX_EXTERN(__imp__appScenePush);  // queues a scene
 REX_EXTERN(__imp__supportGameLoadNewScene);  // a scene from the one playing (world doors, back to town)
-REX_EXTERN(__imp__sub_822BBF08);             // closes an app scene
-REX_EXTERN(__imp__sub_8239E220);             // builds a remote entity's object here, retried
-REX_IMPORT(__imp__sub_826CD0C8, CancelPendingInvite, void(u32));
-REX_IMPORT(__imp__sub_8250C500, MakeSave, u32(u32, u32));         // (player, u8 **data)
-REX_IMPORT(__imp__sub_8250C670, LoadSave, u32(u32, u32, u32));    // (player, data, size)
+REX_EXTERN(__imp__sub_82289640);             // closes an app scene
+REX_EXTERN(__imp__sub_8236ADB0);             // builds a remote entity's object here, retried
+REX_IMPORT(__imp__sub_826ABB00, CancelPendingInvite, void(u32));
+REX_IMPORT(__imp__sub_824E8F30, SaveSize, u32());
+REX_IMPORT(__imp__sub_824E9148, MakeSave, u32(u32, u32));         // (player, u8 *data: SaveSize() bytes, zeroed)
+REX_IMPORT(__imp__sub_824E9410, LoadSave, u32(u32, u32, u32));    // (player, data, size)
 REX_IMPORT(__imp__meInternalAlloc, MeAlloc, u32(u32, u32));
 REX_IMPORT(__imp__meInternalFree, MeFree, void(u32));
-REX_IMPORT(__imp__sub_8251FF78, ChallengeManBegin, void(u32, u32, u32));  // (manager, const aid *challenge, flag)
-REX_IMPORT(__imp__sub_822B8BC0, PlayerIndex, u32(u32));       // player → its index
-REX_IMPORT(__imp__sub_8238B150, PlayerNetObject, u32(u32));   // index → its "Player" network object
+REX_IMPORT(__imp__sub_824FDC38, ChallengeManBegin, void(u32, u32, u32));  // (manager, const aid *challenge, flag)
+REX_IMPORT(__imp__sub_82285DC8, PlayerIndex, u32(u32));       // player → its index
+REX_IMPORT(__imp__sub_82357FB8, PlayerNetObject, u32(u32));   // index → its "Player" network object
 REX_IMPORT(__imp__assetManOpenParams, AssetManOpenParams, u32(u32, u32));  // (const u32 *aid, may fail)
-REX_IMPORT(__imp__sub_824104C0, PickTownScene, u32(u32));                 // town entries → the one for this progress
-REX_IMPORT(__imp__sub_82235E68, AssetRelease, void(u32));
+REX_IMPORT(__imp__sub_823EA9F0, PickTownScene, u32(u32));                 // town entries → the one for this progress
+REX_IMPORT(__imp__sub_82204DF0, AssetRelease, void(u32));
 
 namespace {
 
@@ -130,13 +132,13 @@ using renut::guest::Load32;
 using renut::guest::Store32;
 
 // Guest data.
-constexpr uint32_t kPendingScene = 0x82FAB038;  // the scene script appScenePush_822BBFE8 queued
-constexpr uint32_t kTownScenes = 0x82FA30A4;    // aid of Showdown Town's scene entries (80 bytes each, script aid first)
+constexpr uint32_t kPendingScene = 0x82E18130;  // the scene script appScenePush_82289720 queued
+constexpr uint32_t kTownScenes = 0x82E10214;    // aid of Showdown Town's scene entries (80 bytes each, script aid first)
 constexpr uint32_t kTownEntries = 4;
 constexpr uint32_t kTownEntrySize = 80;
-constexpr uint32_t kMultiplayer = 0x82FAC650;   // byte: the game is in an online match
-constexpr uint32_t kLevelLoaded = 0x82E5EDEC;   // byte: a level is loaded (network objects can be built)
-// sub_822848E0's object: an accepted invite.
+constexpr uint32_t kMultiplayer = 0x82E19934;   // byte: the game is in an online match
+constexpr uint32_t kLevelLoaded = 0x82D99B64;   // byte: a level is loaded (network objects can be built)
+// sub_822527D8's object: an accepted invite.
 constexpr uint32_t kInvitePending = 33;
 constexpr uint32_t kInviteUser = 36;
 constexpr uint32_t kInviteHostInfo = 40;
@@ -145,14 +147,14 @@ constexpr uint32_t kInviteFromGameInvite = 100;
 constexpr uint32_t kOpRespawnVehicle = 141;
 constexpr uint32_t kOpId = 4;
 constexpr uint32_t kOpMarker = 8;
-constexpr uint32_t kPlayers = 0x82FAD9F0;   // player slots; [0] player 1
+constexpr uint32_t kPlayers = 0x82E1B280;   // player slots; [0] player 1
 constexpr uint32_t kPlayerGone = 89;        // byte
-constexpr uint32_t kPlayerUser = 108;
+constexpr uint32_t kPlayerUser = 128;
 constexpr uint32_t kSceneVehicles = 2628;  // scene: per user, 8 bytes, its vehicle first
 // Player markers and "Player" network objects.
 constexpr uint32_t kMarkerPlayerIndex = 52;
-constexpr uint32_t kNetObjPlayerIndex = 96;
-// Saved progress (sub_8250C500).
+constexpr uint32_t kNetObjPlayerIndex = 112;
+// Saved progress (sub_824E9148).
 constexpr uint32_t kSaveHeader = 32;
 constexpr uint32_t kSaveCounters = 20;  // header: the counters' count
 constexpr uint32_t kOptionFirst = 242;  // the counters of the options
@@ -175,26 +177,30 @@ constexpr uint8_t kCoopVersion = 1;
 constexpr size_t kProgressHeader = 10;
 constexpr size_t kSceneSize = 2 + 16 + 1 + 4;
 // A network object: + 36 its state, whose + 164 is its owner (the same for
-// every object of a player's game; sub_8269F150 asks it whether it is this
-// game's). An entity's network object: + 104 its entity once built here.
+// every object of a player's game; sub_8267EE30 asks it whether it is this
+// game's). An entity's network object: + 120 its entity once built here.
 constexpr uint32_t kNetObjState = 36;
 constexpr uint32_t kNetObjStateOwner = 164;
-constexpr uint32_t kNetObjEntity = 104;
+constexpr uint32_t kNetObjEntity = 120;
+// An entity: + 32 its network object (0: none). A player avatar: + 3044 its
+// player.
+constexpr uint32_t kEntityNetObj = 32;
+constexpr uint32_t kAvatarPlayer = 3044;
 constexpr uint32_t kMaxPlayers = 8;
 // The online play frontend's app scene script ("multiplayer_frontend"):
-// closing that app destroys its XUI scene, whose destroy (sub_825886D8)
+// closing that app destroys its XUI scene, whose destroy (sub_8256BEA8)
 // leaves both sessions and ends multiplayer.
-constexpr uint32_t kFrontendScript = 0x82FA30A8;
-// The app slot id the online match's scene is pushed with (sub_824D3B48).
+constexpr uint32_t kFrontendScript = 0x82E10218;
+// The app slot id the online match's scene is pushed with (sub_824B15C8).
 constexpr uint32_t kMatchSlotId = 1;
-// Challenges: the current app slot (dword_82FAB0FC; + 4 its scene), a scene's
-// + 5552, whose + 6176 is its challenge manager (banjoxScriptBlockingExecute
+// Challenges: the current app slot (dword_82E181F4; + 4 its scene), a scene's
+// + 5552, whose + 7008 is its challenge manager (banjoxScriptBlockingExecute
 // op 96 starts challenges on it); the manager's + 20 state (0: none), + 1348
-// its single-player "ready" (sub_82520598).
-constexpr uint32_t kCurrentAppSlot = 0x82FAB0FC;
+// its single-player "ready" (sub_824FE248).
+constexpr uint32_t kCurrentAppSlot = 0x82E181F4;
 constexpr uint32_t kSlotScene = 4;
 constexpr uint32_t kSceneData = 5552;
-constexpr uint32_t kSceneChallengeMan = 6176;
+constexpr uint32_t kSceneChallengeMan = 7008;
 constexpr uint32_t kChallengeState = 20;
 constexpr uint32_t kChallengeReadyFlag = 1348;
 constexpr uint16_t kButtonBack = 0x0020;  // XINPUT_GAMEPAD_BACK
@@ -216,7 +222,7 @@ std::vector<std::string> g_progress_asked;
 std::vector<uint8_t> g_progress_in;
 std::vector<uint8_t> g_host_progress;
 // Host: its joiners (who asked for its progress). Both: where each player is,
-// by online ID: its player index (the "Player" network objects' + 96, which
+// by online ID: its player index (the "Player" network objects' + 112, which
 // changes from the lobby to the match) and its scene.
 std::vector<std::string> g_joiners;
 struct Where {
@@ -385,22 +391,27 @@ void OnCoopMessage(const std::string &id, const uint8_t *data, size_t size) {
   return true;
 }();
 
-// Player 1's progress as the game saves it (empty if it cannot be made).
+// Player 1's progress as the game saves it (empty if it cannot be made): in a
+// zeroed buffer of the save's size, as gameSaveSave makes it.
 std::vector<uint8_t> ReadProgress(PPCContext &ctx, uint8_t *base, uint32_t player) {
   Guest g(ctx, base);
-  const uint32_t out = g.Alloc(4);
-  const bool made = MakeSave(g.frame(), base, player, out) & 0xFF;
-  const uint32_t data = Load32(base, out);
+  const uint32_t capacity = SaveSize(g.frame(), base);
+  if (capacity < kSaveHeader || capacity > kMaxSave)
+    return {};
+  const uint32_t data = MeAlloc(g.frame(), base, capacity, 0);
+  if (!data)
+    return {};
+  std::memset(base + data, 0, capacity);
+  const bool made = MakeSave(g.frame(), base, player, data) & 0xFF;
   std::vector<uint8_t> save;
-  if (made && data) {
+  if (made) {
     size_t size = kSaveHeader + size_t(4) * Load32(base, data + kSaveCounters);
     for (uint32_t field : {8u, 12u, 16u, 24u, 28u})
       size += Load32(base, data + field);
-    if (size <= kMaxSave)
+    if (size <= capacity)
       save.assign(base + data, base + data + size);
   }
-  if (data)
-    MeFree(g.frame(), base, data);
+  MeFree(g.frame(), base, data);
   return save;
 }
 
@@ -651,7 +662,7 @@ void JoinChallenge(PPCContext &ctx, uint8_t *base, const ChallengeOffer &offer) 
   ChallengeManBegin(g.frame(), base, man, aid, offer.flag);
 }
 
-// Game thread, after sub_82520598 made player 1 ready on 'man': held while its
+// Game thread, after sub_824FE248 made player 1 ready on 'man': held while its
 // group waits for each other (or for others to join).
 void HoldReady(uint8_t *base, uint32_t man) {
   if (coop::CurrentRole() == coop::Role::kNone)
@@ -935,7 +946,7 @@ bool InMultiplayer(const uint8_t *base) {
   return base[kMultiplayer] || (g_offline_depth > 0 && g_hidden_multiplayer);
 }
 
-// The town script LoadShowdownTown_82564808 would load now (0 if none).
+// The town script LoadShowdownTown_82548080 would load now (0 if none).
 uint32_t TownScene(PPCContext &ctx, uint8_t *base) {
   if (!Load32(base, kTownScenes))
     return 0;
@@ -961,8 +972,8 @@ uint32_t SessionTown() {
 
 }  // namespace
 
-REX_HOOK_RAW(sub_824D3B48) {
-  __imp__sub_824D3B48(ctx, base);
+REX_HOOK_RAW(sub_824B15C8) {
+  __imp__sub_824B15C8(ctx, base);
   if (!coop::Active())
     return;
   g_local_spawned = false;
@@ -984,13 +995,13 @@ REX_HOOK_RAW(sub_824D3B48) {
             town, arena, int(base[kMultiplayer]));
 }
 
-// entry *sub_824104C0(entries): the Showdown Town scene entry to load (4 of 80
+// entry *sub_823EA9F0(entries): the Showdown Town scene entry to load (4 of 80
 // bytes, the script first), by player 1's progress or at random; used by
-// LoadShowdownTown_82564808 (back to town from a world). In a co-op session
+// LoadShowdownTown_82548080 (back to town from a world). In a co-op session
 // every return to town is the session's town, so everyone is in the same one
 // (a different one is another scene, and its players are not built there).
-REX_EXTERN(__imp__sub_824104C0);
-REX_HOOK_RAW(sub_824104C0) {
+REX_EXTERN(__imp__sub_823EA9F0);
+REX_HOOK_RAW(sub_823EA9F0) {
   const uint32_t entries = ctx.r3.u32;
   const uint32_t town = coop::CurrentRole() != coop::Role::kNone ? SessionTown() : 0;
   if (town && entries) {
@@ -1002,11 +1013,11 @@ REX_HOOK_RAW(sub_824104C0) {
       }
     }
   }
-  __imp__sub_824104C0(ctx, base);
+  __imp__sub_823EA9F0(ctx, base);
 }
 
-// int sub_823CDD18(op **, scene): a scene script op.
-REX_HOOK_RAW(sub_823CDD18) {
+// int sub_8239AA58(op **, scene): a scene script op.
+REX_HOOK_RAW(sub_8239AA58) {
   const uint32_t op = ctx.r3.u32 ? Load32(base, ctx.r3.u32) : 0;
   if (op && Load32(base, op + kOpId) == kOpRespawnVehicle && !Load32(base, op + kOpMarker)) {
     const uint32_t scene = ctx.r4.u32;
@@ -1020,15 +1031,15 @@ REX_HOOK_RAW(sub_823CDD18) {
       return;
     }
   }
-  __imp__sub_823CDD18(ctx, base);
+  __imp__sub_8239AA58(ctx, base);
 }
 
-// bool sub_82565910(marker, NetObj **out): the local Player network object a
+// bool sub_82549250(marker, NetObj **out): the local Player network object a
 // player marker spawns a Banjo for.
-REX_HOOK_RAW(sub_82565910) {
+REX_HOOK_RAW(sub_82549250) {
   const uint32_t marker = ctx.r3.u32;
   const uint32_t out = ctx.r4.u32;
-  __imp__sub_82565910(ctx, base);
+  __imp__sub_82549250(ctx, base);
   if (ctx.r3.u8) {
     g_local_spawned = true;
     return;
@@ -1056,7 +1067,7 @@ REX_HOOK_RAW(sub_82565910) {
   Store32(base, marker + kMarkerPlayerIndex, local);
   ctx.r3.u64 = marker;
   ctx.r4.u64 = out;
-  __imp__sub_82565910(ctx, base);
+  __imp__sub_82549250(ctx, base);
   Store32(base, marker + kMarkerPlayerIndex, wanted);
   if (ctx.r3.u8) {
     g_local_spawned = true;
@@ -1070,10 +1081,10 @@ REX_HOOK_RAW(sub_82565910) {
 
 // int appScenePush(app, const aid *script, slot id, ...): a new scene, while in
 // online play logged with where it came from. Its app slot gets 'slot id'
-// (0x82FAB0DC → slot + 16), and a remote player's objects are built in the
+// (0x82E181D4 → slot + 16), and a remote player's objects are built in the
 // scene whose slot id is the one they send (+ 348 of theirs, their scene's):
-// the online match is pushed with 1 (sub_824D3B48), apart from online play's
-// frontend, 0. Scene changes push 0 (sub_822BC0D8) and close every other
+// the online match is pushed with 1 (sub_824B15C8), apart from online play's
+// frontend, 0. Scene changes push 0 (sub_82289810) and close every other
 // scene; a co-op one keeps the frontend open, so the new scene is pushed with
 // 1 as the match is (with 0 the others' Banjos went into the frontend's
 // scene, unseen).
@@ -1089,9 +1100,9 @@ REX_HOOK_RAW(appScenePush) {
 }
 
 // int supportGameLoadNewScene(const aid *script, scene, from_door, door
-// transform): a scene from the one playing (world doors, sub_8224CBE8; back
-// to town, LoadShowdownTown_82564808). It closes the app scenes
-// (sub_822BC0D8), online play's frontend among them, which ended the session
+// transform): a scene from the one playing (world doors, sub_8221B718; back
+// to town, LoadShowdownTown_82548080). It closes the app scenes
+// (sub_82289810), online play's frontend among them, which ended the session
 // for everyone: in a co-op match that one stays. Each player goes on their
 // own, and tells the others its new scene as it leaves (before its new
 // level's objects reach them). Online play's own way out (to
@@ -1111,16 +1122,16 @@ REX_HOOK_RAW(supportGameLoadNewScene) {
   g_keeping_frontend = false;
 }
 
-// void sub_821FFEB8(): each frame while a level is loaded, the game's network
-// update (sets byte_82E5EDEC, makes the level's network objects). A scene
+// void sub_821CF670(): each frame while a level is loaded, the game's network
+// update (sets byte_82D99B64, makes the level's network objects). A scene
 // change is over once player 1's Banjo has spawned in the new level (its
-// player marker, sub_82565910; g_local_spawned is cleared as the change
+// player marker, sub_82549250; g_local_spawned is cleared as the change
 // starts): the others' objects in that scene can be built here from then. The
 // scene told again if player 1's index has changed (it does from the lobby to
 // the match).
-REX_EXTERN(__imp__sub_821FFEB8);
-REX_HOOK_RAW(sub_821FFEB8) {
-  __imp__sub_821FFEB8(ctx, base);
+REX_EXTERN(__imp__sub_821CF670);
+REX_HOOK_RAW(sub_821CF670) {
+  __imp__sub_821CF670(ctx, base);
   if (!InCoopMatch(base))
     return;
   if (base[kLevelLoaded] && g_local_spawned && (g_changing_scene || !g_level_scene)) {
@@ -1131,15 +1142,15 @@ REX_HOOK_RAW(sub_821FFEB8) {
   AnnounceScene(ctx, base);
 }
 
-// int sub_8239E220(entity NetObj): builds a remote entity's object here (its
-// type's build, vtable + 0x44: a Banjo sub_823F8C68, a vehicle sub_826074C8,
-// ...), retried while it has none (+ 104) and a level is loaded. N&B's
+// int sub_8236ADB0(entity NetObj): builds a remote entity's object here (its
+// type's build, vtable + 0x44: a Banjo sub_823D1AD8, a vehicle sub_825F0368,
+// ...), retried while it has none (+ 120) and a level is loaded. N&B's
 // netcode has every player in the same level; in co-op each goes where they
 // like, and an object from another level (a Banjo, a vehicle and its parts)
 // names assets this level does not have, which crashed. A player's objects
 // are built here only while they are in this game's scene; their game takes
 // them away with its level when they leave.
-REX_HOOK_RAW(sub_8239E220) {
+REX_HOOK_RAW(sub_8236ADB0) {
   const uint32_t netobj = ctx.r3.u32;
   if (netobj && !Load32(base, netobj + kNetObjEntity) && base[kLevelLoaded] &&
       coop::CurrentRole() != coop::Role::kNone) {
@@ -1156,13 +1167,13 @@ REX_HOOK_RAW(sub_8239E220) {
     if (held.erase(netobj))
       RONL_INFO("co-op: player {}'s object {:08X} is in this scene now: built here", int(player), netobj);
   }
-  __imp__sub_8239E220(ctx, base);
+  __imp__sub_8236ADB0(ctx, base);
 }
 
-// BOOL sub_822BBF08(app, ...): closes an app scene (slots 0x82FAB05C, 32 bytes
+// BOOL sub_82289640(app, ...): closes an app scene (slots 0x82E18154, 32 bytes
 // each; an app's + 0 is its scene script). Online play's frontend stays open
 // through a co-op scene load.
-REX_HOOK_RAW(sub_822BBF08) {
+REX_HOOK_RAW(sub_82289640) {
   const uint32_t app = ctx.r3.u32;
   if (g_keeping_frontend && app) {
     const uint32_t script = Load32(base, app);
@@ -1173,20 +1184,20 @@ REX_HOOK_RAW(sub_822BBF08) {
     }
     RONL_INFO("co-op: app scene {:08X} closes for the scene change", script);
   }
-  __imp__sub_822BBF08(ctx, base);
+  __imp__sub_82289640(ctx, base);
 }
 
 // Challenges in a co-op session (coop::OfflineChallenge): challengeManBegin
-// (sub_8251FF78; online it takes every session player from the online game,
-// sub_824D3CC8), challengeManSetState (sub_82521018), challengeManReset
-// (sub_82521B70) run as single player; challengeManTick and Teardown do in
-// frameHooks.cpp, which hooks them. challengeCreateNetObject (sub_82522940:
+// (sub_824FDC38; online it takes every session player from the online game,
+// sub_824B1740), challengeManSetState (sub_824FEDD8), challengeManReset
+// (sub_824FF978) run as single player; challengeManTick and Teardown do in
+// frameHooks.cpp, which hooks them. challengeCreateNetObject (sub_825006F0:
 // the challenge manager's network object, which runs one challenge for the
 // whole session) makes none: each player's challenge is their own.
-REX_EXTERN(__imp__sub_8251FF78);
+REX_EXTERN(__imp__sub_824FDC38);
 // A challenge player 1 starts itself (its manager idle: not a retry, which
 // starts it again through challengeManReset) is offered to the others.
-REX_HOOK_RAW(sub_8251FF78) {
+REX_HOOK_RAW(sub_824FDC38) {
   coop::OfflineChallenge offline(base);
   const uint32_t man = ctx.r3.u32;
   const uint32_t challenge = ctx.r4.u32 ? Load32(base, ctx.r4.u32) : 0;
@@ -1197,15 +1208,15 @@ REX_HOOK_RAW(sub_8251FF78) {
     if (fresh && challenge)
       OfferChallenge(base, challenge, flag);
   }
-  __imp__sub_8251FF78(ctx, base);
+  __imp__sub_824FDC38(ctx, base);
 }
 
 // Back to no challenge (state 0): player 1's challenge group is over.
-REX_EXTERN(__imp__sub_82521018);
-REX_HOOK_RAW(sub_82521018) {
+REX_EXTERN(__imp__sub_824FEDD8);
+REX_HOOK_RAW(sub_824FEDD8) {
   coop::OfflineChallenge offline(base);
   const uint32_t state = ctx.r4.u32;
-  __imp__sub_82521018(ctx, base);
+  __imp__sub_824FEDD8(ctx, base);
   if (state == 0 && coop::CurrentRole() != coop::Role::kNone) {
     std::lock_guard lock(g_mutex);
     g_group = {};
@@ -1213,25 +1224,25 @@ REX_HOOK_RAW(sub_82521018) {
   }
 }
 
-REX_EXTERN(__imp__sub_82521B70);
-REX_HOOK_RAW(sub_82521B70) {
+REX_EXTERN(__imp__sub_824FF978);
+REX_HOOK_RAW(sub_824FF978) {
   coop::OfflineChallenge offline(base);
-  __imp__sub_82521B70(ctx, base);
+  __imp__sub_824FF978(ctx, base);
 }
 
-REX_EXTERN(__imp__sub_82522940);
-REX_HOOK_RAW(sub_82522940) {
+REX_EXTERN(__imp__sub_825006F0);
+REX_HOOK_RAW(sub_825006F0) {
   if (coop::CurrentRole() != coop::Role::kNone)
     return;
-  __imp__sub_82522940(ctx, base);
+  __imp__sub_825006F0(ctx, base);
 }
 
 // The challenge's functions the rest of the game calls (its intro screen, the
 // players' goals and results, script requests) run as single player too: one
-// taking its online way left the offline challenge waiting. sub_82520598
+// taking its online way left the offline challenge waiting. sub_824FE248
 // (player ready: online it sets a per-pad byte, + 1296, offline the
 // challenge's ready, + 1348, which challengeStateWaitForPlayersReady waits
-// for; called by the intro screen, sub_825C6978 / sub_825C8748: the game
+// for; called by the intro screen, sub_825ACCE0 / sub_825AE918: the game
 // stopped taking input), challengeSetPlayerResult, challengeReqStop,
 // challengeOutcomeEndsChallenge, challengeGroupAdvance / Evaluate,
 // challengeStatusCombine, challengeRecountdownDone, challengeInitRequirements,
@@ -1242,60 +1253,147 @@ REX_HOOK_RAW(sub_82522940) {
     coop::OfflineChallenge offline(base);    \
     __imp__##fn(ctx, base);                  \
   }
-RENUT_OFFLINE_CHALLENGE(sub_82529E60)
+RENUT_OFFLINE_CHALLENGE(sub_82508168)
 // Callers of challengeManSetState from outside the manager, which check the
-// multiplayer flag themselves: challengeCountdownDone (sub_82524A68, from the
-// countdown screen sub_825C1618: online it goes to state 18, the online
+// multiplayer flag themselves: challengeCountdownDone (sub_82502940, from the
+// countdown screen sub_825A75C8: online it goes to state 18, the online
 // challenge's, whose per-player data a single-player challenge has none of:
-// a write through null), meOpenLoadingEnd (sub_825259E8), sub_825A92C0
-// (pause menu), sub_82520618, and the manager's setup sub_8251EBD8.
-RENUT_OFFLINE_CHALLENGE(sub_82524A68)
-RENUT_OFFLINE_CHALLENGE(sub_825259E8)
-RENUT_OFFLINE_CHALLENGE(sub_825A92C0)
-RENUT_OFFLINE_CHALLENGE(sub_82520618)
-RENUT_OFFLINE_CHALLENGE(sub_8251EBD8)
-RENUT_OFFLINE_CHALLENGE(sub_823FF418)
-RENUT_OFFLINE_CHALLENGE(sub_8252A638)
-RENUT_OFFLINE_CHALLENGE(sub_825237C8)
-RENUT_OFFLINE_CHALLENGE(sub_82526B50)
-RENUT_OFFLINE_CHALLENGE(sub_82523E48)
-RENUT_OFFLINE_CHALLENGE(sub_82524BC0)
-RENUT_OFFLINE_CHALLENGE(sub_8251EF58)
+// a write through null), meOpenLoadingEnd (sub_82503978), sub_8258E498
+// (pause menu), sub_824FE2C8, and the manager's setup sub_824FC550.
+RENUT_OFFLINE_CHALLENGE(sub_82502940)
+RENUT_OFFLINE_CHALLENGE(sub_82503978)
+RENUT_OFFLINE_CHALLENGE(sub_8258E498)
+RENUT_OFFLINE_CHALLENGE(sub_824FE2C8)
+RENUT_OFFLINE_CHALLENGE(sub_824FC550)
+RENUT_OFFLINE_CHALLENGE(sub_823D8D18)
+RENUT_OFFLINE_CHALLENGE(sub_825088E0)
+RENUT_OFFLINE_CHALLENGE(sub_82501638)
+RENUT_OFFLINE_CHALLENGE(sub_82504A98)
+RENUT_OFFLINE_CHALLENGE(sub_82501CD0)
+RENUT_OFFLINE_CHALLENGE(sub_82502A90)
+RENUT_OFFLINE_CHALLENGE(sub_824FC908)
 RENUT_OFFLINE_CHALLENGE(challengeReqStart_MultiPlayerResetPlayers)
 RENUT_OFFLINE_CHALLENGE(challengeReqStart_ResetToGameRef)
 #undef RENUT_OFFLINE_CHALLENGE
 
-// void sub_82520598(manager, ..., player): player 1 is ready to start (see
+// void sub_824FE248(manager, ..., player): player 1 is ready to start (see
 // above); with others in its challenge the start waits for them (HoldReady).
-REX_EXTERN(__imp__sub_82520598);
-REX_HOOK_RAW(sub_82520598) {
+REX_EXTERN(__imp__sub_824FE248);
+REX_HOOK_RAW(sub_824FE248) {
   const uint32_t man = ctx.r3.u32;
   coop::OfflineChallenge offline(base);
-  __imp__sub_82520598(ctx, base);
+  __imp__sub_824FE248(ctx, base);
   if (man && Load32(base, man + kChallengeReadyFlag))
     HoldReady(base, man);
 }
 
-// void sub_822B8780(player, index): gives a local player its player index
-// (the map sub_822B8BC0 reads). A single-player challenge start numbers the
-// local players from 0; in co-op player 1 keeps its index in the session (a
-// joiner's is not 0: it would take the host's).
-REX_EXTERN(__imp__sub_822B8780);
-REX_HOOK_RAW(sub_822B8780) {
-  if (g_offline_depth > 0 && g_hidden_multiplayer)
+// void sub_822859F0(player, index): gives a player its player index (the map
+// sub_82285DC8 reads; a player not in it reads 0). A single-player challenge
+// start (challengeManBegin) numbers its players from 0: player 1, then the
+// "BanjoHolder" players (0x82E1B2D4) that fill its other slots up to the
+// challenge's player count (its record's + 124, 7 for a race: its CPU
+// racers), each matched to its start markers by index. In co-op player 1
+// keeps its index in the session (a joiner's is not 0: it would take the
+// host's); the holders are still numbered, the one that would take player
+// 1's index taking 0 instead. Left unnumbered they all read 0, and each
+// spawned a Banjo at the same start (renut_014: six Banjos, the racers left
+// out). An index or player already in the map starts it again (the old one
+// is only looked in afterwards), so player 1's index is put back when gone.
+REX_EXTERN(__imp__sub_822859F0);
+REX_HOOK_RAW(sub_822859F0) {
+  if (!(g_offline_depth > 0 && g_hidden_multiplayer)) {
+    __imp__sub_822859F0(ctx, base);
     return;
-  __imp__sub_822B8780(ctx, base);
+  }
+  const uint32_t player1 = Load32(base, kPlayers);
+  const uint32_t player = ctx.r3.u32;
+  const uint32_t wanted = ctx.r4.u32;
+  if (!player1 || player == player1)
+    return;
+  uint32_t own;
+  {
+    rex::CallFrame frame(ctx);
+    own = PlayerIndex(frame, base, player1);
+  }
+  const uint32_t index = wanted == own ? 0 : wanted;
+  ctx.r3.u64 = player;
+  ctx.r4.u64 = index;
+  __imp__sub_822859F0(ctx, base);
+  uint32_t now;
+  {
+    rex::CallFrame frame(ctx);
+    now = PlayerIndex(frame, base, player1);
+  }
+  if (now != own) {
+    ctx.r3.u64 = player1;
+    ctx.r4.u64 = own;
+    __imp__sub_822859F0(ctx, base);
+  }
+  RONL_INFO("co-op: challenge player {:08X} gets index {} (player 1 keeps {})", player, index, own);
+}
+
+// void sub_8243E2C8(mind, avatar): a player avatar's mind (entityMindPlayer)
+// as it enters the scene (objMsgId_Avatar_SceneInsert, 56, in sub_821C4720).
+// Online it takes the avatar's player (+ 3044), offline it gives it player 1
+// (dword_82E1B280[0], sub_8227D818). This player's challenge avatar was made
+// as single player (OfflineChallenge) and has none yet, a read through null:
+// it takes player 1 as single player. Another game's avatar with no player is
+// not ours to control: it is left out.
+REX_EXTERN(__imp__sub_8243E2C8);
+REX_HOOK_RAW(sub_8243E2C8) {
+  const uint32_t avatar = ctx.r4.u32;
+  if (avatar && base[kMultiplayer] && !Load32(base, avatar + kAvatarPlayer)) {
+    const uint32_t netobj = Load32(base, avatar + kEntityNetObj);
+    const uint32_t owner = OwnerOf(base, netobj);
+    uint32_t own = 0;
+    if (owner) {
+      const uint32_t index = LocalPlayerIndex(ctx, base);
+      if (index != kNoPlayer) {
+        rex::CallFrame frame(ctx);
+        own = OwnerOf(base, PlayerNetObject(frame, base, index));
+      }
+    }
+    if (owner && owner != own) {
+      RONL_WARN("co-op: another game's avatar {:08X} (network object {:08X}) has no player: left out",
+                avatar, netobj);
+      return;
+    }
+    RONL_INFO("co-op: this player's avatar {:08X} has no player yet: it takes player 1 as single player",
+              avatar);
+    coop::OfflineChallenge offline(base);
+    __imp__sub_8243E2C8(ctx, base);
+    return;
+  }
+  __imp__sub_8243E2C8(ctx, base);
+}
+
+// ULONG sub_822E0C38(D3DResource **): releases a resource and clears the
+// pointer. Freeing an XUI package (sub_823B6208) after a co-op session ended
+// passed a texture already gone (null); nothing is left to release.
+REX_EXTERN(__imp__sub_822E0C38);
+REX_HOOK_RAW(sub_822E0C38) {
+  const uint32_t slot = ctx.r3.u32;
+  if (!slot || !Load32(base, slot)) {
+    static bool logged = false;
+    if (!logged) {
+      logged = true;
+      RONL_WARN("co-op: a resource release with no resource (slot {:08X}), skipped", slot);
+    }
+    ctx.r3.u64 = 0;
+    return;
+  }
+  __imp__sub_822E0C38(ctx, base);
 }
 
 
-// sub_822ABC28(player): writes the achievement of each "achievement unlocked"
-// flag of the player's progress (+ 248 flags, 1-50; sub_822ABD28 →
+// sub_82278D78(player): writes the achievement of each "achievement unlocked"
+// flag of the player's progress (+ 280 flags, 1-50; sub_82278E78 →
 // XUserWriteAchievements), as loading progress does at its end. Not while
 // player 1 has the host's: those are the host's achievements.
-REX_HOOK_RAW(sub_822ABC28) {
+REX_HOOK_RAW(sub_82278D78) {
   if (!g_own_progress.empty() && ctx.r3.u32 == Load32(base, kPlayers))
     return;
-  __imp__sub_822ABC28(ctx, base);
+  __imp__sub_82278D78(ctx, base);
 }
 
 // int gameSaveSave(player): not while player 1 has the host's progress.
@@ -1314,9 +1412,9 @@ REX_HOOK_RAW(gameSaveSave) {
 
 // Each frame: the game's accepted invites, then a co-op join as one; the
 // host's progress to joiners who asked, and a joiner's own back after co-op.
-REX_HOOK_RAW(sub_822848E0) {
+REX_HOOK_RAW(sub_822527D8) {
   const uint32_t invites = ctx.r3.u32;
-  __imp__sub_822848E0(ctx, base);
+  __imp__sub_822527D8(ctx, base);
   ServeProgress(ctx, base);
   RestoreOwnProgress(ctx, base);
   if (InCoopMatch(base))

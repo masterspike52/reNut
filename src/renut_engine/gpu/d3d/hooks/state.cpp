@@ -90,9 +90,9 @@ void D3DDevice_GetViewport_hook(u32 device, mapped_u32 viewport) {
   if (!d || !viewport)
     return;
   for (u32 i = 0; i < 4; ++i)  // fctidz, the low word
-    viewport[i] = u32(native::TruncateToI64(d.F(0x3168 + i * 4)));
-  viewport[4] = d.W(0x3178);
-  viewport[5] = d.W(0x317C);
+    viewport[i] = u32(native::TruncateToI64(d.F(0x3170 + i * 4)));
+  viewport[4] = d.W(0x3180);
+  viewport[5] = d.W(0x3184);
 }
 
 // void D3DDevice_SetClipPlane(D3DDevice*, DWORD Index, const float *pPlane) [0x8264DAE8]

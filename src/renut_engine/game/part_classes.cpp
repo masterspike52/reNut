@@ -2,27 +2,27 @@
  * @file    game/part_classes.cpp
  * @brief   New vehicle part classes, whose behaviour runs in reNut.
  *
- * N&B's classes (IDA): ids 0-35 are the engine's (off_82E5EDC0), 36 and up
- * the game's, through the record dword_82E5EDD0 points at ({table, count,
+ * N&B's classes (IDA): ids 0-35 are the engine's (off_82D99434), 36 and up
+ * the game's, through the record dword_82D99444 points at ({table, count,
  * first id, end id}; table entries {name, parent id, descriptor getter}).
- * sub_82277A68(id) calls the getter for the class's descriptor,
- * sub_82277BC8(id) is its parent, sub_8239D980(id) its name;
- * classIdFromName (0x82215F58) binary-searches the name map dword_82E5EDD4
- * (dword_82E5EDD8 12-byte {name, id} entries, byte order: nameCompare)
- * that banjoxScriptInit (0x82514530) builds. An objparams record names its
- * class at + 0x4B; sub_8239D9F0 creates an instance of it (instance + 0 the
+ * sub_82245958(id) calls the getter for the class's descriptor,
+ * sub_82245AB8(id) is its parent, sub_8236A4C8(id) its name;
+ * classIdFromName (0x821E5370) binary-searches the name map dword_82D99448
+ * (dword_82D9944C 12-byte {name, id} entries, byte order: nameCompare)
+ * that banjoxScriptInit (0x824F19E0) builds. An objparams record names its
+ * class at + 0x4B; sub_8236A570 creates an instance of it (instance + 0 the
  * descriptor, + 4 the class id; the class's sizes must match the record's).
  *
  * A vehicle part's descriptor is 25 guest function pointers, filled from its
- * parent's (vehicleBlock's: sub_8261E9D8):
+ * parent's (vehicleBlock's: sub_826077F0):
  *   [0] sizes(out {instance size, objparams size})
  *   [1] init(instance, objparams): every class's in the chain, root first
- *       (sub_8239DC20, skipping one equal to its parent's)
- *   [2] destroy(instance): every class's likewise (sub_82277AD0)
+ *       (sub_8236A740, skipping one equal to its parent's)
+ *   [2] destroy(instance): every class's likewise (sub_822459C0)
  *   [3] message(instance, message): + 0 its id; handlers call their parent's
  *   [5] attach(part, vehicle, ..., flags r8): joins the vehicle's part list
- *       (vehicle + 5256, 176-byte entries {flags, part, ...}); flag 1 makes
- *       the vehicle's update (sub_82251568) call [7] each frame
+ *       (vehicle + 5272, 176-byte entries {flags, part, ...}); flag 1 makes
+ *       the vehicle's update (sub_82220038) call [7] each frame
  *   [7] tick(part, vehicle, double dt)
  *   [18] / [19] the part's action button down / up (the horn honks on 18, a
  *       weapon fires from 18 to 19)
@@ -35,7 +35,7 @@
  * the buttons are the behaviour's alone. Its getter is a thunk of its own (a
  * host function per class: a call into the code range doesn't record its
  * target), the table and the name map are copied with the class added, and
- * dword_82E5EDD0 points at the new record.
+ * dword_82D99444 points at the new record.
  * The part's script (part_scripts.h) gets the events.
  */
 #include "renut_engine/game/part_classes.h"
@@ -67,10 +67,10 @@ using renut::mods::CustomPart;
 namespace part_scripts = renut::game::part_scripts;
 
 // Guest data.
-constexpr uint32_t kEngineClasses = 0x82E5EDC0;     // the engine's class record (ids 0-35)
-constexpr uint32_t kGameClassesPtr = 0x82E5EDD0;    // -> the game's class record
-constexpr uint32_t kClassNameMap = 0x82E5EDD4;      // -> {name, id, -} sorted by name
-constexpr uint32_t kClassNameMapCount = 0x82E5EDD8;
+constexpr uint32_t kEngineClasses = 0x82D99434;     // the engine's class record (ids 0-35)
+constexpr uint32_t kGameClassesPtr = 0x82D99444;    // -> the game's class record
+constexpr uint32_t kClassNameMap = 0x82D99448;      // -> {name, id, -} sorted by name
+constexpr uint32_t kClassNameMapCount = 0x82D9944C;
 constexpr uint32_t kClassEntrySize = 12;            // {name, parent id, getter}
 constexpr uint32_t kNameMapEntrySize = 12;          // {name, id, -}
 constexpr uint32_t kInstanceClass = 4;              // instance + 4: its class id

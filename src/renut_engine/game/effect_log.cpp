@@ -3,10 +3,10 @@
  * @brief   renut_log_effects: logs the game's particle effects as it plays
  *          them, by name, for part scripts' fx.play (part_scripts.h).
  *
- * N&B (IDA): sub_82276BA8(effect system, const u32 *aid, params, ...) spawns
- * a particle effect (sub_823DC870 and 16 other callers: vehicles, blocks,
+ * N&B (IDA): sub_82244C00(effect system, const u32 *aid, params, ...) spawns
+ * a particle effect (sub_823A9100 and 16 other callers: vehicles, blocks,
  * footsteps, weapons...). Effect names are game asset refs: the tables
- * gameAssetRefGetAid (0x82254D10) searches, a list at 0x82F84B78 of
+ * gameAssetRefGetAid (0x82223868) searches, a list at 0x82DF1CD8 of
  * {?, next, count, entries}, entries {char name[64], u32 aid}; the log looks
  * the aid up there. Each effect is logged the first time it plays.
  */
@@ -25,11 +25,11 @@ REXCVAR_DEFINE_BOOL(renut_log_effects, false, "Nuts&Bolts/Debug",
                     "Logs each particle effect the game plays (the first time), with the name a part "
                     "script passes to fx.play.");
 
-REX_EXTERN(__imp__sub_82276BA8);  // spawns a particle effect
+REX_EXTERN(__imp__sub_82244C00);  // spawns a particle effect
 
 namespace {
 
-constexpr uint32_t kAssetRefs = 0x82F84B78;
+constexpr uint32_t kAssetRefs = 0x82DF1CD8;
 constexpr uint32_t kAssetRefEntrySize = 68;
 constexpr uint32_t kAssetRefAid = 64;
 
@@ -71,8 +71,8 @@ std::unordered_set<uint32_t> g_logged;
 
 } // namespace
 
-// sub_82276BA8(effect system, const u32 *aid, params, ...): spawns an effect.
-REX_HOOK_RAW(sub_82276BA8) {
+// sub_82244C00(effect system, const u32 *aid, params, ...): spawns an effect.
+REX_HOOK_RAW(sub_82244C00) {
   if (REXCVAR_GET(renut_log_effects) && ctx.r4.u32) {
     const uint32_t aid = Load32(base, ctx.r4.u32);
     bool first = false;
@@ -89,5 +89,5 @@ REX_HOOK_RAW(sub_82276BA8) {
         RNUT_INFO("Effect played: \"{}\" ({}, asset 0x{:08X})", name, EffectType(aid), aid);
     }
   }
-  __imp__sub_82276BA8(ctx, base);
+  __imp__sub_82244C00(ctx, base);
 }

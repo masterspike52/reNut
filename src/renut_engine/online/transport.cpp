@@ -55,18 +55,18 @@
 #include "renut_engine/online/online_log.h"
 #include "renut_engine/online/xnaddr.h"
 
-REX_EXTERN(__imp__sub_829A8048);  // XNetXnAddrToInAddr
-REX_EXTERN(__imp__sub_829A8078);  // XNetInAddrToXnAddr
-REX_EXTERN(__imp__sub_829A80A8);  // XNetUnregisterInAddr
-REX_EXTERN(__imp__sub_829A80B8);  // XNetConnect
-REX_EXTERN(__imp__sub_829A80C8);  // XNetGetConnectStatus
+REX_EXTERN(__imp__sub_82A04FB0);  // XNetXnAddrToInAddr
+REX_EXTERN(__imp__sub_82A04FE0);  // XNetInAddrToXnAddr
+REX_EXTERN(__imp__sub_82A05010);  // XNetUnregisterInAddr
+REX_EXTERN(__imp__sub_82A05020);  // XNetConnect
+REX_EXTERN(__imp__sub_82A05030);  // XNetGetConnectStatus
 REX_EXTERN(__imp__rex_socket);
 REX_EXTERN(__imp__rex_bind);
 REX_EXTERN(__imp__rex_closesocket);
 REX_EXTERN(__imp__rex_sendto);
 REX_EXTERN(__imp__rex_recvfrom);
-REX_EXTERN(__imp__sub_829A87B0);  // WSASendTo
-REX_EXTERN(__imp__sub_821FB950);  // WSARecvFrom
+REX_EXTERN(__imp__sub_82A05720);  // WSASendTo
+REX_EXTERN(__imp__sub_821CB1E8);  // WSARecvFrom
 REX_EXTERN(__imp__rex_XUserMuteListQuery);
 
 REXCVAR_DECLARE(bool, renut_online);
@@ -451,14 +451,14 @@ using namespace renut::online::transport;
 // ---------------------------------------------------------------------------
 
 // INT XNetXnAddrToInAddr(const XNADDR *address, const XNKID *session, IN_ADDR *ina)
-REX_HOOK_RAW(sub_829A8048) {
+REX_HOOK_RAW(sub_82A04FB0) {
   const uint32_t args[6] = {ctx.r3.u32, ctx.r4.u32, ctx.r5.u32, 0, 0, 0};
   const uint32_t address = ctx.r3.u32;
   const uint32_t session = ctx.r4.u32;
   const uint32_t ina_out = ctx.r5.u32;
   const auto xuid = Enabled() && address ? xnaddr::XuidOf(base + address) : std::nullopt;
   if (!xuid || !ina_out) {
-    __imp__sub_829A8048(ctx, base);
+    __imp__sub_82A04FB0(ctx, base);
     TraceCall("XNetXnAddrToInAddr", args, ctx.r3.u32);
     return;
   }
@@ -482,13 +482,13 @@ REX_HOOK_RAW(sub_829A8048) {
 }
 
 // INT XNetInAddrToXnAddr(IN_ADDR ina, XNADDR *address, XNKID *session)
-REX_HOOK_RAW(sub_829A8078) {
+REX_HOOK_RAW(sub_82A04FE0) {
   const uint32_t args[6] = {ctx.r3.u32, ctx.r4.u32, ctx.r5.u32, 0, 0, 0};
   const uint32_t ina = ctx.r3.u32;
   const uint32_t address = ctx.r4.u32;
   const uint32_t session = ctx.r5.u32;
   if (!Enabled() || !xnaddr::IsReNutInAddr(ina)) {
-    __imp__sub_829A8078(ctx, base);
+    __imp__sub_82A04FE0(ctx, base);
     TraceCall("XNetInAddrToXnAddr", args, ctx.r3.u32);
     return;
   }
@@ -514,9 +514,9 @@ REX_HOOK_RAW(sub_829A8078) {
 }
 
 // INT XNetUnregisterInAddr(IN_ADDR ina)
-REX_HOOK_RAW(sub_829A80A8) {
+REX_HOOK_RAW(sub_82A05010) {
   if (!Enabled() || !xnaddr::IsReNutInAddr(ctx.r3.u32)) {
-    __imp__sub_829A80A8(ctx, base);
+    __imp__sub_82A05010(ctx, base);
     return;
   }
   // Kept: the player's packets for that session still arrive by it.
@@ -524,19 +524,19 @@ REX_HOOK_RAW(sub_829A80A8) {
 }
 
 // INT XNetConnect(IN_ADDR ina)
-REX_HOOK_RAW(sub_829A80B8) {
+REX_HOOK_RAW(sub_82A05020) {
   if (!Enabled() || !xnaddr::IsReNutInAddr(ctx.r3.u32)) {
-    __imp__sub_829A80B8(ctx, base);
+    __imp__sub_82A05020(ctx, base);
     return;
   }
   ctx.r3.u64 = 0;
 }
 
 // DWORD XNetGetConnectStatus(IN_ADDR ina)
-REX_HOOK_RAW(sub_829A80C8) {
+REX_HOOK_RAW(sub_82A05030) {
   const uint32_t ina = ctx.r3.u32;
   if (!Enabled() || !xnaddr::IsReNutInAddr(ina)) {
-    __imp__sub_829A80C8(ctx, base);
+    __imp__sub_82A05030(ctx, base);
     return;
   }
   uint32_t status = kConnectPending;
@@ -666,7 +666,7 @@ REX_HOOK_RAW(rex_recvfrom) {
 
 // int WSASendTo(SOCKET s, WSABUF *buffers, DWORD count, DWORD *sent, DWORD flags,
 //               const sockaddr *to, int to_length, WSAOVERLAPPED *overlapped, ...)
-REX_HOOK_RAW(sub_829A87B0) {
+REX_HOOK_RAW(sub_82A05720) {
   const uint32_t handle = ctx.r3.u32;
   const uint32_t buffers = ctx.r4.u32;
   const uint32_t count = ctx.r5.u32;
@@ -688,12 +688,12 @@ REX_HOOK_RAW(sub_829A87B0) {
       return;
     }
   }
-  __imp__sub_829A87B0(ctx, base);
+  __imp__sub_82A05720(ctx, base);
 }
 
 // int WSARecvFrom(SOCKET s, WSABUF *buffers, DWORD count, DWORD *received, DWORD *flags,
 //                 sockaddr *from, int *from_length, WSAOVERLAPPED *overlapped, ...)
-REX_HOOK_RAW(sub_821FB950) {
+REX_HOOK_RAW(sub_821CB1E8) {
   const uint32_t handle = ctx.r3.u32;
   const uint32_t buffers = ctx.r4.u32;
   const uint32_t count = ctx.r5.u32;
@@ -704,7 +704,7 @@ REX_HOOK_RAW(sub_821FB950) {
   const uint32_t overlapped = ctx.r10.u32;
   Datagram d;
   if (!Enabled() || overlapped || !buffers || !Receive(handle, d)) {
-    __imp__sub_821FB950(ctx, base);
+    __imp__sub_821CB1E8(ctx, base);
     return;
   }
   size_t offset = 0;

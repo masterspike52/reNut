@@ -3,11 +3,11 @@
  * @brief   QoS probes of friends' sessions, answered from their presence.
  *
  * Before N&B lets a player join a friend's session it probes the host
- * (sub_826CEF20: XNetQosLookup of the session's XNADDR, XNKID and XNKEY) and
- * reads the result (sub_826CEFF8): it needs the probe complete and the target
+ * (sub_826AC580: XNetQosLookup of the session's XNADDR, XNKID and XNKEY) and
+ * reads the result (sub_826AC658): it needs the probe complete and the target
  * contacted, and the 8 bytes of data the host listens with (its slots and
  * state); without them the friend cannot be joined. The host gives that data
- * with XNetQosListen (sub_826CF718: enable, then set data). Both are reNut's
+ * with XNetQosListen (sub_826ACEF0: enable, then set data). Both are reNut's
  * here: a host's data goes to its friends with the session in its presence
  * (friends.cpp), and a probe is answered at once from the friend's presence,
  * its round trip the one presence measured.

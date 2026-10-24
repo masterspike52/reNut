@@ -19,7 +19,7 @@
 
 #include "renut_engine/online/coop.h"
 
-// Typed import of the original generated implementation at sub_823edeb8.
+// Typed import of the original generated implementation at sub_823BBE58.
 REX_IMPORT(__imp__rex_setParamInterval, setParamInterval, void(int));
 
 // Klungo's arcade games run their logic once per frame, so they play too fast
@@ -28,13 +28,13 @@ REX_IMPORT(__imp__rex_setParamInterval, setParamInterval, void(int));
 static constexpr int kKlungoArcadeFps = 30;
 static std::atomic<bool> g_klungoArcade{ false };
 
-void klungoConstruct_hook() // Called at 8246e7a8 (End of the function)
+void klungoConstruct_hook() // Called at 8244a7a0 (End of the function)
 {
 	setParamInterval(2);
 	g_klungoArcade.store(true, std::memory_order_relaxed);
 }
 
-void klungoDestruct_hook() // Called at 8246f62c (End of the function)
+void klungoDestruct_hook() // Called at 8244b744 (End of the function)
 {
 	// Back to the game's own interval: everything in the game that changes it
 	// (the movie player, the loading swap) restores 7 afterwards.
@@ -45,23 +45,23 @@ void klungoDestruct_hook() // Called at 8246f62c (End of the function)
 // The Saucer of Peril Returns (Terrarium of Terror, act 2 game 3) never ends
 // above 30 fps: the saucer ride keeps going. While it runs the frame limiter
 // holds the game at 30 fps, as for Klungo's arcade. The challenge manager
-// (challengeManBegin, sub_8251FF78) keeps the running challenge's asset id at
-// +12, and challengeManSetState (sub_82521018) clears it at state 0 (idle).
+// (challengeManBegin, sub_824FDC38) keeps the running challenge's asset id at
+// +12, and challengeManSetState (sub_824FEDD8) clears it at state 0 (idle).
 static constexpr uint32_t kSaucerOfPerilChallenge = 0x3DDFA82A;  // aid_challenge_banjox_terrorium_act2_game3
 static constexpr uint32_t kChallengeIdOffset = 12;
 static std::atomic<bool> g_saucerOfPeril{ false };
 
-REX_EXTERN(__imp__sub_821ED7F8);
-REX_EXTERN(__imp__sub_825214E0);
+REX_EXTERN(__imp__sub_821BD590);
+REX_EXTERN(__imp__sub_824FF2F0);
 
-// void challengeManTick(challengeMan*), once a frame from sub_82238360. In a
+// void challengeManTick(challengeMan*), once a frame from sub_82207320. In a
 // co-op session it runs as single player (online/coop.h).
-REX_HOOK_RAW(sub_821ED7F8)
+REX_HOOK_RAW(sub_821BD590)
 {
 	const uint32_t man = ctx.r3.u32;
 	{
 		renut::online::coop::OfflineChallenge offline(base);
-		__imp__sub_821ED7F8(ctx, base);
+		__imp__sub_821BD590(ctx, base);
 	}
 	const uint32_t id = rex::byte_swap(*reinterpret_cast<const uint32_t*>(base + man + kChallengeIdOffset));
 	g_saucerOfPeril.store(id == kSaucerOfPerilChallenge, std::memory_order_relaxed);
@@ -69,17 +69,17 @@ REX_HOOK_RAW(sub_821ED7F8)
 
 // void challengeManTeardown(challengeMan*, bool). The tick may stop with the
 // id still set (leaving the world), so the hold ends here too.
-REX_HOOK_RAW(sub_825214E0)
+REX_HOOK_RAW(sub_824FF2F0)
 {
 	{
 		renut::online::coop::OfflineChallenge offline(base);
-		__imp__sub_825214E0(ctx, base);
+		__imp__sub_824FF2F0(ctx, base);
 	}
 	g_saucerOfPeril.store(false, std::memory_order_relaxed);
 }
 
 // Havok steps N&B's physics in fixed 1/60 s steps on its own thread
-// (sub_82386168): the frame sets its time marker to the current time plus
+// (sub_82353060): the frame sets its time marker to the current time plus
 // the frame's delta (capped at four steps), and it steps the world a full
 // step at a time until the current time, the earlier of the step time and the
 // marker, reaches the marker. On the console's vsynced 30 fps every frame is
@@ -95,13 +95,13 @@ REXCVAR_DEFINE_BOOL(renut_physics_whole_steps, true, "Nuts&Bolts/Performance",
 	"console's 30 fps did. Off: the game's own stepping, which flings Banjo about on "
 	"ledges, tightropes and ladders at 60 fps.");
 
-static constexpr float kPhysicsStep = 0.016666668f;  // the step sub_8227D3B8 sends
+static constexpr float kPhysicsStep = 0.016666668f;  // the step sub_8224B3A8 sends
 static constexpr int kMaxPhysicsSteps = 4;            // the physics thread's cap
 static constexpr uint32_t kPhysicsWorldOffset = 60;
 static constexpr uint32_t kPhysicsDueOffset = 232;    // cleared when the step is sent
 static double g_physicsCarry = 0.0;
 
-REX_EXTERN(__imp__sub_8227D3B8);
+REX_EXTERN(__imp__sub_8224B3A8);
 
 static uint32_t renutLoad32(const uint8_t* base, uint32_t va)
 {
@@ -110,21 +110,21 @@ static uint32_t renutLoad32(const uint8_t* base, uint32_t va)
 
 // void physicsStepSend(game*, ?, float frameDelta): queues the physics
 // thread's step (command 8: the delta and the 1/60 s step), from the game
-// tick (sub_82261DD0, delta = time scale x frame delta) and sub_8229B330.
-REX_HOOK_RAW(sub_8227D3B8)
+// tick (sub_822309B8, delta = time scale x frame delta) and sub_82268F78.
+REX_HOOK_RAW(sub_8224B3A8)
 {
 	const uint32_t game = ctx.r3.u32;
 	const bool due = renutLoad32(base, game + kPhysicsWorldOffset) &&
 		renutLoad32(base, game + kPhysicsDueOffset);
 	if (!due || !REXCVAR_GET(renut_physics_whole_steps)) {
-		__imp__sub_8227D3B8(ctx, base);
+		__imp__sub_8224B3A8(ctx, base);
 		return;
 	}
 	const double wanted = ctx.f1.f64 + g_physicsCarry;
 	const int steps = std::clamp(int(std::floor(wanted / kPhysicsStep + 0.5)), 0, kMaxPhysicsSteps);
 	const double sent = double(float(steps * kPhysicsStep));
 	ctx.f1.f64 = sent;
-	__imp__sub_8227D3B8(ctx, base);
+	__imp__sub_8224B3A8(ctx, base);
 	// Sent unless the game had no physics world for this thread.
 	if (!renutLoad32(base, game + kPhysicsDueOffset))
 		g_physicsCarry = std::clamp(wanted - sent, -double(kPhysicsStep), double(kPhysicsStep));

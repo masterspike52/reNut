@@ -33,12 +33,12 @@ void Leave();
 bool Active();
 
 // The Showdown Town scene script the game would load now for player 1's
-// progress (LoadShowdownTown_82564808's pick; 0 if none). Game thread.
+// progress (LoadShowdownTown_82548080's pick; 0 if none). Game thread.
 uint32_t TownScene(PPCContext &ctx, uint8_t *base);
 
 // In a co-op session challenges are each player's own: while one of the
 // challenge manager's functions runs (challengeManBegin / Tick / SetState /
-// Teardown / Reset), the game is not in multiplayer for it (byte_82FAC650
+// Teardown / Reset), the game is not in multiplayer for it (byte_82E19934
 // reads 0), so it takes its single-player ways (player 1 only, no waiting for
 // the others, nothing told over the network). Game thread; nests.
 class OfflineChallenge {

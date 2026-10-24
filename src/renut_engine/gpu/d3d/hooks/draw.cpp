@@ -45,9 +45,9 @@ using namespace renut::gpu;
 namespace {
 
 constexpr u32 kE_OUTOFMEMORY = 0x8007000Eu;
-// D3DVIEWPORT9 {0, 0, 0xFFFF, 0xFFFF, 0.0, 1.0} in N&B's data (unk_820018DC):
+// D3DVIEWPORT9 {0, 0, 0xFFFF, 0xFFFF, 0.0, 1.0} in N&B's data (unk_82001744):
 // the whole surface.
-constexpr u32 kFullViewport = 0x820018DC;
+constexpr u32 kFullViewport = 0x82001744;
 // D3DRS_HIZWRITEENABLE's index in the render state table.
 constexpr u32 kRenderStateHiZWriteEnable = 97;
 
@@ -320,15 +320,14 @@ void D3DDevice_Resolve_hook(u32 device, u32 flags, u32 rect_va, u32 dest_texture
           dest_slice, color_va, float(clear_z), clear_stencil, parameters);
 }
 
-// void D3DDevice_BeginTiling(D3DDevice*, DWORD Flags, DWORD Count,
-//     const D3DRECT *pTileRects, const D3DVECTOR4 *pClearColor, float ClearZ,
-//     DWORD ClearStencil) [0x822788A0]
+// void D3DDevice_BeginTiling(D3DDevice*, DWORD Count, const D3DRECT *pTileRects,
+//     const D3DVECTOR4 *pClearColor) [0x82246798]: TU3's build dropped the
+// arguments BeginTiling never used (Flags, ClearZ, ClearStencil).
 // The surfaces bound from here to EndTiling are backed by targets covering
 // every tile (SetTilingExtentLocked). N&B's BeginTiling clears with Z 0.0 and
-// stencil 0 (its ClearZ and ClearStencil go unused), unless the device records
-// a one-pass Z pass (Flags3 0x20); its ring segment for the tiles is left out.
-void D3DDevice_BeginTiling_hook(u32 device, u32 /*flags*/, u32 count, u32 rects_va, u32 color_va,
-                                double /*clear_z*/, u32 /*z_slot*/, u32 /*clear_stencil*/) {
+// stencil 0, unless the device records a one-pass Z pass (Flags3 0x20); its
+// ring segment for the tiles is left out.
+void D3DDevice_BeginTiling_hook(u32 device, u32 count, u32 rects_va, u32 color_va) {
   native::Device d = native::DeviceAt(device);
   if (!d)
     return;
@@ -368,7 +367,7 @@ void D3DDevice_BeginTiling_hook(u32 device, u32 /*flags*/, u32 count, u32 rects_
   }
   d.SetW(native::off::TilingExtent, extent_x);
   d.SetW(native::off::TilingExtent + 4, extent_y);
-  d.SetW(0x3384, 0);
+  d.SetW(0x338C, 0);
 
   if (!(d.B(native::off::Flags3) & 0x20)) {
     // The largest tile, from its origin: its clear covers a tile of EDRAM.
@@ -381,7 +380,7 @@ void D3DDevice_BeginTiling_hook(u32 device, u32 /*flags*/, u32 count, u32 rects_
     // after the clear.
     float viewport[6];
     for (u32 i = 0; i < 6; ++i)
-      viewport[i] = d.F(0x3168 + i * 4);
+      viewport[i] = d.F(0x3170 + i * 4);
     i32 scissor[4];
     for (u32 i = 0; i < 4; ++i)
       scissor[i] = i32(d.W(native::off::ScissorRect + i * 4));
@@ -404,10 +403,10 @@ void D3DDevice_BeginTiling_hook(u32 device, u32 /*flags*/, u32 count, u32 rects_
   d.SetW(0x33A4, 0);
 
   const u32 target = d.W(native::off::RenderTargets);
-  d.SetW(0x31B4, target ? target : d.W(native::off::DepthStencil));
+  d.SetW(0x31BC, target ? target : d.W(native::off::DepthStencil));
   for (u32 i = 0; i < 5; ++i)  // the 4 targets, then depth
     d.SetW(native::off::TilingSurfaces + i * 4, d.W(native::off::RenderTargets + i * 4));
-  d.SetW(0x31B0, 2);
+  d.SetW(0x31B8, 2);
   d.SetB(native::off::Flags, d.B(native::off::Flags) | 0x20);
   d.SetW(native::off::PredicationSet, 0);
   native::UpdateTilePredicated(d);
@@ -421,19 +420,16 @@ void D3DDevice_BeginTiling_hook(u32 device, u32 /*flags*/, u32 count, u32 rects_
   native::ResetAllState(d);
 }
 
-// HRESULT D3DDevice_EndTiling(D3DDevice*, DWORD ResolveFlags,
-//     const D3DRECT *pResolveRects, D3DBaseTexture *pDestTexture,
-//     const D3DVECTOR4 *pClearColor, float ClearZ, DWORD ClearStencil,
-//     const D3DRESOLVE_PARAMETERS *pParameters) [0x82212328]
-// N&B's EndTiling resolves each tile's rect (ResolveFlags 0x300: color and
-// depth cleared) with BeginTiling's clear values, the last one with
-// pClearColor, Z 1.0 and stencil 0; ResolveFlags, pResolveRects, ClearZ,
-// ClearStencil and pParameters go unused. The host resolve reads each rect
-// from the full-size target. Left out: the tiles' ring segment, D3D's
-// WorkerDpc callback that replays it per tile, and its fence's packets.
-u32 D3DDevice_EndTiling_hook(u32 device, u32 /*resolve_flags*/, u32 /*rects_va*/,
-                             u32 dest_texture, u32 color_va, double /*clear_z*/, u32 /*z_slot*/,
-                             u32 /*clear_stencil*/, u32 /*parameters*/) {
+// HRESULT D3DDevice_EndTiling(D3DDevice*, D3DBaseTexture *pDestTexture,
+//     const D3DVECTOR4 *pClearColor) [0x821E17C0]: TU3's build dropped the
+// arguments EndTiling never used (ResolveFlags, pResolveRects, ClearZ,
+// ClearStencil, pParameters).
+// N&B's EndTiling resolves each tile's rect (flags 0x300: color and depth
+// cleared) with BeginTiling's clear values, the last one with pClearColor,
+// Z 1.0 and stencil 0. The host resolve reads each rect from the full-size
+// target. Left out: the tiles' ring segment, D3D's WorkerDpc callback that
+// replays it per tile, and its fence's packets.
+u32 D3DDevice_EndTiling_hook(u32 device, u32 dest_texture, u32 color_va) {
   native::Device d = native::DeviceAt(device);
   if (!d)
     return 0;
@@ -443,7 +439,7 @@ u32 D3DDevice_EndTiling_hook(u32 device, u32 /*resolve_flags*/, u32 /*rects_va*/
       const u32 tile = native::off::TileRects + i * 16;
       ClearRect rect{i32(d.W(tile)), i32(d.W(tile + 4)), i32(d.W(tile + 8)), i32(d.W(tile + 12))};
       // A tile at the surface's edge resolves to a multiple of 8.
-      const u32 surface = d.W(0x31B4);
+      const u32 surface = d.W(0x31BC);
       const auto *s = surface ? GuestPtr<const be_u32>(surface) : nullptr;
       const u32 size = s ? u32(s[9]) : 0;
       if (u32(rect.x2) == (size >> 18) + 1)
@@ -459,7 +455,7 @@ u32 D3DDevice_EndTiling_hook(u32 device, u32 /*resolve_flags*/, u32 /*rects_va*/
                 d.F(0x33A0), d.W(0x33A4), 0);
       } else {
         Resolve(device, 0x300, &rect, dest_texture, dest_x, dest_y, 0, 0, color_va,
-                1.0f /*flt_82000D0C*/, 0, 0);
+                1.0f /*flt_82000C1C*/, 0, 0);
       }
     }
   }
@@ -474,7 +470,7 @@ u32 D3DDevice_EndTiling_hook(u32 device, u32 /*resolve_flags*/, u32 /*rects_va*/
 
   d.SetB(native::off::Flags3, d.B(native::off::Flags3) & 0xCF);
   d.SetB(native::off::Flags, d.B(native::off::Flags) & 0xDF);
-  d.SetW(0x31B4, 0);
+  d.SetW(0x31BC, 0);
   d.SetW(native::off::PredicationSet, 0);
   native::UpdateTilePredicated(d);
   d.SetW(native::off::RunPredicationState, 0);
@@ -529,7 +525,7 @@ void D3DDevice_Present_hook(u32 device) {
   FlushDeferredVertices(device);
   float viewport[6];
   for (u32 i = 0; i < 6; ++i)
-    viewport[i] = d.F(0x3168 + i * 4);
+    viewport[i] = d.F(0x3170 + i * 4);
   i32 scissor[4];
   for (u32 i = 0; i < 4; ++i)
     scissor[i] = i32(d.W(native::off::ScissorRect + i * 4));

@@ -25,33 +25,34 @@ constexpr u32 kPendingStates = 2;   // the register packets
 constexpr u32 kPendingFetch = 3;    // fetch constants, tessellation, points
 constexpr u32 kPendingMisc = 4;     // m_MiscPacket and friends
 
-// Render state storage in the CDevice-private area.
-constexpr u32 kBlendState = 0x2E48;       // D3D blend: src 0-4, op 5-7, dest 8-12, alpha at 16+
-constexpr u32 kBlendFlags = 0x2E4C;       // 31 blend enable, 30 separate alpha, HiZ fields
-constexpr u32 kScissorTestEnable = 0x2E50;
-constexpr u32 kColorWriteEnable = 0x2E54;  // [4]
-constexpr u32 kZEnable = 0x2E64;
-constexpr u32 kStencilEnable = 0x2E68;
-constexpr u32 kPointSpriteEnable = 0x2E6C;
-constexpr u32 kPointSize = 0x2E74;
-constexpr u32 kPointSizeMin = 0x2E78;
-constexpr u32 kPointSizeMax = 0x2E7C;
-constexpr u32 kHighPrecisionBlend = 0x2EFC;  // [4]
+// Render state storage in the CDevice-private area (TU3: 8 bytes further on
+// than the first release from 0x2E30 to 0x3390, 4 from 0x2AC0).
+constexpr u32 kBlendState = 0x2E50;       // D3D blend: src 0-4, op 5-7, dest 8-12, alpha at 16+
+constexpr u32 kBlendFlags = 0x2E54;       // 31 blend enable, 30 separate alpha, HiZ fields
+constexpr u32 kScissorTestEnable = 0x2E58;
+constexpr u32 kColorWriteEnable = 0x2E5C;  // [4]
+constexpr u32 kZEnable = 0x2E6C;
+constexpr u32 kStencilEnable = 0x2E70;
+constexpr u32 kPointSpriteEnable = 0x2E74;
+constexpr u32 kPointSize = 0x2E7C;
+constexpr u32 kPointSizeMin = 0x2E80;
+constexpr u32 kPointSizeMax = 0x2E84;
+constexpr u32 kHighPrecisionBlend = 0x2F04;  // [4]
 constexpr u32 kPresentInterval = 0x351C;
 constexpr u32 kBehaviorFlags2 = 0x5DAC;
 // Sampler state storage, a byte per sampler.
-constexpr u32 kMaxAnisotropy = 0x2E94;
-constexpr u32 kMaxMipLevel = 0x2EAE;
-constexpr u32 kMinMipLevel = 0x2EC8;
-constexpr u32 kZFilter = 0x2EE2;  // bit 0 mag, 1 min, 2 separate Z filtering
+constexpr u32 kMaxAnisotropy = 0x2E9C;
+constexpr u32 kMaxMipLevel = 0x2EB6;
+constexpr u32 kMinMipLevel = 0x2ED0;
+constexpr u32 kZFilter = 0x2EEA;  // bit 0 mag, 1 min, 2 separate Z filtering
 // Viewport (SetViewport's arguments, clamped) and the register image values.
-constexpr u32 kViewport = 0x3168;  // x, y, width, height, min z, max z, 0
+constexpr u32 kViewport = 0x3170;  // x, y, width, height, min z, max z, 0
 constexpr u32 kVportXScale = 0x2908;
 constexpr u32 kVportZScale = 0x2918;
-constexpr u32 kStreamDeclStrides = 0x2E38;  // u8[16]
-constexpr u32 kVertexDeclaration = 0x2E2C;
-constexpr u32 kVertexShader = 0x3198;
-constexpr u32 kPixelShader = 0x3194;
+constexpr u32 kStreamDeclStrides = 0x2E40;  // u8[16]
+constexpr u32 kVertexDeclaration = 0x2E30;
+constexpr u32 kVertexShader = 0x31A0;
+constexpr u32 kPixelShader = 0x319C;
 constexpr u32 kGprAllocation = 0x2AA8;
 constexpr u32 kScreenExtentQueryMode = 0x2AA4;
 
@@ -727,8 +728,8 @@ constexpr SamplerStateFn kSamplerStateFns[kSamplerStates] = {
 };
 
 // N&B's state tables: {getter, setter, default} per state.
-constexpr u32 kRenderStateTable = 0x82E506F0;
-constexpr u32 kSamplerStateTable = 0x82E50BD0;
+constexpr u32 kRenderStateTable = 0x82D8A948;
+constexpr u32 kSamplerStateTable = 0x82D8AE28;
 constexpr u32 kTextureSamplers = 26;
 
 u32 TableWord(u32 table, u32 index, u32 field) {
@@ -1030,7 +1031,7 @@ bool TilingBoundSurfaces(Device device) {
 void UpdateTilePredicated(Device device) {
   const u8 flags = device.B(off::Flags);
   const bool predicated = !device.W(off::PredicationSet) && !(flags & 0x08) && !(flags & 0x04) &&
-                          !device.B(0x2F9B) && TilingBoundSurfaces(device);
+                          !device.B(0x2FA3) && TilingBoundSurfaces(device);
   device.SetB(off::Flags, u8((flags & 0xFE) | (predicated ? 1 : 0)));
 }
 
@@ -1201,7 +1202,7 @@ void SetDepthStencilSurface(Device device, u32 surface) {
     device.SetW(off::HiControl, hi_control);
     device.SetB(off::Flags2, u8(Insert(device.B(off::Flags2), hi_control, 5, 1)));
     if ((device.B(off::Flags3) & 0x20) && TilingBoundSurfaces(device))
-      device.SetW(off::SurfaceInfo, Insert(device.W(off::SurfaceInfo), device.W(0x3374), 18, 14));
+      device.SetW(off::SurfaceInfo, Insert(device.W(off::SurfaceInfo), device.W(0x337C), 18, 14));
     device.Dirty(kPendingStates, Bit(55) | 0x100 | 0x20000);
   } else {
     device.SetW(off::HiControl, device.W(off::HiControl) & ~0xFu);
@@ -1350,7 +1351,7 @@ void InvalidateConstantsAndWait(Device device) {
     return;
   if (const u32 fence = device.W(off::FenceTag))
     BlockOnFence(device.va, fence);
-  // The original then spins while the word at +0x2B00 is non-zero; nothing
+  // The original then spins while the word at +0x2B04 is non-zero; nothing
   // sets it on a device without GPU hardware.
 }
 
@@ -1361,8 +1362,8 @@ void InvalidateConstantsAndWait(Device device) {
 namespace {
 
 // Per D3DFORMAT (low 6 bits) its format description; 0xF00 marks a float
-// depth format (word_820052F8).
-constexpr u32 kFormatTable = 0x820052F8;
+// depth format (word_82005200).
+constexpr u32 kFormatTable = 0x82005200;
 // The register packets between RB_COPY_CONTROL and RB_COPY_DEST_INFO.
 constexpr u32 kCopyControl = 0x2A18;
 constexpr u32 kCopyDestInfo = 0x2A24;
@@ -1608,9 +1609,9 @@ constexpr u32 kExportAddress = 0x2898;       // [Index]: the stream's GPU addres
 constexpr u32 kExportCount = 0x34C0;         // BeginExports not yet ended
 constexpr u32 kExportNanVertexDone = 0x34C4;
 constexpr u32 kExportFlags = 0x34C8;
-// N&B's switches for the two GPU workarounds below (dword_82FAD204/208).
-constexpr u32 kSkipExportNanVertex = 0x82FAD204;
-constexpr u32 kSkipExport512Pixels = 0x82FAD208;
+// N&B's switches for the two GPU workarounds below (dword_82E1A9E4/9E8).
+constexpr u32 kSkipExportNanVertex = 0x82E1A9E4;
+constexpr u32 kSkipExport512Pixels = 0x82E1A9E8;
 
 u32 GuestWord(u32 va) {
   const auto *p = GuestPtr<const be_u32>(va);

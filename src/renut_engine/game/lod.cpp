@@ -3,8 +3,8 @@
  * @brief   Models keep their detailed meshes, and the grass its patches,
  *          farther away.
  *
- * N&B picks a model's level of detail in sub_82B67FE0 (its two callers,
- * sub_82318E18 and sub_823AB368, pass f1 = 1.0, f2 = 0.0): for each LOD group
+ * N&B picks a model's level of detail in sub_82BC3F98 (its two callers,
+ * sub_822E82C0 and sub_82377D48, pass f1 = 1.0, f2 = 0.0): for each LOD group
  * it works out |view-space z| * f1 / the model's screen size + f2, and steps
  * through the group's thresholds to the last one that metric reaches. Tuned
  * for 720p on the console, the switches are close and plain at higher
@@ -13,13 +13,13 @@
  * (as the disable_lod cheat does).
  *
  * The level's grass has distance bands of its own, which the model LOD does
- * not move. sub_823BF888 draws it by tile (256 bytes each): every patch
+ * not move. sub_8238BE48 draws it by tile (256 bytes each): every patch
  * instance (112 bytes, list at +0xFC, count at +0xAC) has a band per view,
  * and band b draws with the patch mesh's level b forced; the last band
- * (count - 1) is not drawn. sub_823C1080 gives each frustum-visible patch the
+ * (count - 1) is not drawn. sub_8238D650 gives each frustum-visible patch the
  * last band whose start (floats at +0xB0, count at +0xD0, at most 8) its
  * distance from the camera reaches; the tile as a whole drops to the last
- * band, and sub_823C1300 stops updating its patches' visibility, once its
+ * band, and sub_8238D8C8 stops updating its patches' visibility, once its
  * distance less its radius (+0x80) passes start[count - 2]. The shaders have
  * no fade, so whole patches pop in at that distance. renut_grass_distance
  * scales the band starts for those two calls, so the patches and their
@@ -45,9 +45,9 @@ REXCVAR_DEFINE_STRING(renut_grass_distance, "2x", "Nuts&Bolts/Graphics",
                       "more grass to draw).")
     .allowed({"1x", "2x", "4x", "8x"});
 
-REX_EXTERN(__imp__sub_82B67FE0);
-REX_EXTERN(__imp__sub_823C1080);
-REX_EXTERN(__imp__sub_823C1300);
+REX_EXTERN(__imp__sub_82BC3F98);
+REX_EXTERN(__imp__sub_8238D650);
+REX_EXTERN(__imp__sub_8238D8C8);
 
 namespace {
 
@@ -122,20 +122,20 @@ class ScaledGrassBands {
 
 } // namespace
 
-// BOOL sub_82B67FE0(model, instance, view, ..., double distance_scale, double bias)
-REX_HOOK_RAW(sub_82B67FE0) {
+// BOOL sub_82BC3F98(model, instance, view, ..., double distance_scale, double bias)
+REX_HOOK_RAW(sub_82BC3F98) {
   ctx.f1.f64 *= LodDistanceScale();
-  __imp__sub_82B67FE0(ctx, base);
+  __imp__sub_82BC3F98(ctx, base);
 }
 
-// void sub_823C1080(tile, view, ...; v1 = camera position): the patch bands
-REX_HOOK_RAW(sub_823C1080) {
+// void sub_8238D650(tile, view, ...; v1 = camera position): the patch bands
+REX_HOOK_RAW(sub_8238D650) {
   ScaledGrassBands scaled(base, ctx.r3.u32);
-  __imp__sub_823C1080(ctx, base);
+  __imp__sub_8238D650(ctx, base);
 }
 
-// void sub_823C1300(tile, frustum; v1 = camera position): patch visibility
-REX_HOOK_RAW(sub_823C1300) {
+// void sub_8238D8C8(tile, frustum; v1 = camera position): patch visibility
+REX_HOOK_RAW(sub_8238D8C8) {
   ScaledGrassBands scaled(base, ctx.r3.u32);
-  __imp__sub_823C1300(ctx, base);
+  __imp__sub_8238D8C8(ctx, base);
 }

@@ -2,7 +2,7 @@
  * @file    online/friends.cpp
  * @brief   reNut's friends list over EOS, and the game's friends enumerator.
  *
- * N&B's friends menu (sub_826CAB08, sub_824C4A68) calls XFriendsCreateEnumerator
+ * N&B's friends menu (sub_826A4688, sub_824A26A0) calls XFriendsCreateEnumerator
  * and XEnumerate, and keeps entries that are online, playing N&B (title ID) and
  * not pending friend requests; joining one searches for its session by ID
  * (sessions.cpp). XONLINE_FRIEND, 196 bytes, big-endian: xuid, gamertag[16],

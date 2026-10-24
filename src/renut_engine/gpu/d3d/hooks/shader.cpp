@@ -389,16 +389,16 @@ u32 D3DDevice_CreateVertexDeclaration_hook(rex::MappedPtr<GuestVertexElement> el
   return declaration->self_va;
 }
 
-// void D3DVertexShader_Bind(D3DVertexShader *pShader, DWORD Flags,
-//     D3DVertexDeclaration *pDecl, const DWORD *pStreamStrides, DWORD Index) [0x82657048]
+// void D3DVertexShader_Bind(D3DVertexShader *pShader, D3DVertexDeclaration *pDecl,
+//     const DWORD *pStreamStrides) [0x8263FBD0] (TU3's build dropped the unused
+// Flags and Index of the first release's)
 // Patches a CVertexShader's vertex fetches to a declaration and the strides of
 // streams 0..(highest stream in the declaration). Draws take their input layout
 // from a declaration record instead, so nothing is patched; the declaration and
 // strides are kept for draws that rely on the bind: N&B binds its shaders when
 // it creates them and then draws with no declaration set, or with a zero
 // SetStreamSource stride.
-void D3DVertexShader_Bind_hook(u32 shader_va, u32 /*flags*/, u32 declaration_va,
-                               mapped_u32 stream_strides, u32 /*index*/) {
+void D3DVertexShader_Bind_hook(u32 shader_va, u32 declaration_va, mapped_u32 stream_strides) {
   // The declaration and strides as they are now; the shader record is the
   // render thread's (draws read it), so it is updated there, in order.
   const auto *declaration =

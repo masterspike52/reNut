@@ -2,15 +2,15 @@
  * @file    game/mouse_camera.cpp
  * @brief   The mouse turns the game camera, for every camera mode.
  *
- * N&B's camera (IDA): sub_822F0B20(camera, input device, dt, ...) updates the
+ * N&B's camera (IDA): sub_822C0448(camera, input device, dt, ...) updates the
  * camera of a player once a frame; the active mode's update (a virtual call
  * through camera + 376) reads the player's input through two getters:
- * - sub_821E4368(device): yaw input, -(right stick X) past a 0.1 deadzone,
+ * - sub_821B42B8(device): yaw input, -(right stick X) past a 0.1 deadzone,
  *   rescaled to [-1, 1], flipped with the profile's invert X (flags[7] & 0x40);
- * - sub_821E4100(device): pitch input, right stick Y likewise (invert Y,
- *   flags[7] & 0x80), remapped through sub_8225EE90.
+ * - sub_821B4050(device): pitch input, right stick Y likewise (invert Y,
+ *   flags[7] & 0x80), remapped through sub_8222D9F0.
  * Each mode turns by input * its own rate * dt (the on-foot chase camera,
- * sub_822F31E8 -> sub_822F5EA8, through a spring). sub_821E41D8, run by the
+ * sub_822C2B30 -> sub_822C57D8, through a spring). sub_821B4128, run by the
  * camera update, turns a quick full push of the stick (past 0.9 and back
  * within 0.4 s) into a snap turn.
  *
@@ -56,16 +56,16 @@ REXCVAR_DEFINE_DOUBLE(renut_mouse_sensitivity, 1.0, "Nuts&Bolts/Input",
 REXCVAR_DEFINE_BOOL(renut_mouse_invert_y, false, "Nuts&Bolts/Input",
                     "Moving the mouse up looks down (renut_mouse_camera).");
 
-REX_EXTERN(__imp__sub_822F0B20);  // camera update
-REX_EXTERN(__imp__sub_821E4368);  // yaw input
-REX_EXTERN(__imp__sub_821E4100);  // pitch input
-REX_EXTERN(__imp__sub_821E41D8);  // stick snap-turn check
+REX_EXTERN(__imp__sub_822C0448);  // camera update
+REX_EXTERN(__imp__sub_821B42B8);  // yaw input
+REX_EXTERN(__imp__sub_821B4050);  // pitch input
+REX_EXTERN(__imp__sub_821B4128);  // stick snap-turn check
 
 namespace {
 
 // Guest data.
-constexpr uint32_t kPlayerProfiles = 0x82FAD9F0;    // dword_82FAD9F0[player]
-constexpr uint32_t kFrameDeltaSeconds = 0x82FAC644;  // g_frameDeltaSeconds
+constexpr uint32_t kPlayerProfiles = 0x82E1B280;    // dword_82E1B280[player]
+constexpr uint32_t kFrameDeltaSeconds = 0x82E19924;  // g_frameDeltaSeconds
 // Input device (inputDeviceCreatePlayerPad): type at + 8 (3: a player's pad),
 // its player's profile at + 368.
 constexpr uint32_t kDeviceType = 8;
@@ -227,8 +227,8 @@ bool MouseCaptured() {
 
 } // namespace renut::game
 
-// void sub_822F0B20(camera, input device, double dt, ..., mode, ...)
-REX_HOOK_RAW(sub_822F0B20) {
+// void sub_822C0448(camera, input device, double dt, ..., mode, ...)
+REX_HOOK_RAW(sub_822C0448) {
   Frame frame;
   if (REXCVAR_GET(renut_mouse_camera) && g_captured.load(std::memory_order_acquire) &&
       IsPlayerOnePad(base, ctx.r4.u32)) {
@@ -237,34 +237,34 @@ REX_HOOK_RAW(sub_822F0B20) {
     g_motion_x = g_motion_y = 0.0f;
   }
   t_frame = frame;
-  __imp__sub_822F0B20(ctx, base);
+  __imp__sub_822C0448(ctx, base);
   t_frame = {};
 }
 
-// double sub_821E4368(device): yaw input; -1 turns the camera right as the
+// double sub_821B42B8(device): yaw input; -1 turns the camera right as the
 // stick pushed right does.
-REX_HOOK_RAW(sub_821E4368) {
+REX_HOOK_RAW(sub_821B42B8) {
   if (!t_frame.active || t_in_snap_check || t_frame.x == 0.0f) {
-    __imp__sub_821E4368(ctx, base);
+    __imp__sub_821B42B8(ctx, base);
     return;
   }
   ctx.f1.f64 = -MouseInput(base, t_frame.x);
 }
 
-// double sub_821E4100(device): pitch input; +1 as the stick pushed up.
-REX_HOOK_RAW(sub_821E4100) {
+// double sub_821B4050(device): pitch input; +1 as the stick pushed up.
+REX_HOOK_RAW(sub_821B4050) {
   if (!t_frame.active || t_frame.y == 0.0f) {
-    __imp__sub_821E4100(ctx, base);
+    __imp__sub_821B4050(ctx, base);
     return;
   }
   const double input = -MouseInput(base, t_frame.y);
   ctx.f1.f64 = REXCVAR_GET(renut_mouse_invert_y) ? -input : input;
 }
 
-// int sub_821E41D8(double dt, camera, state, device): the stick snap turn;
+// int sub_821B4128(double dt, camera, state, device): the stick snap turn;
 // it reads the stick only.
-REX_HOOK_RAW(sub_821E41D8) {
+REX_HOOK_RAW(sub_821B4128) {
   t_in_snap_check = true;
-  __imp__sub_821E41D8(ctx, base);
+  __imp__sub_821B4128(ctx, base);
   t_in_snap_check = false;
 }

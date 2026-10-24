@@ -1,90 +1,85 @@
 [[midasm_hook]]
-address = 0x822C7F0C
+address = 0x822969D0
 name = "StopNSwap_hook"
 registers = ["r22"]
 after_instruction = true
 
 [[midasm_hook]]
-address = 0x8246e7a8
+address = 0x8244A7A0
 name = "klungoConstruct_hook"
 registers = []
 after_instruction = false
 
 [[midasm_hook]]
-address = 0x8246f62c
+address = 0x8244B744
 name = "klungoDestruct_hook"
 registers = []
 after_instruction = false
 
 [[midasm_hook]]
-address = 0x825a8bf8
+address = 0x8258DE80
 name = "overworld_vehicles_hook"
 registers = ["r23", "r26"]
 after_instruction = false
 
 [[midasm_hook]]
-address = 0x824CE324
+address = 0x824AC164
 name = "no_notes_spent"
 registers = []
 after_instruction = false
-jump_address_on_true = 0x824CE32C
+jump_address_on_true = 0x824AC16C
 
 [[midasm_hook]]
-address = 0x82b680f8
+address = 0x82BC40B0
 name = "disable_lod"
 registers = []
 after_instruction = false
-jump_address_on_true = 0x82B68110
+jump_address_on_true = 0x82BC40C8
 
 [[midasm_hook]]
-address = 0x82278380
+address = 0x82246280
 name = "Infinite_fuel_and_ammo"
 registers = []
 after_instruction = false
-return = true
+return_on_true = true
 
 [[midasm_hook]]
-address = 0x82278380
-name = "Infinite_fuel_and_ammo"
-registers = []
-after_instruction = false
-return = true
-
-[[midasm_hook]]
-address = 0x823F47C8
+address = 0x823CD520
 name = "Infinite_health"
 registers = []
 after_instruction = false
-jump_address_on_true = 0x823F47D0
+jump_address_on_true = 0x823CD528
 
 [[midasm_hook]]
-address = 0x8251DD10
+address = 0x824FB734
 name = "Infinite_parts"
 registers = ["r10"]
 after_instruction = false
 
 
 [[midasm_hook]]
-address = 0x8251CA9C
+address = 0x824FA35C
 name = "BanjoActorOverride"
 registers = ["r3", "r5"]
 after_instruction = true
-jump_address_on_false = 0x8251CABC
+jump_address_on_false = 0x824FA374
 
+# TU3: the stored value is r11 here (the base had r7).
 [[midasm_hook]]
-address = 0x8251D438
+address = 0x824FAD08
 name = "Max_Acquired_Parts_Access_hook_1"
-registers = ["r7"]
+registers = ["r11"]
 after_instruction = false
 
 [[midasm_hook]]
-address = 0x8251DCCC
+address = 0x824FB6F4
 name = "Max_Acquired_Parts_Access_hook_2"
 registers = ["r10"]
 after_instruction = true
 
+# TU3: the copy loop loads into r11 (the base had r9).
 [[midasm_hook]]
-address = 0x8255ed1c
+address = 0x825425C4
 name = "Max_Acquired_Parts_Access_hook_3"
-registers = ["r9"]
+registers = ["r11"]
 after_instruction = true

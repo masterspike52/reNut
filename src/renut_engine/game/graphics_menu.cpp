@@ -4,43 +4,46 @@
  *
  * N&B (IDA): Display Settings is one scene (26, class DisplaySettings) that
  * the pause screen (tab 5, page object at pause + 376) and the main menu
- * (state 5, + 348) both open. Its init (sub_8257D100) finds the brightness
+ * (state 5, + 352) both open. Its init (sub_82560958) finds the brightness
  * and contrast sliders (+ 192, + 196; XuiSliders with the visual
  * list_pause_menu_slider_item, labelled by message 0x7E0 through
- * sub_825679E0), shows them disabled and focuses brightness; up and down move
- * between them through their NavUp / NavDown ids (sub_82567928). Pressing A
- * (pause sub_825A87B0, main sub_825BB698) edits the focused slider: it is
- * enabled and its navigation cleared until A again (sub_8257D290 puts the
- * navigation back). sub_8257D370 sets the A prompt for the focused slider.
+ * sub_8254B1A8) and, unless its args say not to (+ 232), shows the big font
+ * row under them (useBigFontButton + 204, its tick + 208 and tick box + 212);
+ * it shows the sliders disabled and focuses brightness; up and down move
+ * between the rows through their NavUp / NavDown ids (sub_8254B0F0). Pressing
+ * A (pause sub_8258DA40, main sub_825A0F98) edits the focused row: it is
+ * enabled and its navigation cleared until A again (sub_82560C58 puts the
+ * sliders' navigation back, contrast's down the big font row). sub_82560DF8
+ * sets the A prompt for the focused row (+ 220 editing, + 224 the prompt bar).
  *
  * Game Information is scene 27 (class GameInformation; pause tab 4, main
- * state 2). Its init (sub_8257D908) fills its menu list (+ 200, class
+ * state 2). Its init (sub_825613A8) fills its menu list (+ 200, class
  * GameInformationMenuList, one row per entry, row text from the list's
- * sub_8257F290) and leaves it focused in state 5 (+ 320); its other states
+ * sub_82562CE8) and leaves it focused in state 5 (+ 320); its other states
  * show a panel and disable the host's tab list (+ 220: the pause's tabs, the
  * main menu's list), which keeps the host's B and tab switching off, and B
  * (its backButton, + 228) returns to the menu list. Its presses come to
- * sub_8257DE50; the hidden left / right buttons (+ 232, + 236) are disabled
+ * sub_82561960; the hidden left / right buttons (+ 232, + 236) are disabled
  * in state 5. + 260 is the host's subtitle text, + 328 a copy of what it
- * said, + 304 the prompt bar (sub_82571B30 / BA0 / C10 / C80: A, B, X, Y).
+ * said, + 304 the prompt bar (sub_82555490 / 500 / 570 / 5E0: A, B, X, Y).
  * A list's rows are 3024-byte records (+ 8: column 0's text, wchar_t[128],
  * then + 268 = 0, + 272 its length), filled when shown while + 3016 is 0.
  *
- * Here Display Settings gets a third row under contrast, GRAPHICS: a button
- * made at init with Game Information's menu item visual (list_pause_menu_item,
- * its text set by XM_SET_TEXT 0x7E0), linked into the navigation, the three
- * rows respaced to fit the box. A on it opens Game Information the way the
- * host would (pause sub_825A7D90(4), main sub_825BA3C0(2)), and that page's
- * init turns it into the graphics menu: its menu list lists the options as
+ * Here Display Settings gets a row under its last, GRAPHICS: a button made at
+ * init with Game Information's menu item visual (list_pause_menu_item, its
+ * text set by XM_SET_TEXT 0x7E0), linked into the navigation, the rows
+ * respaced to fit the box. A on it opens Game Information the way the host
+ * would (pause sub_8258D038(4), main sub_8259F940(2)), and that page's init
+ * turns it into the graphics menu: its menu list lists the options as
  * "NAME: VALUE", the host's tabs are disabled as in its other states, and the
  * left / right buttons are enabled. A or right moves the selected option to
  * its next value, left to its previous; each change applies at once and is
- * saved to the config. B goes back (pause sub_825A7D90(5), main
- * sub_825BA3C0(5)) with GRAPHICS focused. The host is switched from its own
+ * saved to the config. B goes back (pause sub_8258D038(5), main
+ * sub_8259F940(5)) with GRAPHICS focused. The host is switched from its own
  * code only (its press handler or its update), never from the page's: the
  * switch destroys the page. Display Settings' name, text key
  * pause_displaysettings (the pause tab's title and the main menu's entry,
- * looked up by sub_825EF418), reads Display/Graphics.
+ * looked up by sub_825D7F28), reads Display/Graphics.
  */
 #include <rex/cvar.h>
 #include <rex/hook.h>
@@ -62,80 +65,86 @@
 #include "renut_engine/game/graphics_menu.h"
 
 // Hooked.
-REX_EXTERN(__imp__sub_8257D100);  // DisplaySettings init
-REX_EXTERN(__imp__sub_8257D290);  // DisplaySettings: stop editing a slider
-REX_EXTERN(__imp__sub_8257D370);  // DisplaySettings prompts
-REX_EXTERN(__imp__sub_825A87B0);  // pause: press on the Display Settings tab
-REX_EXTERN(__imp__sub_825BB698);  // main menu: press in Display Settings
-REX_EXTERN(__imp__sub_8257D908);  // GameInformation init
-REX_EXTERN(__imp__sub_8257DE50);  // GameInformation press
-REX_EXTERN(__imp__sub_8257F290);  // GameInformationMenuList row text
-REX_EXTERN(__imp__sub_825A76E0);  // pause press
-REX_EXTERN(__imp__sub_825A7550);  // pause update
-REX_EXTERN(__imp__sub_825BACD8);  // main menu press
-REX_EXTERN(__imp__sub_825BA750);  // main menu update
-REX_EXTERN(__imp__sub_825EF418);  // text lookup (table, key, wchar_t *out, out length, flag)
-REX_EXTERN(__imp__sub_823E5728);  // a page's navigation (page, XUIMessageControlNavigate *, handled *)
-REX_EXTERN(__imp__sub_829CA2A8);  // XuiElementSetBounds(h, float width, float height)
+REX_EXTERN(__imp__sub_82560958);  // DisplaySettings init
+REX_EXTERN(__imp__sub_82560C58);  // DisplaySettings: stop editing a row
+REX_EXTERN(__imp__sub_82560DF8);  // DisplaySettings prompts
+REX_EXTERN(__imp__sub_8258DA40);  // pause: press on the Display Settings tab
+REX_EXTERN(__imp__sub_825A0F98);  // main menu: press in Display Settings
+REX_EXTERN(__imp__sub_825613A8);  // GameInformation init
+REX_EXTERN(__imp__sub_82561960);  // GameInformation press
+REX_EXTERN(__imp__sub_82562CE8);  // GameInformationMenuList row text
+REX_EXTERN(__imp__sub_8258C948);  // pause press
+REX_EXTERN(__imp__sub_8258C7C0);  // pause update
+REX_EXTERN(__imp__sub_825A0458);  // main menu press
+REX_EXTERN(__imp__sub_8259FDA8);  // main menu update
+REX_EXTERN(__imp__sub_825D7F28);  // text lookup (table, key, wchar_t *out, out length, flag)
+REX_EXTERN(__imp__sub_823B33E8);  // a page's navigation (page, XUIMessageControlNavigate *, handled *)
+REX_EXTERN(__imp__sub_82A27180);  // XuiElementSetBounds(h, float width, float height)
 
 // Called.
-REX_IMPORT(__imp__sub_829C27F8, XuiCreateObject, u32(u32, u32));
-REX_IMPORT(__imp__sub_829C7F88, XuiElementAddChild, u32(u32, u32));
-REX_IMPORT(__imp__sub_8225B210, XuiElementGetParent, u32(u32, u32));
-REX_IMPORT(__imp__sub_8226E7E0, XuiElementGetPosition, u32(u32, u32));
-REX_IMPORT(__imp__sub_82267268, XuiElementSetPosition, u32(u32, u32));
-REX_IMPORT(__imp__sub_82279F88, XuiElementGetChildById, u32(u32, u32, u32));
-REX_IMPORT(__imp__sub_82220068, XuiControlGetVisual, u32(u32, u32));
-REX_IMPORT(__imp__sub_821FB9C8, XuiObjectGetPropertyId, u32(u32, u32, u32));
-REX_IMPORT(__imp__sub_829BB868, XuiObjectSetProperty, u32(u32, u32, u32, u32));
-REX_IMPORT(__imp__sub_822A2420, XuiObjectGetProperty, u32(u32, u32, u32, u32));
-REX_IMPORT(__imp__sub_8225B168, XuiObjectFromHandle, u32(u32, u32));
-REX_IMPORT(__imp__sub_8225B330, XuiSendMessage, u32(u32, u32));
-REX_IMPORT(__imp__sub_829CB4A8, XuiElementSetFocus, u32(u32, u32));
-REX_IMPORT(__imp__sub_82295738, XuiElementGetUserFocus, u32(u32));
-REX_IMPORT(__imp__sub_829C87A0, XuiTextElementSetText, u32(u32, u32));
-REX_IMPORT(__imp__sub_829D2E48, XuiListDeleteItems, u32(u32, u32, u32));
-REX_IMPORT(__imp__sub_8258CC78, XuiContainerSetCurSel, u32(u32, u32));
-REX_IMPORT(__imp__sub_8257AD00, XuiContainerGetCurSel, u32(u32));
-REX_IMPORT(__imp__sub_823E3950, XuiContainerGetItemControl, u32(u32, u32));
-REX_IMPORT(__imp__sub_829BFB08, XuiControlSetText, u32(u32, u32));
-REX_IMPORT(__imp__sub_823E43D8, ListInsertItems, u32(u32, u32));          // (list object, count)
-REX_IMPORT(__imp__sub_8251E748, ElementShow, u32(u32, u32));              // XM 0x12
-REX_IMPORT(__imp__sub_823E4988, ElementEnable, u32(u32, u32));            // XM_SET_ENABLE
-REX_IMPORT(__imp__sub_82567928, SetNavUpDown, void(u32, u32, u32));       // (h, NavUp id, NavDown id)
-REX_IMPORT(__imp__sub_825679E0, MakeLabelMessage, void(u32, u32, u32, u32, u32, u32));  // (msg, data, 0, 0, 0, text)
-REX_IMPORT(__imp__sub_829C8828, XuiImageElementSetImagePath, u32(u32, u32));
-REX_IMPORT(__imp__sub_82567890, AddAssetTexture, u32(u32, u32, u32, u32));  // (texture asset, name, HXUITEX *, 0)
+REX_IMPORT(__imp__sub_82A1F6B8, XuiCreateObject, u32(u32, u32));
+REX_IMPORT(__imp__sub_82A24F68, XuiElementAddChild, u32(u32, u32));
+REX_IMPORT(__imp__sub_82229C90, XuiElementGetParent, u32(u32, u32));
+REX_IMPORT(__imp__sub_8223D020, XuiElementGetPosition, u32(u32, u32));
+REX_IMPORT(__imp__sub_82235C88, XuiElementSetPosition, u32(u32, u32));
+REX_IMPORT(__imp__sub_82247F88, XuiElementGetChildById, u32(u32, u32, u32));
+REX_IMPORT(__imp__sub_821EF288, XuiControlGetVisual, u32(u32, u32));
+REX_IMPORT(__imp__sub_821CB260, XuiObjectGetPropertyId, u32(u32, u32, u32));
+REX_IMPORT(__imp__sub_82A18700, XuiObjectSetProperty, u32(u32, u32, u32, u32));
+REX_IMPORT(__imp__sub_82270150, XuiObjectGetProperty, u32(u32, u32, u32, u32));
+REX_IMPORT(__imp__sub_82229BE8, XuiObjectFromHandle, u32(u32, u32));
+REX_IMPORT(__imp__sub_82229DB0, XuiSendMessage, u32(u32, u32));
+REX_IMPORT(__imp__sub_82A28368, XuiElementSetFocus, u32(u32, u32));
+REX_IMPORT(__imp__sub_82263290, XuiElementGetUserFocus, u32(u32));
+REX_IMPORT(__imp__sub_82A25780, XuiTextElementSetText, u32(u32, u32));
+REX_IMPORT(__imp__sub_823B1758, XuiListDeleteItems, u32(u32, u32, u32));
+REX_IMPORT(__imp__sub_82570CA0, XuiContainerSetCurSel, u32(u32, u32));
+REX_IMPORT(__imp__sub_8255E5B0, XuiContainerGetCurSel, u32(u32));
+REX_IMPORT(__imp__sub_82A2FBA0, XuiContainerGetItemControl, u32(u32, u32));
+REX_IMPORT(__imp__sub_82A1C9D0, XuiControlSetText, u32(u32, u32));
+REX_IMPORT(__imp__sub_823B2130, ListInsertItems, u32(u32, u32));          // (list object, count)
+REX_IMPORT(__imp__sub_824FC1B8, ElementShow, u32(u32, u32));              // XM 0x12
+REX_IMPORT(__imp__sub_823B26F0, ElementEnable, u32(u32, u32));            // XM_SET_ENABLE
+REX_IMPORT(__imp__sub_8254B0F0, SetNavUpDown, void(u32, u32, u32));       // (h, NavUp id, NavDown id)
+REX_IMPORT(__imp__sub_8254B1A8, MakeLabelMessage, void(u32, u32, u32, u32, u32, u32));  // (msg, data, 0, 0, 0, text)
+REX_IMPORT(__imp__sub_82A25808, XuiImageElementSetImagePath, u32(u32, u32));
+REX_IMPORT(__imp__sub_8254B058, AddAssetTexture, u32(u32, u32, u32, u32));  // (texture asset, name, HXUITEX *, 0)
 REX_IMPORT(__imp__gameAssetRefGetAid, GameAssetRefGetAid, u32(u32, u32, u32));
 REX_IMPORT(__imp__assetManOpenParams, AssetManOpenParams, u32(u32, u32));
-REX_IMPORT(__imp__sub_822C1228, AssetLoaded, u32(u32));  // (const u32 *aid): a loaded bundle has it
-REX_IMPORT(__imp__sub_82571B30, PromptA, void(u32, u32));
-REX_IMPORT(__imp__sub_82571BA0, PromptB, void(u32, u32));
-REX_IMPORT(__imp__sub_82571C10, PromptX, void(u32, u32));
-REX_IMPORT(__imp__sub_82571C80, PromptY, void(u32, u32));
-REX_IMPORT(__imp__sub_825A7D90, PauseShowPage, void(u32, u32));
-REX_IMPORT(__imp__sub_825BA3C0, MainShowPage, void(u32, u32));
+REX_IMPORT(__imp__sub_821DDBF0, AssetQuery, u32(u32, u32));  // ({vtable, aid} *, provider): a loaded bundle has it
+REX_IMPORT(__imp__sub_82555490, PromptA, void(u32, u32));
+REX_IMPORT(__imp__sub_82555500, PromptB, void(u32, u32));
+REX_IMPORT(__imp__sub_82555570, PromptX, void(u32, u32));
+REX_IMPORT(__imp__sub_825555E0, PromptY, void(u32, u32));
+REX_IMPORT(__imp__sub_8258D038, PauseShowPage, void(u32, u32));
+REX_IMPORT(__imp__sub_8259F940, MainShowPage, void(u32, u32));
 REX_IMPORT(__imp__uiSystemSfxPlayOperation, PlayUiSound, void(u32, u32));
 
 namespace {
 
 // Guest data.
-constexpr uint32_t kSounds = 0x82FAC768;    // uiSystemSfxPlayOperation's sounds: 0 select, 1 back, 2 move
-constexpr uint32_t kKeySelect = 0x821697F4;  // "select"
-constexpr uint32_t kKeyBack = 0x82135688;    // "back"
-constexpr uint32_t kKeyNone = 0x8212ED2D;    // ""
-constexpr uint32_t kWideEmpty = 0x82000B34;  // L""
-constexpr uint32_t kTvIconAsset = 0x82178500;  // "pausemenudisplaysettings": the Display Settings tab's TV
+constexpr uint32_t kSounds = 0x82E19A70;    // uiSystemSfxPlayOperation's sounds: 0 select, 1 back, 2 move
+constexpr uint32_t kKeySelect = 0x82146174;  // "select"
+constexpr uint32_t kKeyBack = 0x82111110;    // "back"
+constexpr uint32_t kKeyNone = 0x8210A5E1;    // ""
+constexpr uint32_t kWideEmpty = 0x82000B08;  // L""
+constexpr uint32_t kTvIconAsset = 0x82155650;  // "pausemenudisplaysettings": the Display Settings tab's TV
+constexpr uint32_t kAssetQueryVtable = 0x82001AF0;  // an asset query {vtable, aid}
+constexpr uint32_t kAnyProvider = 0xFF;
 constexpr uint32_t kNone = 0xFFFFFFFF;
 
 // Scene objects (the page object of a scene: + 4 its HXUIOBJ, + 104 its user).
 constexpr uint32_t kUser = 104;
-constexpr uint32_t kPageLastFocus = 120;  // set by sub_823E5728 to where it navigated
+constexpr uint32_t kPageLastFocus = 120;  // set by sub_823B33E8 to where it navigated
 // DisplaySettings.
 constexpr uint32_t kDisplayBrightness = 192;
 constexpr uint32_t kDisplayContrast = 196;
-constexpr uint32_t kDisplayEditing = 208;
-constexpr uint32_t kDisplayPrompts = 212;
+constexpr uint32_t kDisplayBigFont = 204;      // useBigFontButton
+constexpr uint32_t kDisplayBigFontTick = 208;  // its tick and tick box
+constexpr uint32_t kDisplayBigFontTickBox = 212;
+constexpr uint32_t kDisplayEditing = 220;
+constexpr uint32_t kDisplayPrompts = 224;
+constexpr uint32_t kDisplayNoBigFont = 232;  // the init's args[2]: the big font row hidden
 // GameInformation.
 constexpr uint32_t kInfoMenuList = 200;
 constexpr uint32_t kInfoTabs = 220;
@@ -158,13 +167,13 @@ constexpr uint32_t kPauseDisplayPage = 376;
 constexpr uint32_t kPauseEditing = 448;
 constexpr uint32_t kPausePageInfo = 4;
 constexpr uint32_t kPausePageDisplay = 5;
-constexpr uint32_t kPauseBackKey = 0x82178A7C;  // "resumegame": the B prompt it gives Game Information
+constexpr uint32_t kPauseBackKey = 0x82155BCC;  // "resumegame": the B prompt it gives Game Information
 // Main menu.
 constexpr uint32_t kMainA = 220;
 constexpr uint32_t kMainBack = 228;
 constexpr uint32_t kMainEditing = 304;
-constexpr uint32_t kMainDisplayPage = 348;
-constexpr uint32_t kMainState = 388;
+constexpr uint32_t kMainDisplayPage = 352;
+constexpr uint32_t kMainState = 420;
 constexpr uint32_t kMainStateInfo = 2;
 constexpr uint32_t kMainStateDisplay = 5;
 constexpr uint32_t kMainBackKey = kKeyBack;
@@ -355,7 +364,7 @@ bool StepOption(const Option &option, int dir) {
   return true;
 }
 
-// Column 0 of a list row record, as sub_823E4A38 writes it.
+// Column 0 of a list row record, as sub_823B2798 writes it.
 void WriteRowText(uint8_t *base, uint32_t row, const std::string &text) {
   const size_t length = std::min<size_t>(text.size(), 127);
   for (size_t i = 0; i < length; ++i)
@@ -402,7 +411,7 @@ uint32_t UserFocus(Guest &g, uint8_t *base, uint32_t page) {
   return XuiElementGetUserFocus(g.frame(), base, base[page + kUser]);
 }
 
-// The Display Settings tab's TV as a named XUI texture, the way sub_82567AA8
+// The Display Settings tab's TV as a named XUI texture, the way sub_8254B270
 // gives the sliders their icons (the asset kept open, like theirs); made once,
 // once its bundle is loaded (opening a missing asset stops the game with the
 // dirty disc error).
@@ -419,7 +428,10 @@ uint32_t GraphicsIcon(Guest &g, uint8_t *base) {
     RNUT_WARN("graphics menu: no asset named pausemenudisplaysettings for the TV icon");
     return 0;
   }
-  if (!(AssetLoaded(f, base, aid) & 0xFF)) {
+  const uint32_t query = g.Alloc(8);
+  Store32(base, query, kAssetQueryVtable);
+  Store32(base, query + 4, Load32(base, aid));
+  if (!(AssetQuery(f, base, query, kAnyProvider) & 0xFF)) {
     RNUT_INFO("graphics menu: the TV icon isn't loaded yet (aid {:08X})", Load32(base, aid));
     return 0;
   }
@@ -435,8 +447,25 @@ uint32_t GraphicsIcon(Guest &g, uint8_t *base) {
   return name;
 }
 
-// GRAPHICS, under contrast: a button with Game Information's menu item visual
-// (its rows' look: name only), the three rows spaced to fit the box.
+// Whether Display Settings shows its big font row (its init's args say).
+bool BigFontShown(const uint8_t *base, uint32_t page) {
+  return !Load32(base, page + kDisplayNoBigFont) && Load32(base, page + kDisplayBigFont);
+}
+
+// Down from the row above GRAPHICS (the big font row when it shows, else
+// contrast) to GRAPHICS.
+void LinkLastRow(Guest &g, uint8_t *base, uint32_t page) {
+  auto &f = g.frame();
+  if (BigFontShown(base, page))
+    SetNavUpDown(f, base, Load32(base, page + kDisplayBigFont), Wide(base, "displayContrastSlider"),
+                 Wide(base, kRowId));
+  else
+    SetNavUpDown(f, base, Load32(base, page + kDisplayContrast), Wide(base, "displayBrightnessSlider"),
+                 Wide(base, kRowId));
+}
+
+// GRAPHICS, under the last row: a button with Game Information's menu item
+// visual (its rows' look: name only), the rows spaced to fit the box.
 void AddGraphicsRow(PPCContext &ctx, uint8_t *base, uint32_t page) {
   g_display_page = page;
   g_row = 0;
@@ -444,6 +473,8 @@ void AddGraphicsRow(PPCContext &ctx, uint8_t *base, uint32_t page) {
   auto &f = g.frame();
   const uint32_t contrast = Load32(base, page + kDisplayContrast);
   const uint32_t brightness = Load32(base, page + kDisplayBrightness);
+  const bool big_font = BigFontShown(base, page);
+  const uint32_t big_font_row = big_font ? Load32(base, page + kDisplayBigFont) : 0;
   const uint32_t out = g.Alloc(4);
   if (!contrast || !brightness || Failed(XuiElementGetParent(f, base, contrast, out)))
     return;
@@ -459,30 +490,51 @@ void AddGraphicsRow(PPCContext &ctx, uint8_t *base, uint32_t page) {
   SetStringProperty(g, base, row, "Id", kRowId);
   SetStringProperty(g, base, row, "Visual", kRowVisual);
 
-  // The box only fits two rows at the game's spacing: the three share the
-  // span the two took, the first half a row higher, a row and the new gap
-  // apart. GRAPHICS is as big as the sliders' rows.
+  // The box only fits the game's rows at its spacing: they and GRAPHICS share
+  // the span the game's took, the first half a row higher, a row and the new
+  // gap apart. GRAPHICS is as big as the sliders' rows.
   const float width = FloatProperty(g, base, contrast, "Width");
   const float height = FloatProperty(g, base, contrast, "Height");
+  std::vector<uint32_t> rows = {brightness, contrast};
+  if (big_font_row)
+    rows.push_back(big_font_row);
+  const float n = float(rows.size());
   const uint32_t first = g.Alloc(12);
   const uint32_t position = g.Alloc(12);
   XuiElementGetPosition(f, base, brightness, first);
-  XuiElementGetPosition(f, base, contrast, position);
+  XuiElementGetPosition(f, base, rows.back(), position);
   const float top = LoadFloat(base, first + 4);
-  const float gap = LoadFloat(base, position + 4) - top;
+  const float gap = (LoadFloat(base, position + 4) - top) / (n - 1.0f);
   const float new_top = height > 0.0f ? top - height * 0.5f : top;
-  const float spacing = height > 0.0f ? (gap + height) * 0.5f : gap * 0.5f;
-  StoreFloat(base, first + 4, new_top);
-  XuiElementSetPosition(f, base, brightness, first);
-  StoreFloat(base, position + 4, new_top + spacing);
-  XuiElementSetPosition(f, base, contrast, position);
-  StoreFloat(base, position + 4, new_top + 2.0f * spacing);
+  const float spacing = height > 0.0f ? ((n - 1.0f) * gap + height) / n : gap * (n - 1.0f) / n;
+  for (size_t i = 0; i < rows.size(); ++i) {
+    XuiElementGetPosition(f, base, rows[i], position);
+    const float y = new_top + float(i) * spacing;
+    const float moved = y - LoadFloat(base, position + 4);
+    StoreFloat(base, position + 4, y);
+    XuiElementSetPosition(f, base, rows[i], position);
+    if (rows[i] != big_font_row)
+      continue;
+    // The big font row's tick and tick box go with it (unless they are its
+    // children already).
+    for (const uint32_t offset : {kDisplayBigFontTick, kDisplayBigFontTickBox}) {
+      const uint32_t part = Load32(base, page + offset);
+      Store32(base, out, 0);
+      if (!part || Failed(XuiElementGetParent(f, base, part, out)) || Load32(base, out) == big_font_row)
+        continue;
+      XuiElementGetPosition(f, base, part, first);
+      StoreFloat(base, first + 4, LoadFloat(base, first + 4) + moved);
+      XuiElementSetPosition(f, base, part, first);
+    }
+  }
+  XuiElementGetPosition(f, base, contrast, position);
+  StoreFloat(base, position + 4, new_top + n * spacing);
   XuiElementSetPosition(f, base, row, position);
   if (width > 0.0f && height > 0.0f) {
     f.ctx.r3.u64 = row;
     f.ctx.f1.f64 = width;
     f.ctx.f2.f64 = height;
-    __imp__sub_829CA2A8(f.ctx, base);
+    __imp__sub_82A27180(f.ctx, base);
   }
 
   // XuiControlSetText's message.
@@ -508,13 +560,13 @@ void AddGraphicsRow(PPCContext &ctx, uint8_t *base, uint32_t page) {
     f.ctx.r3.u64 = image;
     f.ctx.f1.f64 = side;
     f.ctx.f2.f64 = side;
-    __imp__sub_829CA2A8(f.ctx, base);
+    __imp__sub_82A27180(f.ctx, base);
     SetUnsignedProperty(g, base, image, "SizeMode", kSizeModeFitCentred);
     XuiImageElementSetImagePath(f, base, image, icon);
   }
 
-  SetNavUpDown(f, base, row, Wide(base, "displayContrastSlider"), kWideEmpty);
-  SetNavUpDown(f, base, contrast, Wide(base, "displayBrightnessSlider"), Wide(base, kRowId));
+  SetNavUpDown(f, base, row, Wide(base, big_font_row ? "useBigFontButton" : "displayContrastSlider"), kWideEmpty);
+  LinkLastRow(g, base, page);
   g_row = row;
 
   if (g_focus_row) {
@@ -531,7 +583,7 @@ bool RowFocused(PPCContext &ctx, uint8_t *base, uint32_t page) {
 }
 
 // The menu list's rows: one per option, the selection on 'selected'. The rows
-// are made anew (the game's way, sub_8257F610), so the list is focused again
+// are made anew (the game's way, sub_82563058), so the list is focused again
 // as the init does: the focused row went with the old ones.
 void FillList(Guest &g, uint8_t *base, uint32_t list, uint32_t selected, uint32_t user) {
   auto &f = g.frame();
@@ -648,27 +700,28 @@ void SetConfigPath(const std::filesystem::path &path) { g_config_path = path; }
 
 }  // namespace renut::graphics_menu
 
-REX_HOOK_RAW(sub_8257D100) {
+REX_HOOK_RAW(sub_82560958) {
   const uint32_t page = ctx.r3.u32;
-  __imp__sub_8257D100(ctx, base);
+  __imp__sub_82560958(ctx, base);
   AddGraphicsRow(ctx, base, page);
 }
 
-// Leaving a slider's editing puts back its navigation: contrast's down is GRAPHICS.
-REX_HOOK_RAW(sub_8257D290) {
+// Leaving a row's editing puts back its navigation: the last row's down is
+// GRAPHICS (the game puts back only the sliders', contrast's down the big font
+// row).
+REX_HOOK_RAW(sub_82560C58) {
   const uint32_t page = ctx.r3.u32;
   const uint32_t editing = ctx.r4.u32;
-  __imp__sub_8257D290(ctx, base);
+  __imp__sub_82560C58(ctx, base);
   if (editing || !g_row || page != g_display_page)
     return;
   Guest g(ctx, base);
-  SetNavUpDown(g.frame(), base, Load32(base, page + kDisplayContrast), Wide(base, "displayBrightnessSlider"),
-               Wide(base, kRowId));
+  LinkLastRow(g, base, page);
 }
 
-REX_HOOK_RAW(sub_8257D370) {
+REX_HOOK_RAW(sub_82560DF8) {
   const uint32_t page = ctx.r3.u32;
-  __imp__sub_8257D370(ctx, base);
+  __imp__sub_82560DF8(ctx, base);
   if (!g_row || page != g_display_page || Load32(base, page + kDisplayEditing))
     return;
   const uint32_t prompts = Load32(base, page + kDisplayPrompts);
@@ -679,7 +732,7 @@ REX_HOOK_RAW(sub_8257D370) {
     PromptA(g.frame(), base, prompts, kKeySelect);
 }
 
-REX_HOOK_RAW(sub_825A87B0) {
+REX_HOOK_RAW(sub_8258DA40) {
   const uint32_t pause = ctx.r3.u32;
   const uint32_t pressed = ctx.r4.u32;
   if ((pressed == Load32(base, pause + kPauseA) || (g_row && pressed == g_row)) &&
@@ -689,10 +742,10 @@ REX_HOOK_RAW(sub_825A87B0) {
     ctx.r3.u64 = 1;
     return;
   }
-  __imp__sub_825A87B0(ctx, base);
+  __imp__sub_8258DA40(ctx, base);
 }
 
-REX_HOOK_RAW(sub_825BB698) {
+REX_HOOK_RAW(sub_825A0F98) {
   const uint32_t menu = ctx.r3.u32;
   const uint32_t pressed = ctx.r4.u32;
   if ((pressed == Load32(base, menu + kMainA) || (g_row && pressed == g_row)) &&
@@ -702,13 +755,13 @@ REX_HOOK_RAW(sub_825BB698) {
     ctx.r3.u64 = 1;
     return;
   }
-  __imp__sub_825BB698(ctx, base);
+  __imp__sub_825A0F98(ctx, base);
 }
 
-REX_HOOK_RAW(sub_8257D908) {
+REX_HOOK_RAW(sub_825613A8) {
   const uint32_t page = ctx.r3.u32;
   const uint32_t args = ctx.r4.u32;
-  __imp__sub_8257D908(ctx, base);
+  __imp__sub_825613A8(ctx, base);
   g_info_page = 0;
   g_info_list = 0;
   // The page the GRAPHICS row asked for: its host gives it that host's B prompt.
@@ -719,10 +772,10 @@ REX_HOOK_RAW(sub_8257D908) {
   SetUpGraphicsPage(ctx, base, page);
 }
 
-REX_HOOK_RAW(sub_8257DE50) {
+REX_HOOK_RAW(sub_82561960) {
   const uint32_t page = ctx.r3.u32;
   if (!page || page != g_info_page) {
-    __imp__sub_8257DE50(ctx, base);
+    __imp__sub_82561960(ctx, base);
     return;
   }
   const uint32_t pressed = ctx.r4.u32;
@@ -737,9 +790,9 @@ REX_HOOK_RAW(sub_8257DE50) {
   }
 }
 
-REX_HOOK_RAW(sub_8257F290) {
+REX_HOOK_RAW(sub_82562CE8) {
   if (!g_info_list || ctx.r3.u32 != g_info_list) {
-    __imp__sub_8257F290(ctx, base);
+    __imp__sub_82562CE8(ctx, base);
     return;
   }
   const uint32_t index = ctx.r4.u32;
@@ -748,7 +801,7 @@ REX_HOOK_RAW(sub_8257F290) {
   ctx.r3.u64 = 1;
 }
 
-REX_HOOK_RAW(sub_825A76E0) {
+REX_HOOK_RAW(sub_8258C948) {
   const uint32_t pause = ctx.r3.u32;
   if (g_info_page && g_host == Host::kPause && g_host_object == pause &&
       ctx.r4.u32 == Load32(base, pause + kPauseBack)) {
@@ -756,16 +809,16 @@ REX_HOOK_RAW(sub_825A76E0) {
     ctx.r3.u64 = 1;
     return;
   }
-  __imp__sub_825A76E0(ctx, base);
+  __imp__sub_8258C948(ctx, base);
 }
 
-REX_HOOK_RAW(sub_825A7550) {
+REX_HOOK_RAW(sub_8258C7C0) {
   if (g_exit_requested && g_info_page && g_host == Host::kPause && g_host_object == ctx.r3.u32)
     ExitGraphics(ctx, base);
-  __imp__sub_825A7550(ctx, base);
+  __imp__sub_8258C7C0(ctx, base);
 }
 
-REX_HOOK_RAW(sub_825BACD8) {
+REX_HOOK_RAW(sub_825A0458) {
   const uint32_t menu = ctx.r3.u32;
   if (g_info_page && g_host == Host::kMain && g_host_object == menu &&
       Load32(base, menu + kMainState) == kMainStateInfo && ctx.r4.u32 == Load32(base, menu + kMainBack)) {
@@ -773,16 +826,16 @@ REX_HOOK_RAW(sub_825BACD8) {
     ctx.r3.u64 = 1;
     return;
   }
-  __imp__sub_825BACD8(ctx, base);
+  __imp__sub_825A0458(ctx, base);
 }
 
 // A page's navigation (XUIMessageControlNavigate: + 4 from, + 8 to) skips
 // disabled controls, and the sliders are disabled until edited: down from
 // brightness would pass contrast for GRAPHICS. It goes to contrast.
-REX_HOOK_RAW(sub_823E5728) {
+REX_HOOK_RAW(sub_823B33E8) {
   const uint32_t page = ctx.r3.u32;
   const uint32_t navigate = ctx.r4.u32;
-  __imp__sub_823E5728(ctx, base);
+  __imp__sub_823B33E8(ctx, base);
   if (!g_row || page != g_display_page || Load32(base, navigate + 8) != g_row ||
       Load32(base, navigate + 4) != Load32(base, page + kDisplayBrightness))
     return;
@@ -793,11 +846,11 @@ REX_HOOK_RAW(sub_823E5728) {
 }
 
 // Display Settings is called Display/Graphics.
-REX_HOOK_RAW(sub_825EF418) {
+REX_HOOK_RAW(sub_825D7F28) {
   const uint32_t key = ctx.r4.u32;
   const uint32_t out = ctx.r5.u32;
   const int32_t out_length = int32_t(ctx.r6.u32);
-  __imp__sub_825EF418(ctx, base);
+  __imp__sub_825D7F28(ctx, base);
   if (!key || !out || out_length <= 0 ||
       std::strncmp(reinterpret_cast<const char *>(base + key), kDisplayNameKey, sizeof(kDisplayNameKey)) != 0)
     return;
@@ -807,7 +860,7 @@ REX_HOOK_RAW(sub_825EF418) {
   Store16(base, uint32_t(out + 2 * length), 0);
 }
 
-REX_HOOK_RAW(sub_825BA750) {
+REX_HOOK_RAW(sub_8259FDA8) {
   const uint32_t menu = ctx.r3.u32;
   if (g_host == Host::kMain && g_host_object == menu) {
     if (g_exit_requested && g_info_page)
@@ -815,5 +868,5 @@ REX_HOOK_RAW(sub_825BA750) {
     else if (g_open_pending && Load32(base, menu + kMainState) != kMainStateInfo)
       g_open_pending = false;  // the menu went elsewhere before the page opened
   }
-  __imp__sub_825BA750(ctx, base);
+  __imp__sub_8259FDA8(ctx, base);
 }

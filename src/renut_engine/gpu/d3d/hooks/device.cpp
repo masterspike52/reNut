@@ -91,9 +91,9 @@ constexpr u32 kSideBufferSize = 0x12C0;
 // Set to -1 by the device-type-2 path.
 constexpr u32 kDeviceOffsetsMinusOne[] = {21560, 21564, 14936};
 constexpr u32 kDeviceTypeNoHardware = 2;
-// Copied from the global qword at 0x82F39B38 into every device.
+// Copied from the global qword at 0x82DA3478 into every device.
 constexpr u32 kDeviceOffsetGlobalQword = 10880;
-constexpr u32 kGlobalQwordVa = 0x82F39B38;
+constexpr u32 kGlobalQwordVa = 0x82DA3478;
 // Hardware-path fields: two critical sections, QueryPerformanceFrequency and
 // its reciprocal as floats, and 41 words set to -1.
 constexpr u32 kDeviceOffsetCriticalSection0 = 14944;
@@ -101,7 +101,7 @@ constexpr u32 kDeviceOffsetCriticalSection1 = 14972;
 constexpr u32 kDeviceOffsetPerfFrequency = 21588;
 constexpr u32 kDeviceOffsetTitleMinusOne = 23380;
 // Import slot holding the address of the kernel's VdGlobalDevice variable.
-constexpr u32 kVdGlobalDeviceImportSlot = 0x820007FC;
+constexpr u32 kVdGlobalDeviceImportSlot = 0x820007F8;
 
 constexpr u32 kE_OUTOFMEMORY = 0x8007000Eu;
 
@@ -152,10 +152,10 @@ bool FencePending(const u8 *bytes, u32 fence) {
 // Device initialisation (N&B's D3D, natively)
 // ---------------------------------------------------------------------------
 
-// D3D::XenonGpu_Initialize (0x82663208): the register image's power-on
-// values, everything dirty. (Its register writes go into the ring.)
+// D3D::XenonGpu_Initialize: the register image's power-on values, everything
+// dirty. (Its register writes go into the ring.)
 void XenonGpuInitialize(native::Device d) {
-  d.SetQ(0x2E30, 0x00000000FFFFFFFFull);
+  d.SetQ(0x2E38, 0x00000000FFFFFFFFull);
   for (u32 i = 0; i < 26; ++i)  // texture fetch constants: type 0
     d.SetW(native::off::TextureFetch + i * 24, d.W(native::off::TextureFetch + i * 24) & ~3u);
   for (u32 i = 0; i < 18; ++i) {  // vertex fetch constants: type 1
@@ -182,30 +182,30 @@ void XenonGpuInitialize(native::Device d) {
   d.SetW(0x2AA4, 0xE);
 }
 
-// D3D::InitializeApiState (0x826597C8).
+// D3D::InitializeApiState (0x82641BC8).
 void InitializeApiState(native::Device d) {
   const u32 present_interval = d.W(0x351C);
   const u32 behavior_flags2 = d.W(0x5DAC);
   native::InitializeStateTables(d);
-  d.SetW(0x2FA0, 5);
-  d.SetW(0x2FA4, 1);
+  d.SetW(0x2FA8, 5);
+  d.SetW(0x2FAC, 1);
   native::SetScreenExtentQueryMode(d, 2);  // D3DSEQM_PRECLIP
-  d.SetW(0x3090, 2);
-  d.SetW(0x2FD8, 0x2A23B9);
-  d.SetH(0x2FD4, 0);
-  d.SetH(0x2FD6, 0);
-  d.SetB(0x2FDC, 0);
-  d.SetB(0x2FDD, 0);
-  d.SetB(0x2FDE, 0);
-  d.SetW(0x2FE4, ~0u);
+  d.SetW(0x3098, 2);
+  d.SetW(0x2FE0, 0x2A23B9);
+  d.SetH(0x2FDC, 0);
+  d.SetH(0x2FDE, 0);
+  d.SetB(0x2FE4, 0);
+  d.SetB(0x2FE5, 0);
+  d.SetB(0x2FE6, 0);
+  d.SetW(0x2FEC, ~0u);
   // Three zero bytes; N&B leaves the fourth from its stack.
-  d.SetW(0x2FE8, 0);
-  d.SetW(0x2FE0, 0x00FF0000);
-  d.SetW(0x2FB8, 1);
-  d.SetW(0x2FBC, 0);
-  d.SetW(0x2FD0, 0);
-  // The default vertex declaration is the device's own, at +0x2FA0.
-  d.SetW(0x2E2C, d.va + 0x2FA0);
+  d.SetW(0x2FF0, 0);
+  d.SetW(0x2FE8, 0x00FF0000);
+  d.SetW(0x2FC0, 1);
+  d.SetW(0x2FC4, 0);
+  d.SetW(0x2FD8, 0);
+  // The default vertex declaration is the device's own, at +0x2FA8.
+  d.SetW(d3d::kDeviceOffsetVertexDeclaration, d.va + 0x2FA8);
   d.Dirty(2, 0x80000);
   d.SetW(0x351C, present_interval);
   const u32 flags2 = d.W(0x5DAC);
@@ -632,7 +632,7 @@ constexpr u32 kBufferFixedMemory = 0x98;  // memory the caller gave it, or 0 for
 constexpr u32 kBufferAllocatorSize = 0xA8;
 
 // D3D::ConfigureForOnePassZPass(CDevice*, BOOL, DWORD TileCount, DWORD Width)
-// [0x82658818]: the EDRAM layout of a buffer recorded for a one-pass Z pass.
+// [0x82641360]: the EDRAM layout of a buffer recorded for a one-pass Z pass.
 void ConfigureForOnePassZPass(native::Device d, bool flag, u32 tile_count, u32 width) {
   u8 flags3 = d.B(native::off::Flags3) | 0x20;
   if (flag)
@@ -651,14 +651,14 @@ void ConfigureForOnePassZPass(native::Device d, bool flag, u32 tile_count, u32 w
   for (u32 i = 0; i < tile_count; ++i) {
     const u32 x = d.W(native::off::TileOrigins + i * 8);
     const u32 y = d.W(native::off::TileOrigins + i * 8 + 4);
-    d.SetW(0x3338 + i * 4, (y / tile_height) * tiles_per_row + x / tile_width);
+    d.SetW(0x3340 + i * 4, (y / tile_height) * tiles_per_row + x / tile_width);
   }
-  d.SetW(0x3374, pitch);
+  d.SetW(0x337C, pitch);
   d.SetW(native::off::SurfaceInfo, native::Insert(d.W(native::off::SurfaceInfo), pitch, 18, 14));
   d.Dirty(2, 0x100);
-  d.SetW(0x3378, ((unit + width - 1) / unit) * unit);
+  d.SetW(0x3380, ((unit + width - 1) / unit) * unit);
   u64 predicated = d.Q(native::off::PredicatedPending2);
-  if ((d.B(native::off::Flags3) & 0x20) || (d.W(0x2E4C) & 0xE0000) != 0x40000)
+  if ((d.B(native::off::Flags3) & 0x20) || (d.W(0x2E54) & 0xE0000) != 0x40000)
     predicated |= 0x100;
   else
     predicated &= ~u64(0x100);
@@ -666,13 +666,13 @@ void ConfigureForOnePassZPass(native::Device d, bool flag, u32 tile_count, u32 w
 }
 
 // HRESULT D3DDevice_BeginCommandBuffer(D3DDevice*, D3DCommandBuffer*, DWORD Flags,
-//     const D3DTAGCOLLECTION *pInheritTags, ..., const D3DRECT *pTilingRects,
-//     DWORD TileCount) [0x82657CB0]
+//     const D3DTAGCOLLECTION *pInheritTags, const D3DRECT *pTilingRects,
+//     DWORD TileCount) [0x82640818] (TU3's build dropped the unused
+// pPersistTags before pTilingRects)
 // The device records into the buffer: the draws on the host (command_buffers.h),
 // so the buffer's segments and the reset of their allocator are left out.
 u32 D3DDevice_BeginCommandBuffer_hook(u32 device_va, u32 command_buffer, u32 flags,
-                                      u32 inherit_tags, u32 /*unused*/, u32 tiling_rects,
-                                      u32 tile_count) {
+                                      u32 inherit_tags, u32 tiling_rects, u32 tile_count) {
   // A Begin*Vertices draw recorded into the previous buffer.
   FlushDeferredVertices(device_va);
   native::Device d = native::DeviceAt(device_va);
@@ -751,8 +751,8 @@ u32 D3DDevice_BeginCommandBuffer_hook(u32 device_va, u32 command_buffer, u32 fla
     }
     d.SetW(native::off::TilingExtent, extent_x);
     d.SetW(native::off::TilingExtent + 4, extent_y);
-    d.SetW(0x3384, 0);
-    d.SetW(0x31B0, 2);
+    d.SetW(0x338C, 0);
+    d.SetW(0x31B8, 2);
     if (flags & 0x40) {
       ConfigureForOnePassZPass(d, (flags >> 7) & 1, tile_count, extent_x);
       bw(kBufferFlags) = u32(bw(kBufferFlags)) | 0x20000;
@@ -760,10 +760,10 @@ u32 D3DDevice_BeginCommandBuffer_hook(u32 device_va, u32 command_buffer, u32 fla
   }
   if (flags & 4) {
     d.SetB(native::off::Flags, d.B(native::off::Flags) | 0x40);
-    d.SetW(0x31A0, native::Extract(d.W(native::off::DepthControl), 4, 3));
+    d.SetW(0x31A8, native::Extract(d.W(native::off::DepthControl), 4, 3));
     if (d.B(native::off::Flags3) & 0x20) {
       u64 predicated = d.Q(native::off::PredicatedPending2) | (u64(1) << 37);
-      if (d.W(0x3378) != (d.W(native::off::SurfaceInfo) & 0x3FFF))
+      if (d.W(0x3380) != (d.W(native::off::SurfaceInfo) & 0x3FFF))
         predicated |= u64(1) << 57;
       d.SetQ(native::off::PredicatedPending2, predicated);
     }
@@ -784,7 +784,7 @@ u32 D3DDevice_BeginCommandBuffer_hook(u32 device_va, u32 command_buffer, u32 fla
   return 0;
 }
 
-// HRESULT D3DDevice_EndCommandBuffer(D3DDevice*) [0x826582A0]
+// HRESULT D3DDevice_EndCommandBuffer(D3DDevice*) [0x82640DE8]
 // The state left dirty would be written into the buffer (Flags bit 5 at
 // Begin); then everything is unbound, and the device is pointed at its side
 // buffer until the next Begin.
@@ -919,9 +919,9 @@ void D3DDevice_InsertCallback_hook(u32 device, u32 /*type*/, u32 callback, u32 c
 
 constexpr u32 kDeviceOffsetReferenceCount = 0x3C;
 constexpr u32 kDeviceOffsetOwnerThread = 0x2A88;
-constexpr u32 kDeviceCapsVa = 0x82183B00;  // N&B's constant D3DCAPS9
+constexpr u32 kDeviceCapsVa = 0x82161B30;  // N&B's constant D3DCAPS9
 constexpr u32 kDeviceCapsSize = 0x130;
-constexpr u32 kFusionVa = 0x82F597B4;      // non-zero on a Fusion GPU
+constexpr u32 kFusionVa = 0x82DC67D4;      // non-zero on a Fusion GPU
 
 // ULONG D3DDevice_AddRef(D3DDevice*) [0x8264E068]
 u32 D3DDevice_AddRef_hook(u32 device_va) {
@@ -1120,9 +1120,9 @@ void ReadRamp(u32 ramp_va, u16 (&ramp)[768]) {
     ramp[i] = guest ? u16(guest[i]) : 0;
 }
 
-// void D3DDevice_SetGammaRamp(D3DDevice*, DWORD Flags, const D3DGAMMARAMP*)
-// [0x8264D948]
-void D3DDevice_SetGammaRamp_hook(u32 device_va, u32 /*flags*/, u32 ramp_va) {
+// void D3DDevice_SetGammaRamp(D3DDevice*, const D3DGAMMARAMP*) [0x82636F48]
+// (TU3's build dropped the unused Flags between them)
+void D3DDevice_SetGammaRamp_hook(u32 device_va, u32 ramp_va) {
   native::Device d = native::DeviceAt(device_va);
   if (!d || !ramp_va)
     return;
@@ -1131,9 +1131,9 @@ void D3DDevice_SetGammaRamp_hook(u32 device_va, u32 /*flags*/, u32 ramp_va) {
   SetGammaRamp(d, ramp);
 }
 
-// void D3DDevice_SetPWLGamma(D3DDevice*, DWORD Flags, const D3DPWLGAMMA*)
-// [0x8264DA18]
-void D3DDevice_SetPWLGamma_hook(u32 device_va, u32 /*flags*/, u32 pwl_va) {
+// void D3DDevice_SetPWLGamma(D3DDevice*, const D3DPWLGAMMA*) [0x82637018]
+// (TU3's build dropped the unused Flags between them)
+void D3DDevice_SetPWLGamma_hook(u32 device_va, u32 pwl_va) {
   native::Device d = native::DeviceAt(device_va);
   if (!d || !pwl_va)
     return;

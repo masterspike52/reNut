@@ -55,10 +55,9 @@ REXCVAR_DEFINE_BOOL(max_acquired_parts_access, false, "Nuts&Bolts/Cheats", "Allo
 
 
 
-void Infinite_fuel_and_ammo() {
-    if (REXCVAR_GET(infinite_fuel_and_ammo) && CheatsAllowed()) {
-        return;
-    }
+// True: the fuel/ammo use returns before it takes anything (return_on_true).
+bool Infinite_fuel_and_ammo() {
+    return REXCVAR_GET(infinite_fuel_and_ammo) && CheatsAllowed();
 }
 
 void overworld_vehicles_hook(PPCRegister& r23, PPCRegister& r26) {
@@ -97,13 +96,13 @@ bool BanjoActorOverride(PPCRegister& r3, PPCRegister& r5) {
     const auto& skin = REXCVAR_GET(banjo_skin);
 
     if (skin == "robot") {
-        r3.u32 = 0x8216B690;  // "robotbanjo_actor"
+        r3.u32 = 0x82148098;  // "robotbanjo_actor"
         r5.u32 = 0;
         return false;
     }
 
     if (skin == "tuxedo") {
-        r3.u32 = 0x8216B6A4;  // "tuxedobanjo_actor"
+        r3.u32 = 0x821480AC;  // "tuxedobanjo_actor"
         r5.u32 = 0;
         return false;
     }
@@ -112,9 +111,9 @@ bool BanjoActorOverride(PPCRegister& r3, PPCRegister& r5) {
     return true;
 }
 
-void Max_Acquired_Parts_Access_hook_1(PPCRegister& r7) {
+void Max_Acquired_Parts_Access_hook_1(PPCRegister& r11) {
     if (REXCVAR_GET(max_acquired_parts_access) && CheatsAllowed()) {
-        r7.u32 = 255;
+        r11.u32 = 255;
     }
 }
 
@@ -124,8 +123,8 @@ void Max_Acquired_Parts_Access_hook_2(PPCRegister& r10) {
     }
 }
 
-void Max_Acquired_Parts_Access_hook_3(PPCRegister& r9) {
+void Max_Acquired_Parts_Access_hook_3(PPCRegister& r11) {
     if (REXCVAR_GET(max_acquired_parts_access) && CheatsAllowed()) {
-        r9.u32 = 255;
+        r11.u32 = 255;
     }
 }

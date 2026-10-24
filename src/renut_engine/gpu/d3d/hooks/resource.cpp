@@ -91,7 +91,7 @@ void FreeHeader(u32 va) {
 // Resource data: XMemAlloc's physical path for its attributes (0x82265B90:
 // the alignment from bits 24-27, the protection from bits 28-29), then
 // XPhysicalAlloc (0x82716060), which asks the kernel. 0 on failure.
-constexpr u32 kGameNoLargePagesVa = 0x82F39E34;  // XPhysicalAlloc drops MEM_LARGE_PAGES while set
+constexpr u32 kGameNoLargePagesVa = 0x82DA3778;  // XPhysicalAlloc drops MEM_LARGE_PAGES while set
 
 u32 AllocPhysical(u32 size, u32 attributes) {
   static constexpr u32 kAlignment[16] = {4,    4,    4,     8,     16,    32,     64,     128,
@@ -114,9 +114,9 @@ void FreePhysical(u32 va) {
     MmFreePhysicalMemory(0, va);
 }
 
-// The GPU format table (word_820052F8): per D3D format low 6 bits, bits per
+// The GPU format table (word_82005200): per D3D format low 6 bits, bits per
 // pixel in the low byte, flags in the high one.
-constexpr u32 kFormatTable = 0x820052F8;
+constexpr u32 kFormatTable = 0x82005200;
 
 u16 FormatTableEntry(u32 format) {
   const auto *table = GuestPtr<const be_u16>(kFormatTable);
@@ -127,8 +127,8 @@ u32 FormatBitsPerPixel(u32 format) {
   return FormatTableEntry(format) & 0xFF;
 }
 
-// The word at 0x82FA36C8: set while a depth surface owns the HiZ memory.
-constexpr u32 kHiZOwnerVa = 0x82FA36C8;
+// The word at 0x82E108A0: set while a depth surface owns the HiZ memory.
+constexpr u32 kHiZOwnerVa = 0x82E108A0;
 
 u32 LoadU32(u32 va) {
   const auto *p = GuestPtr<const be_u32>(va);
@@ -641,7 +641,7 @@ u32 LockResource(u32 resource, u32 mip_lock, u32 base_address, u32 mip_address, 
     native::BlockOnFence(native::GlobalDevice(), fence);
   // Unless the lock is read-only or no-overwrite, D3D would then queue a GPU
   // cache invalidation of the range (into the ring, or for another thread a
-  // range at device +0x2E30); the host has no GPU caches over guest memory.
+  // range at device +0x2E38); the host has no GPU caches over guest memory.
   if ((flags & 0x10) || (common & 0x200000u)) {
     if (!(flags & 1)) {
       u32 base, flush_offset;
@@ -671,10 +671,11 @@ u32 LockResource(u32 resource, u32 mip_lock, u32 base_address, u32 mip_address, 
   return address;
 }
 
-// The lock (sub_82654968) as N&B's code calls it: (resource, 0, blocker type,
-// mip lock, base, mip, address, size, flags, cache flags).
-u32 LockResource_hook(u32 resource, u32 /*unused*/, u32 /*type*/, u32 mip_lock, u32 base_address,
-                      u32 mip_address, u32 address, u32 size, u32 flags, u32 /*cache_flags*/) {
+// The lock (sub_8263D060) as N&B's code calls it: (resource, blocker type,
+// mip lock, base, mip, address, size, flags, cache flags). TU3's build
+// dropped the first release's unused second argument (always 0).
+u32 LockResource_hook(u32 resource, u32 /*type*/, u32 mip_lock, u32 base_address, u32 mip_address,
+                      u32 address, u32 size, u32 flags, u32 /*cache_flags*/) {
   return LockResource(resource, mip_lock, base_address, mip_address, address, size, flags);
 }
 
@@ -692,9 +693,10 @@ u32 D3DIndexBuffer_Lock_hook(u32 buffer, u32 /*offset*/, u32 /*size*/, u32 flags
   return LockResource(buffer, 0, base, 0, base, LoadU32(buffer + 0x1C), flags | 2);
 }
 
-// D3D::LockSurface(D3DBaseTexture*, 0, ArrayIndex, Level, Flags, DWORD *pAddress,
-//     DWORD *pRowPitch, DWORD *pSliceBytes, DWORD *pTailOffset) [0x82655838]:
-// the row pitch reported is per row of blocks.
+// D3D::LockSurface(D3DBaseTexture*, ArrayIndex, Level, Flags, DWORD *pAddress,
+//     DWORD *pRowPitch, DWORD *pSliceBytes, DWORD *pTailOffset) [0x8263E420]:
+// the row pitch reported is per row of blocks. (The first release had an
+// unused 0 second argument, which TU3's build dropped.)
 void LockSurface(u32 texture, u32 slice, u32 level, u32 flags, u32 &address, u32 &row_pitch,
                  u32 &slice_bytes, u32 &tail_offset) {
   const Subresource sub = SubresourceLayout(texture, slice, level);
@@ -709,9 +711,8 @@ void LockSurface(u32 texture, u32 slice, u32 level, u32 flags, u32 &address, u32
             sub.tail_offset;
 }
 
-void D3D_LockSurface_hook(u32 texture, u32 /*unused*/, u32 slice, u32 level, u32 flags,
-                          mapped_u32 address, mapped_u32 row_pitch, mapped_u32 slice_bytes,
-                          mapped_u32 tail_offset) {
+void D3D_LockSurface_hook(u32 texture, u32 slice, u32 level, u32 flags, mapped_u32 address,
+                          mapped_u32 row_pitch, mapped_u32 slice_bytes, mapped_u32 tail_offset) {
   u32 a, p, s, t;
   LockSurface(texture, slice, level, flags, a, p, s, t);
   if (address)
@@ -724,10 +725,10 @@ void D3D_LockSurface_hook(u32 texture, u32 /*unused*/, u32 slice, u32 level, u32
     *tail_offset = t;
 }
 
-// D3D::Lock2DSurface(D3DBaseTexture*, 0, ArrayIndex, Level, D3DLOCKED_RECT*,
-//     const RECT*, DWORD Flags) [0x82655908]
-void D3D_Lock2DSurface_hook(u32 texture, u32 /*unused*/, u32 slice, u32 level,
-                            mapped_u32 locked_rect, mapped_u32 rect, u32 flags) {
+// D3D::Lock2DSurface(D3DBaseTexture*, ArrayIndex, Level, D3DLOCKED_RECT*,
+//     const RECT*, DWORD Flags) [0x8263E4E0] (TU3: no unused 0 second argument)
+void D3D_Lock2DSurface_hook(u32 texture, u32 slice, u32 level, mapped_u32 locked_rect,
+                            mapped_u32 rect, u32 flags) {
   u32 address, row_pitch, slice_bytes, tail_offset;
   LockSurface(texture, slice, level, flags, address, row_pitch, slice_bytes, tail_offset);
   if (rect) {
@@ -760,16 +761,16 @@ void D3D_Lock3DSurface_hook(u32 texture, u32 level, mapped_u32 locked_box, mappe
 // The lock entry points, which only pick the texture, slice and level.
 void D3DArrayTexture_LockRect_hook(u32 texture, u32 slice, u32 level, mapped_u32 locked_rect,
                                    mapped_u32 rect, u32 flags) {  // 0x82655DB0
-  D3D_Lock2DSurface_hook(texture, 0, slice, level, locked_rect, rect, flags);
+  D3D_Lock2DSurface_hook(texture, slice, level, locked_rect, rect, flags);
 }
 void D3DLineTexture_LockRect_hook(u32 texture, u32 level, mapped_u32 locked_rect, mapped_u32 rect,
                                   u32 flags) {  // 0x82655EA8
-  D3D_Lock2DSurface_hook(texture, 0, 0, level, locked_rect, rect, flags);
+  D3D_Lock2DSurface_hook(texture, 0, level, locked_rect, rect, flags);
 }
 void D3DSurface_LockRect_hook(u32 surface, mapped_u32 locked_rect, mapped_u32 rect,
                               u32 flags) {  // 0x82656150: a texture level's surface
   const u32 info = LoadU32(surface + 0x1C);
-  D3D_Lock2DSurface_hook(LoadU32(surface + 0x18), 0, native::Extract(info, 22, 6), info >> 28,
+  D3D_Lock2DSurface_hook(LoadU32(surface + 0x18), native::Extract(info, 22, 6), info >> 28,
                          locked_rect, rect, flags);
 }
 void D3DVolume_LockBox_hook(u32 volume, mapped_u32 locked_box, mapped_u32 box,

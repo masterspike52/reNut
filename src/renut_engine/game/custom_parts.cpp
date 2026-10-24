@@ -6,19 +6,19 @@
  * type 0x1F) naming its class (+0x42 objDefId_<class>, looked up at +0x4B)
  * with the class's fields; everything that needs a part opens it by asset id
  * through assetManOpenParams(&aid, may_fail), which returns the asset's data,
- * or asynchronously through sub_822C0CE8(&aid, ..., may_fail, ...), and lets
- * it go with sub_82235E68(data); sub_822C1148(data) is its size. The asset
- * manager's worker (sub_826EF618) shows the dirty disc error for a request
- * that must not fail and does. The garage inventory (vector 0x82FACA44) is
- * rebuilt by sub_8251CB20 at level start from the unlocked blocksets, each
- * added by sub_8251CDD8(&blockset aid, demo): a blockset asset is (u32 count,
+ * or asynchronously through sub_8228ECA0(&aid, ..., may_fail, ...), and lets
+ * it go with sub_82204DF0(data); sub_8228F0F0(data) is its size. The asset
+ * manager's worker (sub_826CBE88) shows the dirty disc error for a request
+ * that must not fail and does. The garage inventory (vector 0x82E19E4C) is
+ * rebuilt by sub_824FA3D8 at level start from the unlocked blocksets, each
+ * added by sub_824FA620(&blockset aid, demo): a blockset asset is (u32 count,
  * u32 part aid) pairs, and each part gets an entry with its count, category
  * tab (+0x228) and paint. A part's name is the text key at +0xA0, looked up as
- * "<section>__<key>" by sub_82396E00. The garage lists the inventory in three
+ * "<section>__<key>" by sub_82363A50. The garage lists the inventory in three
  * levels of 204-byte grouping records (name at + 0, text key at + 64, the next
  * level's table aid at + 128): the categories (class_groupings, matched
- * against the part's + 0x228), a category's types (sub_8251D090, + 0x268), a
- * type's sizes (sub_8251D238, + 0x2A8), one item per size: parts of the same
+ * against the part's + 0x228), a category's types (sub_824FA8F8, + 0x268), a
+ * type's sizes (sub_824FAAC8, + 0x2A8), one item per size: parts of the same
  * category, type and size share one item, and only one of them shows.
  *
  * Here each custom part is aid_objparams_banjox_vehicleblock_renut_<id>, a
@@ -41,21 +41,21 @@
  * game: any request for an asset that isn't there fails, and the asset
  * manager's worker calls its error callback, XShowDirtyDiscErrorUI
  * (rex_XShowDirtyDiscErrorUI, which never returns), whatever may_fail says;
- * so does a synchronous open's completion (sub_82273078) unless its opener set
- * + 312, which assetManOpenParams never does, after setting byte_82FAB13A,
- * which stops the game (sub_8223C650 then only presents, forever). A
+ * so does a synchronous open's completion (sub_82241780) unless its opener set
+ * + 312, which assetManOpenParams never does, after setting byte_82E1823A,
+ * which stops the game (MainFrameLoop then only presents, forever). A
  * remembered part
  * (mods/custom_parts.h) opens its base part instead, and the block spawn's
- * copy (sub_8227CA10, + 0x88 the aid) takes the base's aid: the block becomes
+ * copy (sub_8224AA08, + 0x88 the aid) takes the base's aid: the block becomes
  * that part (no missing-part ghost in the garage, and saving keeps the base).
  * Any other objparams aid is checked once before the game opens it (an open
  * of our own, its completion told to fail quietly: + 312 set, and the
  * worker's error dialog skipped). Callers of an open, and of the objparams
  * copy, mostly don't allow for nothing (the load list's parts check,
- * sub_8251D630, reads the copy at once), so one that isn't there opens a
+ * sub_824FAF08, reads the copy at once), so one that isn't there opens a
  * placeholder part, the light cube; a copy keeps the missing aid at + 0x88
  * (the garage has no such part: its missing-part ghost). The block spawn
- * (sub_8256C1B8) leaves a missing part's block out.
+ * (sub_8254FAC0) leaves a missing part's block out.
  *
  * g_mutex guards this file's state and is never held across a call into the
  * game: the asset manager waits on its loader thread, which comes back here.
@@ -80,16 +80,16 @@
 #include "renut_engine/mods/custom_parts.h"
 
 REX_EXTERN(__imp__assetManOpenParams);
-REX_EXTERN(__imp__sub_822C0CE8);  // asynchronous asset open
-REX_EXTERN(__imp__sub_82235E68);  // asset release
-REX_EXTERN(__imp__sub_822C1148);  // asset size
-REX_EXTERN(__imp__sub_8251CB20);  // garage inventory build
-REX_EXTERN(__imp__sub_8251CDD8);  // garage inventory: add a blockset
-REX_EXTERN(__imp__sub_82396E00);  // text lookup by full key
-REX_EXTERN(__imp__sub_8227CA10);  // a part's objparams copy, for spawning its block
+REX_EXTERN(__imp__sub_8228ECA0);  // asynchronous asset open
+REX_EXTERN(__imp__sub_82204DF0);  // asset release
+REX_EXTERN(__imp__sub_8228F0F0);  // asset size
+REX_EXTERN(__imp__sub_824FA3D8);  // garage inventory build
+REX_EXTERN(__imp__sub_824FA620);  // garage inventory: add a blockset
+REX_EXTERN(__imp__sub_82363A50);  // text lookup by full key
+REX_EXTERN(__imp__sub_8224AA08);  // a part's objparams copy, for spawning its block
 REX_EXTERN(__imp__rex_XShowDirtyDiscErrorUI);
-REX_EXTERN(__imp__sub_82273078);  // a synchronous open's completion
-REX_EXTERN(__imp__sub_8256C1B8);  // spawns a vehicle block from its part's aid
+REX_EXTERN(__imp__sub_82241780);  // a synchronous open's completion
+REX_EXTERN(__imp__sub_8254FAC0);  // spawns a vehicle block from its part's aid
 
 namespace {
 
@@ -99,8 +99,8 @@ using renut::mods::KnownCustomPart;
 // Guest data.
 constexpr uint8_t kTypeObjparams = 0x1F;
 constexpr uint8_t kTypeMisc = 0x0B;
-constexpr uint32_t kBlockClassGroupings = 0x82FACA38;  // the inventory's class_groupings (0: no inventory)
-constexpr uint32_t kTextUpperCaseMode = 0x82E5F2F0;   // sub_82396E00 upper-cases below 2
+constexpr uint32_t kBlockClassGroupings = 0x82E19E40;  // the inventory's class_groupings (0: no inventory)
+constexpr uint32_t kTextUpperCaseMode = 0x82D9A068;   // sub_82363A50 upper-cases below 2
 // Objparams record: u16 size at + 0, the name's text key at + 0xA0, the
 // asset id the game keeps in its copies at + 0x88 (+ 0x8C cleared).
 constexpr uint32_t kRecordNameKey = 0xA0;
@@ -125,9 +125,12 @@ constexpr uint32_t kRecordAttach = 0x12C;
 constexpr uint8_t kTypeModel = 0x04;
 constexpr uint8_t kTypeHavok = 0x05;
 constexpr uint8_t kTypeAttach = 0x14;
-// sub_822C1228(const u32 *aid): whether a loaded bundle has the asset (no
-// request made, so no error dialog).
-constexpr uint32_t kAssetLoaded = 0x822C1228;
+// sub_821DDBF0(query, provider): whether a loaded bundle has the asset of the
+// query {vtable, aid} (no request made, so no error dialog); 0xFF asks every
+// provider.
+constexpr uint32_t kAssetQuery = 0x821DDBF0;
+constexpr uint32_t kAssetQueryVtable = 0x82001AF0;
+constexpr uint32_t kAnyProvider = 0xFF;
 // Grouping record (class_groupings and the type and size tables).
 constexpr uint32_t kGroupingSize = 204;
 constexpr uint32_t kGroupingName = 0;
@@ -347,15 +350,19 @@ bool MarkFailed(GuestPart &gp) {
 
 // Whether a loaded bundle has the asset 'aid'.
 bool AssetLoaded(PPCContext &ctx, uint8_t *base, uint32_t aid) {
-  ::PPCFunc *loaded = REX_KERNEL_STATE()->function_dispatcher()->GetFunction(kAssetLoaded);
-  const uint32_t word = REX_KERNEL_MEMORY()->SystemHeapAlloc(4);
-  if (!loaded || !word)
+  ::PPCFunc *loaded = REX_KERNEL_STATE()->function_dispatcher()->GetFunction(kAssetQuery);
+  if (!loaded)
     return false;
-  Store32(base, word, aid);
-  ctx.r3.u64 = word;
+  const uint32_t query = REX_KERNEL_MEMORY()->SystemHeapAlloc(8);
+  if (!query)
+    return false;
+  Store32(base, query, kAssetQueryVtable);
+  Store32(base, query + 4, aid);
+  ctx.r3.u64 = query;
+  ctx.r4.u64 = kAnyProvider;
   loaded(ctx, base);
   const bool there = (ctx.r3.u32 & 0xFF) != 0;
-  REX_KERNEL_MEMORY()->SystemHeapFree(word);
+  REX_KERNEL_MEMORY()->SystemHeapFree(query);
   return there;
 }
 
@@ -408,7 +415,7 @@ uint32_t BuildPart(PPCContext &ctx, uint8_t *base, GuestPart &gp, uint32_t may_f
     const uint32_t size = Load16(base, source);
     bytes.assign(base + source, base + source + size);
     ctx.r3.u64 = source;
-    __imp__sub_82235E68(ctx, base);
+    __imp__sub_82204DF0(ctx, base);
   }
   if (bytes.size() < kMinRecordSize) {
     if (MarkFailed(gp))
@@ -504,7 +511,7 @@ bool Exists(PPCContext &ctx, uint8_t *base, uint32_t aid_va, uint32_t aid, const
   const uint32_t data = ctx.r3.u32;
   if (data) {
     ctx.r3.u64 = data;
-    __imp__sub_82235E68(ctx, base);
+    __imp__sub_82204DF0(ctx, base);
   }
   std::lock_guard lock(g_mutex);
   if (data) {
@@ -534,7 +541,7 @@ void LogRemoved(const KnownCustomPart &known) {
 // An opened asset's size, through the game.
 uint32_t AssetSize(PPCContext &ctx, uint8_t *base, uint32_t data) {
   ctx.r3.u64 = data;
-  __imp__sub_822C1148(ctx, base);
+  __imp__sub_8228F0F0(ctx, base);
   return ctx.r3.u32;
 }
 
@@ -561,7 +568,7 @@ std::vector<uint8_t> ReadGroupingTable(PPCContext &ctx, uint8_t *base, uint32_t 
   const uint32_t size = AssetSize(ctx, base, data) / kGroupingSize * kGroupingSize;
   std::vector<uint8_t> bytes(base + data, base + data + size);
   ctx.r3.u64 = data;
-  __imp__sub_82235E68(ctx, base);
+  __imp__sub_82204DF0(ctx, base);
   return bytes;
 }
 
@@ -646,7 +653,7 @@ void PrepareSizes(PPCContext &ctx, uint8_t *base) {
           sizes_aid = Load32(base, type_record + kGroupingNext);
         }
         ctx.r3.u64 = types;
-        __imp__sub_82235E68(ctx, base);
+        __imp__sub_82204DF0(ctx, base);
       }
     }
     if (!type_found) {
@@ -764,13 +771,13 @@ REX_HOOK_RAW(assetManOpenParams) {
   __imp__assetManOpenParams(ctx, base);
 }
 
-// sub_822C0CE8(const u32 *aid, callback, ..., int may_fail (r7), ...): opens
+// sub_8228ECA0(const u32 *aid, callback, ..., int may_fail (r7), ...): opens
 // an asset asynchronously (the request takes the aid at once).
-REX_HOOK_RAW(sub_822C0CE8) {
+REX_HOOK_RAW(sub_8228ECA0) {
   const uint32_t aid_va = ctx.r3.u32;
   const uint32_t aid = aid_va ? Load32(base, aid_va) : 0;
   if (!aid || uint8_t(aid >> 24) != kTypeObjparams) {
-    __imp__sub_822C0CE8(ctx, base);
+    __imp__sub_8228ECA0(ctx, base);
     return;
   }
   Initialize(base);
@@ -795,18 +802,18 @@ REX_HOOK_RAW(sub_822C0CE8) {
       ctx.r9.u64 = r9;
     }
   }
-  __imp__sub_822C0CE8(ctx, base);
+  __imp__sub_8228ECA0(ctx, base);
 }
 
-// sub_82273078(state, opener): a synchronous open's completion; a failed one
+// sub_82241780(state, opener): a synchronous open's completion; a failed one
 // (state + 12) stops the game with the dirty disc error unless opener + 312.
 // Our own checks fail quietly.
-REX_HOOK_RAW(sub_82273078) {
+REX_HOOK_RAW(sub_82241780) {
   const uint32_t state = ctx.r3.u32;
   const uint32_t opener = ctx.r4.u32;
   if (g_checks_running.load(std::memory_order_acquire) > 0 && state && opener && Load32(base, state + 12))
     Store32(base, opener + 312, 1);
-  __imp__sub_82273078(ctx, base);
+  __imp__sub_82241780(ctx, base);
 }
 
 // XShowDirtyDiscErrorUI(user): the dirty disc dialog, then a reboot (never
@@ -819,10 +826,10 @@ REX_HOOK_RAW(rex_XShowDirtyDiscErrorUI) {
   __imp__rex_XShowDirtyDiscErrorUI(ctx, base);
 }
 
-// u32 *sub_8227CA10(const u32 *aid): a malloc'd copy of a part's objparams
+// u32 *sub_8224AA08(const u32 *aid): a malloc'd copy of a part's objparams
 // (+ 0x88 the aid), or null; the block spawn leaves a null one out. A removed
 // mod's part becomes its base part.
-REX_HOOK_RAW(sub_8227CA10) {
+REX_HOOK_RAW(sub_8224AA08) {
   const uint32_t aid_va = ctx.r3.u32;
   const uint32_t aid = aid_va ? Load32(base, aid_va) : 0;
   uint32_t base_aid = 0;
@@ -831,14 +838,14 @@ REX_HOOK_RAW(sub_8227CA10) {
     if (const KnownCustomPart *known = FindRemovedPart(aid))
       base_aid = known->base_aid;
   }
-  __imp__sub_8227CA10(ctx, base);
+  __imp__sub_8224AA08(ctx, base);
   if (base_aid && ctx.r3.u32)
     Store32(base, ctx.r3.u32 + kRecordAid, base_aid);
 }
 
-// sub_8256C1B8(const u32 *aid, ...): spawns a vehicle block, or returns null
+// sub_8254FAC0(const u32 *aid, ...): spawns a vehicle block, or returns null
 // (the vehicle spawn goes on without it). A missing part's block is left out.
-REX_HOOK_RAW(sub_8256C1B8) {
+REX_HOOK_RAW(sub_8254FAC0) {
   const uint32_t aid_va = ctx.r3.u32;
   const uint32_t aid = aid_va ? Load32(base, aid_va) : 0;
   if (aid && uint8_t(aid >> 24) == kTypeObjparams) {
@@ -857,30 +864,30 @@ REX_HOOK_RAW(sub_8256C1B8) {
       ctx.r7.u64 = r7;
     }
   }
-  __imp__sub_8256C1B8(ctx, base);
+  __imp__sub_8254FAC0(ctx, base);
 }
 
-// sub_82235E68(data): lets an opened asset go. Custom records stay.
-REX_HOOK_RAW(sub_82235E68) {
+// sub_82204DF0(data): lets an opened asset go. Custom records stay.
+REX_HOOK_RAW(sub_82204DF0) {
   if (OwnSize(ctx.r3.u32)) {
     ctx.r3.u64 = 0;
     return;
   }
-  __imp__sub_82235E68(ctx, base);
+  __imp__sub_82204DF0(ctx, base);
 }
 
-// u32 sub_822C1148(data): an opened asset's size.
-REX_HOOK_RAW(sub_822C1148) {
+// u32 sub_8228F0F0(data): an opened asset's size.
+REX_HOOK_RAW(sub_8228F0F0) {
   if (const uint32_t size = OwnSize(ctx.r3.u32)) {
     ctx.r3.u64 = size;
     return;
   }
-  __imp__sub_822C1148(ctx, base);
+  __imp__sub_8228F0F0(ctx, base);
 }
 
-// sub_8251CB20(): rebuilds the garage inventory; the custom parts join it.
-REX_HOOK_RAW(sub_8251CB20) {
-  __imp__sub_8251CB20(ctx, base);
+// sub_824FA3D8(): rebuilds the garage inventory; the custom parts join it.
+REX_HOOK_RAW(sub_824FA3D8) {
+  __imp__sub_824FA3D8(ctx, base);
   if (renut::mods::CustomParts().empty() || !Load32(base, kBlockClassGroupings))
     return;
   const uint64_t result = ctx.r3.u64;
@@ -889,7 +896,7 @@ REX_HOOK_RAW(sub_8251CB20) {
   if (g_blockset_aid) {
     ctx.r3.u64 = g_blockset_aid_va;
     ctx.r4.u64 = 0;
-    __imp__sub_8251CDD8(ctx, base);
+    __imp__sub_824FA620(ctx, base);
     static bool logged = false;
     if (!logged) {
       logged = true;
@@ -899,14 +906,14 @@ REX_HOOK_RAW(sub_8251CB20) {
   ctx.r3.u64 = result;
 }
 
-// int sub_82396E00(text, const char *key, wchar_t *out, size_t out_size, int upper):
+// int sub_82363A50(text, const char *key, wchar_t *out, size_t out_size, int upper):
 // the text for "<section>__<key>"; renutpart_<id> is a custom part's name.
-REX_HOOK_RAW(sub_82396E00) {
+REX_HOOK_RAW(sub_82363A50) {
   const uint32_t key_va = ctx.r4.u32;
   const uint32_t out = ctx.r5.u32;
   const uint32_t out_size = ctx.r6.u32;
   if (!key_va || !out || !out_size || renut::mods::CustomParts().empty()) {
-    __imp__sub_82396E00(ctx, base);
+    __imp__sub_82363A50(ctx, base);
     return;
   }
   char key[kMaxTextKey];
@@ -916,7 +923,7 @@ REX_HOOK_RAW(sub_82396E00) {
   key[length] = 0;
   const char *own = std::strstr(key, "__renutpart_");
   if (!own) {
-    __imp__sub_82396E00(ctx, base);
+    __imp__sub_82363A50(ctx, base);
     return;
   }
   own += 2;
@@ -926,7 +933,7 @@ REX_HOOK_RAW(sub_82396E00) {
     if (gp.text_key == own && !gp.name.empty())
       name = &gp.name;
   if (!name) {
-    __imp__sub_82396E00(ctx, base);
+    __imp__sub_82363A50(ctx, base);
     return;
   }
   const bool upper = ctx.r7.u32 && Load32(base, kTextUpperCaseMode) < 2;
