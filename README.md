@@ -29,13 +29,15 @@ currently the only devices supported are linux devices and windows devices, i ha
 
  How to play
  ---------------------------------------------------
- * acquire your banjo-kazooie: nuts and bolts (usa) iso (you do not need the update for its not supported)
+ * acquire your banjo-kazooie: nuts and bolts (usa) iso as well as the titleupdate
 
 * download <a href="https://github.com/etonedemid/NutStaller/releases">nutstaller</a>
 
-* open nutstaller, and click do everything and select your iso from the first step
+* open nutstaller, and click do everything and select your iso from the first step, the titleupdate in the second step
 
 * click play
+
+* you can also use dlc by taking the package for the dlc (E41F20AAF7094B9AFCA8CC90489D689D72A5062B4D) and place it in a folder named dlc next to the exe(appimage for linux)
 
 Online play
 --------------------------------------
