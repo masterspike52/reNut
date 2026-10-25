@@ -68,13 +68,11 @@
 0x8225D468 = {name = "D3DDevice_IsFencePending"}
 0x82634AE8 = {name = "D3DDevice_Release"}
 0x82642568 = {name = "D3D_CDevice_Uninitialize"}
-# Ring stub and device internals (gpu/hooks/device.cpp)
 0x821C7360 = {name = "D3D_CDevice_BeginRingBig"}
 0x82A6DD88 = {name = "D3D_CDevice_BeginRingManual"}
 0x821FC4B8 = {name = "D3D_RingBufferDeviceAllocate"}
 0x821FC318 = {name = "D3D_CDevice_AllocateInlineData"}
 0x82640DE8 = {name = "D3DDevice_EndCommandBuffer"}
-# Device state (gpu/hooks/state.cpp)
 0x82BF2578 = {name = "D3DDevice_SetTexture_Inline"}
 0x821F2110 = {name = "D3D_SetViewport"}
 0x821F2460 = {name = "D3D_SetSurfaceClip"}
@@ -84,7 +82,6 @@
 0x82637208 = {name = "D3D_CleanupGprAllocationSetup"}
 0x82634C10 = {name = "D3DDevice_UnsetAll"}
 0x82634B90 = {name = "D3D_InvalidateConstants"}
-# Render state setters, N&B's table at 0x82D8A948 (entries 10-100)
 0x82635740 = {name = "D3DDevice_SetRenderState_ZEnable"}
 0x821CB040 = {name = "D3DDevice_SetRenderState_ZFunc"}
 0x82635780 = {name = "D3DDevice_SetRenderState_ZWriteEnable"}
@@ -119,7 +116,6 @@
 0x82635A58 = {name = "D3DDevice_SetRenderState_CCWStencilMask"}
 0x82635A78 = {name = "D3DDevice_SetRenderState_CCWStencilWriteMask"}
 0x8225D188 = {name = "D3DDevice_SetRenderState_ClipPlaneEnable"}
-# Only reached through the table: no function in IDA.
 0x82635CC0 = {name = "D3DDevice_SetRenderState_PointSize"}
 0x82635D20 = {name = "D3DDevice_SetRenderState_PointSizeMin"}
 0x82635CB0 = {name = "D3DDevice_SetRenderState_PointSpriteEnable"}
@@ -177,7 +173,6 @@
 0x82635660 = {name = "D3DDevice_SetRenderState_LastPixel"}
 0x82635698 = {name = "D3DDevice_SetRenderState_LineWidth"}
 0x82635710 = {name = "D3DDevice_SetRenderState_Buffer2Frames"}
-# Sampler state setters, N&B's table at 0x82D8AE28
 0x8224B2C0 = {name = "D3DDevice_SetSamplerState_AddressU"}
 0x821DB8C8 = {name = "D3DDevice_SetSamplerState_AddressV"}
 0x82636C30 = {name = "D3DDevice_SetSamplerState_AddressW"}
@@ -198,7 +193,6 @@
 0x82636D30 = {name = "D3DDevice_SetSamplerState_VGradientExpBias"}
 0x82636D88 = {name = "D3DDevice_SetSamplerState_WhiteBorderColorW"}
 0x82636DE0 = {name = "D3DDevice_SetSamplerState_PointBorderEnable"}
-# Resources (gpu/hooks/resource.cpp)
 0x8263D060 = {name = "D3D_LockResource"}
 0x8263E420 = {name = "D3D_LockSurface"}
 0x8263E4E0 = {name = "D3D_Lock2DSurface"}
@@ -206,13 +200,10 @@
 0x8263E958 = {name = "D3DArrayTexture_LockRect"}
 0x8263ED78 = {name = "D3DSurface_UnlockRect"}
 0x8263ED58 = {name = "D3DVolume_LockBox"}
-# N&B's own allocator's free: resource teardown frees N&B-heap memory with it.
 0x822089F0 = {name = "XMemFree"}
-# Memexport and Present (gpu/hooks/draw.cpp)
 0x82237FE8 = {name = "D3DDevice_BeginExport"}
 0x82237D80 = {name = "D3DDevice_EndExport"}
 0x826352B8 = {name = "D3DDevice_Present"}
-# Device queries, thread ownership, presentation (gpu/hooks/device.cpp)
 0x82634AD0 = {name = "D3DDevice_AddRef"}
 0x82634B40 = {name = "D3DDevice_AcquireThreadOwnership"}
 0x82641480 = {name = "D3DDevice_GetDeviceCaps"}
@@ -222,7 +213,6 @@
 0x8263D4B8 = {name = "D3DResource_GetDevice"}
 0x82BC8078 = {name = "D3D_IsFusion"}
 0x82637018 = {name = "D3DDevice_SetPWLGamma"}
-# Device state queries and setters (gpu/hooks/state.cpp)
 0x82636EC8 = {name = "D3DDevice_SetRenderTarget_Thunk"}
 0x82636ED0 = {name = "D3DDevice_GetRenderTarget"}
 0x82636F10 = {name = "D3DDevice_GetDepthStencilSurface"}
@@ -231,7 +221,6 @@
 0x826370E8 = {name = "D3DDevice_SetClipPlane"}
 0x82637138 = {name = "D3DDevice_SetVertexFetchConstant"}
 0x8263ED90 = {name = "D3DDevice_EndIndexedVertices"}
-# Render and sampler state getters, N&B's tables (field 0)
 0x82635778 = {name = "D3DDevice_GetRenderState_ZEnable"}
 0x826357B0 = {name = "D3DDevice_GetRenderState_ZFunc"}
 0x826357A0 = {name = "D3DDevice_GetRenderState_ZWriteEnable"}
@@ -343,7 +332,6 @@
 0x82636D70 = {name = "D3DDevice_GetSamplerState_VGradientExpBias"}
 0x82636DC8 = {name = "D3DDevice_GetSamplerState_WhiteBorderColorW"}
 0x82636E28 = {name = "D3DDevice_GetSamplerState_PointBorderEnable"}
-# Resource queries, levels, texture creation and layout (gpu/hooks/resource.cpp)
 0x8263EA48 = {name = "D3D_Lock3DSurface_Thunk"}
 0x821D77C0 = {name = "D3DSurface_GetDesc"}
 0x8263ED10 = {name = "D3DVolume_GetDesc"}

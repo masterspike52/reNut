@@ -16,6 +16,7 @@
 
 #include <cstdint>
 #include <functional>
+#include <string>
 
 #include <plume_render_interface.h>
 
@@ -37,6 +38,9 @@ void RemoveDialog(Dialog *dialog);
 // settings or online window, not the FPS overlay), so the mouse should be a
 // free cursor.
 bool WantsCursor();
+
+// The window WantsCursor is for, or empty. On the UI thread.
+std::string InputWindowName();
 
 // Runs a function on the SDK's UI thread, later (WindowedAppContext::
 // CallInUIThreadDeferred).

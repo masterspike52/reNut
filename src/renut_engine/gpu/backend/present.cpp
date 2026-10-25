@@ -129,6 +129,26 @@ void RecordScanOut(VideoState &s, const PresentImage &image, uint32_t out_w, uin
   cmd->drawInstanced(3, 1, 0, 0);
 }
 
+// plume gives up on a present wait after 100 ms. Presents that never report
+// reaching the display (a capture or overlay layer that drops their present
+// ids) would cost that every frame, so present wait is turned off after a few
+// such waits in a row (a second's worth; slow frames alone rarely run that long).
+void WaitForDisplay(VideoState &s) {
+  constexpr uint32_t kMaxTimeouts = 10;
+  static uint32_t timeouts = 0;
+  const auto start = std::chrono::steady_clock::now();
+  s.swap_chain->wait();
+  if (std::chrono::steady_clock::now() - start < std::chrono::milliseconds(90)) {
+    timeouts = 0;
+    return;
+  }
+  if (++timeouts == kMaxTimeouts) {
+    s.present_wait = false;
+    RGPU_WARN("Present wait timed out {} frames in a row; frames are no longer paced on the display",
+              kMaxTimeouts);
+  }
+}
+
 // Records the back-buffer pass and presents. Caller holds s.mutex.
 void PresentLocked(VideoState &s, const PresentImage *image) {
   // The swapchain is the render thread's again once the recording thread has
@@ -138,6 +158,13 @@ void PresentLocked(VideoState &s, const PresentImage *image) {
     render_thread::WaitScope wait;
     CommandRecorder::WaitForCall(s.present_call);
     s.present_call = 0;
+    // Then until the present two before the last is on the display, so frames
+    // are made one per refresh (and the game, at most a frame ahead, runs at
+    // that pace) rather than in bursts while presents pile up, and a present
+    // shown a refresh late doesn't hold this thread (video.cpp). The last
+    // present has been made, so the swapchain is this thread's.
+    if (s.present_wait)
+      WaitForDisplay(s);
   }
   // Logs, once, why the GPU stopped if an earlier submission faulted.
   ReportDeviceLost(s.device.get());

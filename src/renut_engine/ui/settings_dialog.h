@@ -2,6 +2,7 @@
 #include <rex/cvar.h>
 #include "imgui.h"
 #include "renut_engine/gpu/overlay/overlay_ui.h"
+#include "renut_engine/online/online.h"
 
 #include <algorithm>
 #include <cctype>
@@ -163,7 +164,10 @@ private:
         using rex::cvar::FlagType;
         using rex::cvar::Lifecycle;
         ImGui::PushID(entry.name.c_str());
-        const bool read_only = entry.lifecycle == Lifecycle::kInitOnly;
+        // Allowing cheats in a session is the host's: greyed out in a session
+        // someone else hosts (online/session_cheats.cpp refuses it there too).
+        const bool not_host = entry.name == "renut_host_cheats" && !renut::online::CanAllowSessionCheats();
+        const bool read_only = entry.lifecycle == Lifecycle::kInitOnly || not_host;
         if (read_only)
             ImGui::BeginDisabled();
 
@@ -171,7 +175,8 @@ private:
         ImGui::AlignTextToFramePadding();
         ImGui::TextUnformatted(label.c_str());
         if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
-            ImGui::SetTooltip("%s\n\n%s", entry.name.c_str(), entry.description.c_str());
+            ImGui::SetTooltip("%s\n\n%s%s", entry.name.c_str(), entry.description.c_str(),
+                              not_host ? "\n\nOnly the session's host can change this." : "");
         if (entry.lifecycle == Lifecycle::kRequiresRestart) {
             ImGui::SameLine();
             ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.3f, 1.0f), "(restart)");

@@ -16,6 +16,7 @@
 #include "renut_engine/gpu/guest/widescreen.h"
 #include "renut_engine/gpu/log.h"
 #include "renut_engine/gpu/render/format.h"
+#include "renut_engine/gpu/render/menu_colour.h"
 
 REXCVAR_DEFINE_STRING(renut_shadow_resolution, "Resolution", "Nuts&Bolts/Graphics",
                       "Shadow map resolution, as a multiple of the console's: Resolution follows "
@@ -184,6 +185,7 @@ void LatchGraphicsOptionsLocked() {
                              : anti_aliasing == "SMAA" ? kPostAntiAliasingSmaa
                                                        : kPostAntiAliasingOff,
                              std::memory_order_relaxed);
+  LatchMenuColourLocked();
 }
 
 uint32_t PostAntiAliasing() {

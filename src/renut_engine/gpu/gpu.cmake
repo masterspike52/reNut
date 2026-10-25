@@ -243,6 +243,8 @@ function(renut_gpu_setup TARGET)
         ${RENUT_GPU_DIR}/render/draw.cpp
         ${RENUT_GPU_DIR}/render/format.cpp
         ${RENUT_GPU_DIR}/render/graphics_options.cpp
+        ${RENUT_GPU_DIR}/render/menu_colour.cpp
+        ${RENUT_GPU_DIR}/render/title_logo.cpp
         ${RENUT_GPU_DIR}/render/parallel.cpp
         ${RENUT_GPU_DIR}/render/pipeline.cpp
         ${RENUT_GPU_DIR}/render/shader_library.cpp

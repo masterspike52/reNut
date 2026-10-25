@@ -49,7 +49,7 @@ constexpr uint64_t kXuidHashMask = 0x0000FFFFFFFFFFFFull;
 constexpr auto kTickerInterval = std::chrono::seconds(2);
 constexpr auto kSignInRetry = std::chrono::seconds(30);
 constexpr size_t kMaxQueued = 4096;
-constexpr uint8_t kChannelCount = 3;
+constexpr uint8_t kChannelCount = 4;
 constexpr size_t kMaxTickers = 8;
 constexpr size_t kMaxPeerListeners = 4;
 

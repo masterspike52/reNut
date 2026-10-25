@@ -62,9 +62,8 @@ address = 0x824FA35C
 name = "BanjoActorOverride"
 registers = ["r3", "r5"]
 after_instruction = true
-jump_address_on_false = 0x824FA374
+jump_address_on_false = 0x824FA378
 
-# TU3: the stored value is r11 here (the base had r7).
 [[midasm_hook]]
 address = 0x824FAD08
 name = "Max_Acquired_Parts_Access_hook_1"
@@ -77,9 +76,63 @@ name = "Max_Acquired_Parts_Access_hook_2"
 registers = ["r10"]
 after_instruction = true
 
-# TU3: the copy loop loads into r11 (the base had r9).
 [[midasm_hook]]
 address = 0x825425C4
 name = "Max_Acquired_Parts_Access_hook_3"
 registers = ["r11"]
 after_instruction = true
+
+[[midasm_hook]]
+address = 0x826333E0
+name = "VehicleSize_fits"
+registers = ["r10", "r11"]
+after_instruction = false
+jump_address_on_true = 0x82633600
+
+[[midasm_hook]]
+address = 0x826334F0
+name = "VehicleSize_limit"
+registers = ["r10", "r11"]
+after_instruction = true
+
+[[midasm_hook]]
+address = 0x82633510
+name = "VehicleSize_limit_z"
+registers = ["r9"]
+after_instruction = true
+
+[[midasm_hook]]
+address = 0x82633580
+name = "VehicleSize_limit_z2"
+registers = ["r11"]
+after_instruction = true
+
+[[midasm_hook]]
+address = 0x825ECC6C
+name = "VehicleParts_join"
+registers = ["r11"]
+after_instruction = false
+
+[[midasm_hook]]
+address = 0x825ECDD0
+name = "VehicleParts_merge"
+registers = ["r11"]
+after_instruction = false
+
+[[midasm_hook]]
+address = 0x826309A8
+name = "VehicleParts_tip"
+registers = ["r11"]
+after_instruction = false
+
+[[midasm_hook]]
+address = 0x824985E4
+name = "BlueprintPicture_parts"
+registers = ["r10"]
+after_instruction = true
+
+[[midasm_hook]]
+address = 0x821FF758
+name = "StatusDial_fill_colour"
+registers = ["r9", "r30"]
+after_instruction = false

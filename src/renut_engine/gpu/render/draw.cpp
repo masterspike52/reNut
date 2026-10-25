@@ -2106,6 +2106,32 @@ UploadAllocation UploadVertexFetchData(const GuestDevice &device, const DrawCall
 
 // ---------------------------------------------------------------------------
 
+// The host depth bias for the guest's polygon offset, which is in units of
+// depth. N&B sets 0.001 around decal materials (sub_8237D1B8, material flag
+// 0x2000) so they win over the surface they lie on, such as the stone arches
+// laid on walls, and 1e-5 in sub_822FF3E0; it never sets a slope scale.
+// On D24FS8 (the scene's 20e4 float depth) the offset is taken relative to
+// the polygon's exponent, as float depth biases are, so offset * 2^23 units
+// of the host's D32_FLOAT bias by the same: 0.001 lifts the arches about
+// 2.4e-7 at their depth, over the 1e-7 their mesh differs from the wall by.
+// On D24S8 the offset is a fixed part of the depth range, which float depth
+// cannot express in units, so a bias far over it is clamped down to it.
+void SetDepthBias(const d3d::Device &dev, const HostSurface &depth, PipelineKey &key) {
+  const u32 mode = u32(dev.m_ControlPacket.ModeControl);
+  if (!(mode & 0x1800))
+    return;
+  const u32 at = (mode & 0x800) ? d3d::kDeviceOffsetDepthBiasFront : d3d::kDeviceOffsetDepthBiasBack;
+  const float offset = float(*reinterpret_cast<const be_f32 *>(reinterpret_cast<const u8 *>(&dev) + at));
+  if (offset == 0.0f)
+    return;
+  if (GpuTextureFormat(depth.format_word & 0x3F) == GpuTextureFormat::Fmt24_8_Float) {
+    key.depth_bias = int32_t(std::lround(offset * 8388608.0f));
+  } else {
+    key.depth_bias = offset > 0.0f ? (1 << 30) : -(1 << 30);
+    key.depth_bias_clamp = offset;
+  }
+}
+
 PipelineKey MakeKey(const GuestDevice &device, const ShaderRecord *vs, const ShaderRecord *ps,
                     const VertexDeclarationRecord *declaration, const Targets &t, u32 primitive,
                     bool per_instance) {
@@ -2132,6 +2158,8 @@ PipelineKey MakeKey(const GuestDevice &device, const ShaderRecord *vs, const Sha
   key.stencil_ref_mask = t.depth ? u32(dev.m_ValuesPacket.StencilRefMask) & 0xFFFFFF : 0;
   key.stencil_ref_mask_bf = t.depth ? u32(dev.m_ValuesPacket.StencilRefMaskBF) & 0xFFFFFF : 0;
   key.mode_control = u32(cp.ModeControl) & 0x7;
+  if (t.depth)
+    SetDepthBias(dev, *t.depth, key);
   key.alpha_to_coverage = (u32(cp.ColorControl) >> 4) & 1;
   if (primitive == kRectangleList) {
     if (State().rectangle_list_gs)

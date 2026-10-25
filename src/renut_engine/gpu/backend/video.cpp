@@ -604,8 +604,20 @@ bool Video::CreateHostDevice() {
   }
 
   // One image beyond the frames in flight, so acquiring never waits on scanout.
-  plume::RenderSwapChainDesc swap_desc(render_window, kSwapChainFormat, kFramesInFlight + 1, false,
-                                       kFramesInFlight);
+  // Vulkan paces the frames on the display (VK_KHR_present_wait, PresentLocked):
+  // with FIFO alone the frames queued up until the GPU stalled on a free image,
+  // the game made several frames in a few milliseconds and then waited 20-30 ms,
+  // and the camera moved unevenly at a steady 60 fps. The wait is for the
+  // present before last (a latency of one more frame, and one more image):
+  // waiting for the last one, every present that reached the display a refresh
+  // or two late (windowed, NVIDIA's Vulkan presents go through DXGI and the
+  // compositor) held the render thread, and the game behind it, 30-40 ms, a
+  // frame in ten at 4K and 59 Hz (trace 2026-10-24). D3D12 keeps its DXGI frame
+  // latency; plume's present wait there drops the sync interval to 0.
+  s.present_wait = IsVulkan() && s.device->getCapabilities().presentWait;
+  const uint32_t present_latency = s.present_wait ? kFramesInFlight + 1 : kFramesInFlight;
+  plume::RenderSwapChainDesc swap_desc(render_window, kSwapChainFormat, present_latency + 1,
+                                       s.present_wait, present_latency);
   s.swap_chain = s.queue->createSwapChain(swap_desc);
   // plume's Vulkan swapchain is created lazily by resize().
   if (s.swap_chain && IsVulkan())

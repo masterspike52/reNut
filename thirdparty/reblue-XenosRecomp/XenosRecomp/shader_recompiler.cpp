@@ -1296,6 +1296,13 @@ void ShaderRecompiler::recompile(const AluInstruction& instr)
 
         case AluVectorOpcode::Dp4:
         case AluVectorOpcode::Dp3:
+        #ifdef RENUT_RECOMP
+            if (positionDots.count(aluAddress) != 0)
+            {
+                print("dotPrecise({}, {})", op(VECTOR_0), op(VECTOR_1));
+                break;
+            }
+        #endif
             print("dot({}, {})", op(VECTOR_0), op(VECTOR_1));
             break;
 
@@ -1735,6 +1742,177 @@ void ShaderRecompiler::recompile(const AluInstruction& instr)
 }
 
 #ifdef RENUT_RECOMP
+// N&B's projection leaves far geometry's clip z close to its w, so the depth (1 - z / w after
+// the viewport) is the small difference of two large dot products. Rounded at every multiply
+// and add, as dot is on the host, it wanders by about 1e-7 from vertex to vertex at a wall's
+// distance: as far as the decals laid on walls (the stone arches around doors) sit in front of
+// them, so they z-fight as the camera moves. Finds the dp4 / dp3 instructions whose results
+// reach the position export, directly or through moves, for dotPrecise; walks the instructions
+// in control flow order, which is all a write before the export needs.
+void ShaderRecompiler::findPositionDots(const be<uint32_t>* code, uint32_t instrSize)
+{
+    struct Step
+    {
+        uint32_t address = 0;
+        bool fetch = false;
+        uint32_t fetchDest = 0;
+        uint32_t fetchMask = 0;
+        AluInstruction alu{};
+    };
+    std::vector<Step> steps;
+
+    union
+    {
+        ControlFlowInstruction controlFlow[2];
+        struct
+        {
+            uint32_t code0;
+            uint32_t code1;
+            uint32_t code2;
+            uint32_t code3;
+        };
+    };
+
+    auto controlFlowCode = code;
+    for (uint32_t instrAddress = 0; instrAddress < instrSize; instrAddress += 12, controlFlowCode += 3)
+    {
+        code0 = controlFlowCode[0];
+        code1 = controlFlowCode[1] & 0xFFFF;
+        code2 = (controlFlowCode[1] >> 16) | (controlFlowCode[2] << 16);
+        code3 = controlFlowCode[2] >> 16;
+
+        for (auto& cfInstr : controlFlow)
+        {
+            uint32_t address, count, sequence;
+            switch (cfInstr.opcode)
+            {
+            case ControlFlowOpcode::Exec:
+            case ControlFlowOpcode::ExecEnd:
+                address = cfInstr.exec.address;
+                count = cfInstr.exec.count;
+                sequence = cfInstr.exec.sequence;
+                break;
+            case ControlFlowOpcode::CondExec:
+            case ControlFlowOpcode::CondExecEnd:
+            case ControlFlowOpcode::CondExecPredClean:
+            case ControlFlowOpcode::CondExecPredCleanEnd:
+                address = cfInstr.condExec.address;
+                count = cfInstr.condExec.count;
+                sequence = cfInstr.condExec.sequence;
+                break;
+            case ControlFlowOpcode::CondExecPred:
+            case ControlFlowOpcode::CondExecPredEnd:
+                address = cfInstr.condExecPred.address;
+                count = cfInstr.condExecPred.count;
+                sequence = cfInstr.condExecPred.sequence;
+                break;
+            default:
+                continue;
+            }
+
+            auto instructionCode = code + address * 3;
+            for (uint32_t i = 0; i < count; i++, sequence >>= 2, instructionCode += 3)
+            {
+                union
+                {
+                    VertexFetchInstruction fetch;
+                    AluInstruction alu;
+                    struct
+                    {
+                        uint32_t word0;
+                        uint32_t word1;
+                        uint32_t word2;
+                    };
+                };
+                word0 = instructionCode[0];
+                word1 = instructionCode[1];
+                word2 = instructionCode[2];
+
+                Step step;
+                step.address = address + i;
+                if ((sequence & 0x1) != 0)
+                {
+                    // Texture fetches keep their destination where vertex fetches do; the
+                    // set-texture-state fetches write nothing.
+                    step.fetch = true;
+                    if (fetch.opcode < FetchOpcode::SetTextureLod)
+                    {
+                        step.fetchDest = fetch.dstRegister;
+                        for (uint32_t lane = 0; lane < 4; lane++)
+                        {
+                            if (((fetch.dstSwizzle >> (lane * 3)) & 0x7) != uint32_t(FetchDestinationSwizzle::Keep))
+                                step.fetchMask |= 1u << lane;
+                        }
+                    }
+                }
+                else
+                {
+                    step.alu = alu;
+                }
+                steps.push_back(step);
+            }
+        }
+    }
+
+    // The step that last wrote the lane of the temporary register before step 'at', or -1 when
+    // it is not an ALU vector result.
+    auto writer = [&](uint32_t reg, uint32_t lane, size_t at) -> ptrdiff_t
+        {
+            while (at-- > 0)
+            {
+                const Step& step = steps[at];
+                if (step.fetch)
+                {
+                    if (step.fetchDest == reg && ((step.fetchMask >> lane) & 0x1) != 0)
+                        return -1;
+                    continue;
+                }
+                const AluInstruction& alu = step.alu;
+                if (alu.exportData)
+                    continue;
+                if (!alu.vectorDestRelative && alu.vectorDest == reg && ((alu.vectorWriteMask >> lane) & 0x1) != 0)
+                    return ptrdiff_t(at);
+                if (!alu.scalarDestRelative && alu.scalarDest == reg && ((alu.scalarWriteMask >> lane) & 0x1) != 0)
+                    return -1;
+            }
+            return -1;
+        };
+
+    // Marks the dot product behind the lane of step 'at's vector result, through moves (the
+    // max of a register with itself).
+    std::function<void(size_t, uint32_t, uint32_t)> trace = [&](size_t at, uint32_t lane, uint32_t depth)
+        {
+            const AluInstruction& alu = steps[at].alu;
+            if (alu.vectorOpcode == AluVectorOpcode::Dp4 || alu.vectorOpcode == AluVectorOpcode::Dp3)
+            {
+                positionDots.insert(steps[at].address);
+                return;
+            }
+            const bool move = alu.vectorOpcode == AluVectorOpcode::Max && alu.src1Select && alu.src2Select &&
+                alu.src1Register == alu.src2Register && alu.src1Swizzle == alu.src2Swizzle &&
+                alu.src1Negate == alu.src2Negate && (alu.src1Register & 0x80) == 0;
+            if (!move || depth == 4)
+                return;
+            const uint32_t sourceLane = ((alu.src1Swizzle >> (lane * 2)) + lane) & 0x3;
+            const ptrdiff_t source = writer(alu.src1Register & 0x3F, sourceLane, at);
+            if (source >= 0)
+                trace(size_t(source), sourceLane, depth + 1);
+        };
+
+    for (size_t at = 0; at < steps.size(); at++)
+    {
+        const AluInstruction& alu = steps[at].alu;
+        if (steps[at].fetch || !alu.exportData || ExportRegister(alu.vectorDest) != ExportRegister::VSPosition)
+            continue;
+        const uint32_t mask = alu.vectorWriteMask & ~alu.scalarWriteMask;
+        for (uint32_t lane = 0; lane < 4; lane++)
+        {
+            if (((mask >> lane) & 0x1) != 0)
+                trace(at, lane, 0);
+        }
+    }
+}
+
 // N&B constants. Most of its shaders carry no constant table, so float constants are read by
 // register (g_C) over the full 256-register range of both stages, named constants become aliases
 // into it, samplers cover all 32 Xenos fetch slots, and bools test the unified register file.
@@ -2725,6 +2903,11 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
     }
 #endif
 
+#ifdef RENUT_RECOMP
+    if (!isPixelShader)
+        findPositionDots(code, instrSize);
+#endif
+
     if (simpleControlFlow)
     {
         out += '\n';
@@ -3038,9 +3221,12 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
                 }
                 else
                 {
+                #ifdef RENUT_RECOMP
+                    aluAddress = address + i;
+                #endif
                     recompile(alu);
                 }
-            
+
                 sequence >>= 2;
                 instructionCode += 3;
             }

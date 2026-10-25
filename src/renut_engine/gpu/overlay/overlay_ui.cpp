@@ -142,8 +142,10 @@ void TakeTextureRequests(ImDrawData *data) {
 // The window input queued since the last build, into the overlay's ImGui.
 void ApplyQueuedInput(ImGuiIO &io);
 
-// Whether the last built frame showed a window that takes input (WantsCursor).
+// Whether the last built frame showed a window that takes input (WantsCursor),
+// and its name (InputWindowName; UI thread).
 std::atomic<bool> g_wants_cursor{false};
+std::string g_input_window;
 
 // A shown top-level window that takes input; display-only ones (the FPS
 // overlay, NoInputs) and ImGui's implicit fallback window don't count.
@@ -155,8 +157,10 @@ bool AnyInputWindowShown() {
         std::strncmp(window->Name, "Debug##Default", 14) == 0) {
       continue;
     }
+    g_input_window = window->Name;
     return true;
   }
+  g_input_window.clear();
   return false;
 }
 
@@ -624,6 +628,10 @@ void RemoveDialog(Dialog *dialog) {
 
 bool WantsCursor() {
   return g_wants_cursor.load(std::memory_order_relaxed);
+}
+
+std::string InputWindowName() {
+  return g_input_window;
 }
 
 namespace {

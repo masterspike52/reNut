@@ -188,6 +188,8 @@ std::unique_ptr<plume::RenderPipeline> Build(const PipelineKey &key, const Pipel
     desc.depthEnabled = dc & 2;
     desc.depthWriteEnabled = dc & 4;
     desc.depthFunction = ConvertCompareFunction((dc >> 4) & 7);
+    desc.depthBias = key.depth_bias;
+    desc.depthBiasClamp = key.depth_bias_clamp;
     desc.stencilEnabled = dc & 1;
     desc.stencilReference = key.stencil_ref_mask & 0xFF;
     desc.stencilReadMask = (key.stencil_ref_mask >> 8) & 0xFF;
@@ -260,7 +262,7 @@ std::unique_ptr<plume::RenderPipeline> Build(const PipelineKey &key, const Pipel
 // bumps kListVersion; a file of another version is started over.
 
 constexpr char kListMagic[4] = {'R', 'N', 'P', 'L'};
-constexpr u32 kListVersion = 1;
+constexpr u32 kListVersion = 2;
 
 struct ListHeader {
   char magic[4];

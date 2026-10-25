@@ -1,0 +1,15 @@
+{
+  "bundle": "hamster_ball",
+  "models": [
+    {
+      "id": "hamster_ball",
+      "template": "wheel_standard",
+      "obj": "hamster_ball.obj",
+      "spins": true,
+      "collisionFit": "model",
+      "materials": { "cage": "aid_texture_banjox_shared_materials_metal_components_patterned_colour_0x0d4d03d5" },
+      "tint": { "shared_materials_metal_components_patterned_colour_0x0d4d03d5": "0.45,0.75,1.0" }
+    }
+  ],
+  "attach": [ { "template": "wheel_standard", "id": "hamster_ball" } ]
+}

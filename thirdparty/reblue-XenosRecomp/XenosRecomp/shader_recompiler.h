@@ -104,6 +104,10 @@ struct ShaderRecompiler : StringBuffer
         uint16_t offsetDwords;
     };
     std::vector<VertexInput> vertexInputs;
+    // Addresses of the dp4 / dp3 instructions whose results reach the position export, emitted
+    // as dotPrecise (see findPositionDots), and of the ALU instruction being recompiled.
+    std::unordered_set<uint32_t> positionDots;
+    uint32_t aluAddress = 0;
 #endif
 
 #ifdef REBLUE_RECOMP
@@ -127,6 +131,7 @@ struct ShaderRecompiler : StringBuffer
 
 #ifdef RENUT_RECOMP
     void recompileConstants(const uint8_t* shaderData);
+    void findPositionDots(const be<uint32_t>* code, uint32_t instrSize);
 #endif
 
     void recompile(const uint8_t* shaderData, const std::string_view& include);

@@ -29,8 +29,25 @@ uint64_t PlayerXuid();
 
 // Whether the game is in online multiplayer: it has an Xbox Live session (its
 // online menu's lobby, a match's setup or a match), from XSessionCreate until
-// XSessionDelete. Cheats are off then (hooks.cpp).
+// XSessionDelete. Cheats are off then unless the session's host allows them
+// (hooks.cpp, session_cheats.cpp).
 bool InSession();
+
+// In a session: whether player 1 hosts it (created it as host, or took it over
+// when the host left), and else the host's online ID (from the session info it
+// joined with or was given at the migration; empty when not known).
+bool HostingSession();
+std::string SessionHostId();
+
+// In a session: whether its host allows cheats (renut_host_cheats): player 1's
+// own setting when hosting, else what the host last answered (false until it
+// has). session_cheats.cpp.
+bool SessionAllowsCheats();
+// renut_host_cheats can be turned on: no session, or player 1 hosts it.
+bool CanAllowSessionCheats();
+// The session's host changed or the session ended: what an earlier host
+// answered no longer counts.
+void ForgetSessionCheats();
 
 // renut_online_trace: logs a Live call, its first six arguments and result.
 void TraceCall(std::string_view name, const uint32_t (&args)[6], uint32_t result);

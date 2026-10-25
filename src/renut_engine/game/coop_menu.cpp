@@ -13,10 +13,11 @@
  * sub_825A15E0(scene, 1): with a save it starts the game's online play,
  * player 1 hosting their party.
  *
- * After the game's items come the co-op ones:
- * - "Co-op: Host": online play starts as from Multiplayer, Online, and the
+ * After the game's items come the co-op ones, in capitals as the game's menu
+ * text is (a friend's name as they wrote it):
+ * - "CO-OP: HOST": online play starts as from Multiplayer, Online, and the
  *   session is co-op (online/coop.h): its matches take place in Showdown Town.
- * - "Co-op: Join <name>", one per online friend hosting co-op: the game joins
+ * - "CO-OP: JOIN <name>", one per online friend hosting co-op: the game joins
  *   that friend's session as if it had accepted an invite.
  */
 #include <rex/hook.h>
@@ -75,22 +76,22 @@ std::vector<Item> g_items;
 std::vector<Item> MakeItems() {
   std::vector<Item> items;
   if (!Enabled()) {
-    items.push_back({ItemKind::kOffline, "Co-op (go online first, F5)", kHostIcon, {}});
+    items.push_back({ItemKind::kOffline, "CO-OP (GO ONLINE FIRST, F5)", kHostIcon, {}});
     return items;
   }
-  items.push_back({ItemKind::kHost, "Co-op: Host", kHostIcon, {}});
+  items.push_back({ItemKind::kHost, "CO-OP: HOST", kHostIcon, {}});
   size_t joins = 0;
   for (const friends::Friend &f : friends::Friends()) {
     if (joins >= kMaxJoinItems)
       break;
     if (f.online && f.session.Valid() && f.session.coop) {
-      items.push_back({ItemKind::kJoin, "Co-op: Join " + (f.gamertag.empty() ? std::string("a friend") : f.gamertag),
+      items.push_back({ItemKind::kJoin, "CO-OP: JOIN " + (f.gamertag.empty() ? std::string("A FRIEND") : f.gamertag),
                        kJoinIcon, f.id});
       ++joins;
     }
   }
   if (!joins)
-    items.push_back({ItemKind::kNoHost, "Co-op: Join (no friend is hosting)", kJoinIcon, {}});
+    items.push_back({ItemKind::kNoHost, "CO-OP: JOIN (NO FRIEND IS HOSTING)", kJoinIcon, {}});
   return items;
 }
 

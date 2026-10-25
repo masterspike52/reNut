@@ -1,0 +1,8 @@
+{
+  "id": "hamster_ball",
+  "base": "wheels_standard",
+  "name": "Hamster Ball",
+  "count": 2,
+  "model": "hamster_ball",
+  "attach": "hamster_ball"
+}

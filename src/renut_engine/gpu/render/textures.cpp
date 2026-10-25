@@ -19,6 +19,8 @@
 #include "renut_engine/gpu/guest/guest_memory.h"
 #include "renut_engine/gpu/log.h"
 #include "renut_engine/gpu/render/graphics_options.h"
+#include "renut_engine/gpu/render/menu_colour.h"
+#include "renut_engine/gpu/render/title_logo.h"
 #include "renut_engine/gpu/render/parallel.h"
 #include "renut_engine/gpu/backend/video.h"
 
@@ -315,12 +317,20 @@ struct LevelSource {
   uint32_t x_blocks = 0, y_blocks = 0, z_offset = 0;  // offset inside a packed tail
 };
 
+// A texture that may be one of the menus' panels (menu_colour.h): BC2, 2D,
+// one level.
+bool MenuPanelCandidate(const HostTexture &t) {
+  return t.info.host == plume::RenderFormat::BC2_UNORM && t.mip_levels == 1 &&
+         t.dimension == TextureDimension::Tex2D && !t.stacked && !t.render_target;
+}
+
 // Untiles/copies one subresource (level, slice) into 'dst' rows of host blocks.
 // Tiled rows are copied a run of blocks at a time where the tiling keeps
-// them together, as the game's UntileSurface does.
+// them together, as the game's UntileSurface does. 'menu_panel': a
+// MenuPanelCandidate, recoloured when it is a panel.
 void ReadLevel(const TextureFormatInfo &info, const TextureFetch &fetch, const LevelSource &src,
                uint32_t blocks_w, uint32_t blocks_h, uint32_t depth, uint8_t *dst,
-               uint32_t dst_row_pitch, uint32_t dst_slice_pitch) {
+               uint32_t dst_row_pitch, uint32_t dst_slice_pitch, bool menu_panel) {
   const uint32_t gbpb = info.guest_block_bytes;
   const uint32_t hbpb = info.host_block_bytes;
   const uint32_t bpb_log2 = uint32_t(std::countr_zero(gbpb));
@@ -358,6 +368,9 @@ void ReadLevel(const TextureFormatInfo &info, const TextureFetch &fetch, const L
         ConvertTexels(info.conversion, row.data(), out, blocks_w);
     }
   }
+  // BC2 one-level 2D textures are also where the game's title logo is.
+  if (menu_panel && !ReplaceTitleLogo(dst, blocks_w, blocks_h, dst_row_pitch))
+    RecolourMenuPanel(dst, blocks_w, blocks_h, dst_row_pitch);
 }
 
 // Staging data read from guest memory at submission rather than at the draw,
@@ -369,6 +382,7 @@ struct PendingFill {
   uint32_t blocks_w, blocks_h, depth;
   uint8_t *dst;
   uint32_t row_pitch, slice_pitch;
+  bool menu_panel;
 };
 std::vector<PendingFill> g_pending_fills;
 
@@ -391,6 +405,8 @@ bool Upload(HostTexture &t, const TextureFetch &fetch, bool defer_read) {
   // layer (StackedLayers) repeats its last one.
   const uint32_t slices = is_3d_data ? 1 : t.stacked ? StackedLayers(t) : t.depth;
   const uint32_t bs = t.info.block_size;
+  const bool menu_panel = MenuPanelCandidate(t);
+  t.menu_colour = MenuColourGeneration();
   for (uint32_t level = 0; level < t.mip_levels; ++level) {
     const uint32_t w = std::max(1u, t.width >> level);
     const uint32_t h = std::max(1u, t.height >> level);
@@ -426,9 +442,10 @@ bool Upload(HostTexture &t, const TextureFetch &fetch, bool defer_read) {
         return false;
       auto *dst = static_cast<uint8_t *>(staging.cpu);
       if (defer_read)
-        g_pending_fills.push_back({t.info, fetch, src, blocks_w, blocks_h, d, dst, row_pitch, slice_pitch});
+        g_pending_fills.push_back(
+            {t.info, fetch, src, blocks_w, blocks_h, d, dst, row_pitch, slice_pitch, menu_panel});
       else
-        ReadLevel(t.info, fetch, src, blocks_w, blocks_h, d, dst, row_pitch, slice_pitch);
+        ReadLevel(t.info, fetch, src, blocks_w, blocks_h, d, dst, row_pitch, slice_pitch, menu_panel);
       // Footprints are in texels, block-aligned for compressed formats. Decoded
       // blocks are plain texels, so a level smaller than a block (a small mip)
       // takes only its own part of the decoded block.
@@ -878,7 +895,7 @@ void FlushTextureFillsLocked() {
     for (size_t i = begin; i < end; ++i) {
       const PendingFill &f = g_pending_fills[i];
       ReadLevel(f.info, f.fetch, f.src, f.blocks_w, f.blocks_h, f.depth, f.dst, f.row_pitch,
-                f.slice_pitch);
+                f.slice_pitch, f.menu_panel);
     }
   });
   g_pending_fills.clear();
@@ -1001,6 +1018,9 @@ TextureBinding BindUncached(u32 texture_va, const TextureFetch &device_fetch,
     CopyDepthWords(t, *depth_source);
   } else if (!t.gpu_written && t.checked_frame != g_frame) {
     t.checked_frame = g_frame;
+    // The menus' panel colour changed since it was uploaded.
+    if (t.menu_colour != MenuColourGeneration() && MenuPanelCandidate(t))
+      t.uploaded = false;
     if (!fetch.Tiled()) {
       RefreshLinearLocked(t, fetch);
     } else {

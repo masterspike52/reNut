@@ -58,6 +58,8 @@ struct PipelineKey {
   uint32_t stencil_ref_mask;
   uint32_t stencil_ref_mask_bf;
   uint32_t mode_control;
+  int32_t depth_bias;             // host DepthBias and DepthBiasClamp for the
+  float depth_bias_clamp;         // guest's polygon offset (MakeKey)
   uint32_t alpha_to_coverage;
   uint32_t per_instance_streams;  // tessellated draws: vertex streams are per instance
   uint32_t rectangle_list;        // triangle list expanded by rectangle_list_gs

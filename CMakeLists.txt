@@ -35,12 +35,16 @@ set(RENUT_SOURCES
 	src/renut_engine/game/effect_log.cpp
 	src/renut_engine/game/mod_bundles.cpp
 	src/renut_engine/game/part_attach_log.cpp
+	src/renut_engine/game/vehicle_limits.cpp
+	src/renut_engine/game/status_dials.cpp
+	src/renut_engine/game/notes.cpp
 	src/renut_engine/online/identity.cpp
 	src/renut_engine/online/coop.cpp
 	src/renut_engine/online/trace.cpp
 	src/renut_engine/online/eos.cpp
 	src/renut_engine/online/friends.cpp
 	src/renut_engine/online/sessions.cpp
+	src/renut_engine/online/session_cheats.cpp
 	src/renut_engine/online/qos.cpp
 	src/renut_engine/online/transport.cpp
 	src/renut_engine/app/crash_dump.cpp

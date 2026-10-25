@@ -84,7 +84,7 @@ public:
             ImGui::Spacing();
             DrawPathRow("User Data Root", "##user_data", user_data_buf_);
             ImGui::Spacing();
-            DrawPathRow("Update Data Root (opt.)", "##update_data", update_data_buf_);
+            DrawPathRow("Update Data Root", "##update_data", update_data_buf_);
 
             ImGui::Spacing();
             ImGui::Separator();

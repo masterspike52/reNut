@@ -764,8 +764,15 @@ bool InCoopMatch(const uint8_t *base) {
 
 constexpr uint32_t kNoPlayer = 0xFFFFFFFF;
 
-// Player 1's player index (kNoPlayer: none).
+// Game thread: player 1's index in the session while a co-op challenge has
+// numbered it 0 as single player does (sub_822859F0 hook); kNoPlayer when not.
+uint32_t g_session_index = kNoPlayer;
+
+// Player 1's player index in the session (kNoPlayer: none): what the other
+// games know it by, also while a challenge has it numbered 0.
 uint32_t LocalPlayerIndex(PPCContext &ctx, uint8_t *base) {
+  if (g_session_index != kNoPlayer)
+    return g_session_index;
   const uint32_t player = Load32(base, kPlayers);
   if (!player)
     return kNoPlayer;
@@ -917,6 +924,7 @@ void Leave() {
     g_joiners.clear();
     g_scenes.clear();
   }
+  g_session_index = kNoPlayer;
   friends::SetCoopHosting(false, 0);
   RONL_INFO("co-op: left");
 }
@@ -1211,12 +1219,17 @@ REX_HOOK_RAW(sub_824FDC38) {
   __imp__sub_824FDC38(ctx, base);
 }
 
-// Back to no challenge (state 0): player 1's challenge group is over.
+void RestoreSessionIndex(PPCContext &ctx, uint8_t *base);
+
+// Back to no challenge (state 0): player 1's challenge group is over, and
+// player 1 has its session index again.
 REX_EXTERN(__imp__sub_824FEDD8);
 REX_HOOK_RAW(sub_824FEDD8) {
   coop::OfflineChallenge offline(base);
   const uint32_t state = ctx.r4.u32;
   __imp__sub_824FEDD8(ctx, base);
+  if (state == 0)
+    RestoreSessionIndex(ctx, base);
   if (state == 0 && coop::CurrentRole() != coop::Role::kNone) {
     std::lock_guard lock(g_mutex);
     g_group = {};
@@ -1287,18 +1300,24 @@ REX_HOOK_RAW(sub_824FE248) {
     HoldReady(base, man);
 }
 
-// void sub_822859F0(player, index): gives a player its player index (the map
-// sub_82285DC8 reads; a player not in it reads 0). A single-player challenge
-// start (challengeManBegin) numbers its players from 0: player 1, then the
+// void sub_822859F0(player, index): gives a player its player index (the
+// local players' map, 0x82E1B240, that sub_82285DC8 reads first; the remote
+// players' is 0x82E1B260; a player in neither reads 0). An index or player
+// already in the local map clears it first. A single-player challenge start
+// (challengeManBegin) numbers its players from 0: player 1, then the
 // "BanjoHolder" players (0x82E1B2D4) that fill its other slots up to the
 // challenge's player count (its record's + 124, 7 for a race: its CPU
-// racers), each matched to its start markers by index. In co-op player 1
-// keeps its index in the session (a joiner's is not 0: it would take the
-// host's); the holders are still numbered, the one that would take player
-// 1's index taking 0 instead. Left unnumbered they all read 0, and each
-// spawned a Banjo at the same start (renut_014: six Banjos, the racers left
-// out). An index or player already in the map starts it again (the old one
-// is only looked in afterwards), so player 1's index is put back when gone.
+// racers). The challenge's code takes index and slot (dword_82E1B280, by
+// sub_8221A350) to be the same: index 0 is the player's own start, character
+// and vehicle, and per-player tables are looked up by either (the race
+// checkpoints, sub_823E5DD8 → sub_82512898, by slot). So in co-op too player 1
+// takes index 0 for the challenge (an earlier way kept its session index and
+// gave 0 to a holder: that holder took the player's Banjo and vehicle, player
+// 1 a CPU racer's start, and the checkpoints read a table entry that wasn't
+// there: renut_022). The remote players' indices are in their own map, so
+// nothing clashes; reNut's own co-op code keeps using player 1's session
+// index (LocalPlayerIndex), which goes back in the map when the challenge is
+// over (challengeManSetState 0, RestoreSessionIndex).
 REX_EXTERN(__imp__sub_822859F0);
 REX_HOOK_RAW(sub_822859F0) {
   if (!(g_offline_depth > 0 && g_hidden_multiplayer)) {
@@ -1307,29 +1326,33 @@ REX_HOOK_RAW(sub_822859F0) {
   }
   const uint32_t player1 = Load32(base, kPlayers);
   const uint32_t player = ctx.r3.u32;
-  const uint32_t wanted = ctx.r4.u32;
-  if (!player1 || player == player1)
-    return;
-  uint32_t own;
-  {
+  const uint32_t index = ctx.r4.u32;
+  if (player1 && player == player1 && g_session_index == kNoPlayer) {
     rex::CallFrame frame(ctx);
-    own = PlayerIndex(frame, base, player1);
+    g_session_index = PlayerIndex(frame, base, player1);
+    RONL_INFO("co-op: player 1 takes index {} for the challenge (session index {} until it's over)", index,
+              g_session_index);
   }
-  const uint32_t index = wanted == own ? 0 : wanted;
-  ctx.r3.u64 = player;
-  ctx.r4.u64 = index;
   __imp__sub_822859F0(ctx, base);
-  uint32_t now;
-  {
-    rex::CallFrame frame(ctx);
-    now = PlayerIndex(frame, base, player1);
-  }
-  if (now != own) {
-    ctx.r3.u64 = player1;
-    ctx.r4.u64 = own;
-    __imp__sub_822859F0(ctx, base);
-  }
-  RONL_INFO("co-op: challenge player {:08X} gets index {} (player 1 keeps {})", player, index, own);
+  if (player != player1)
+    RONL_INFO("co-op: challenge player {:08X} gets index {}", player, index);
+}
+
+// Player 1's session index back in the map after a co-op challenge numbered
+// it 0 (the map is cleared for it: the challenge's holders go with it).
+void RestoreSessionIndex(PPCContext &ctx, uint8_t *base) {
+  if (g_session_index == kNoPlayer)
+    return;
+  const uint32_t index = g_session_index;
+  g_session_index = kNoPlayer;
+  const uint32_t player1 = Load32(base, kPlayers);
+  if (!player1)
+    return;
+  rex::CallFrame frame(ctx);
+  frame.ctx.r3.u64 = player1;
+  frame.ctx.r4.u64 = index;
+  __imp__sub_822859F0(frame.ctx, base);
+  RONL_INFO("co-op: the challenge is over: player 1 has session index {} again", index);
 }
 
 // void sub_8243E2C8(mind, avatar): a player avatar's mind (entityMindPlayer)

@@ -5,15 +5,16 @@
 #include "renut_engine/online/coop.h"
 #include "renut_engine/online/online.h"
 
-// Cheats are off in online multiplayer: while the game has a session
-// (renut::online::InSession) they cannot be turned on, and those already on do
-// nothing.
+// Cheats are off in online multiplayer and co-op unless the session's host
+// allows them (renut_host_cheats, online/session_cheats.cpp): while the game
+// has a session (renut::online::InSession) they cannot be turned on, and
+// those already on do nothing.
 static bool CheatsAllowed() {
-    return !renut::online::InSession();
+    return !renut::online::InSession() || renut::online::SessionAllowsCheats();
 }
 
 // A cheat's new value: turning one off is always allowed, turning one on only
-// outside multiplayer.
+// outside multiplayer or in a session whose host allows cheats.
 static bool CheatValueAllowed(std::string_view value) {
     return CheatsAllowed() || (value != "true" && value != "1");
 }
@@ -29,27 +30,27 @@ static bool VehicleCheatValueAllowed(std::string_view value) {
 }
 
 // Name = "Showdown Town Vehicles"
-REXCVAR_DEFINE_BOOL(change_vehicles_anywhere, false, "Nuts&Bolts/Cheats", "Enables Changing Vehicles Anywhere. Off in online multiplayer, but for co-op.")
+REXCVAR_DEFINE_BOOL(change_vehicles_anywhere, false, "Nuts&Bolts/Cheats", "Enables Changing Vehicles Anywhere. Off in online multiplayer unless the host allows cheats, always on in co-op.")
 .validator(VehicleCheatValueAllowed);
 // Name = "No Notes Spent"
-REXCVAR_DEFINE_BOOL(no_notes_spent, false, "Nuts&Bolts/Cheats", "hook created by serenity. Off in online multiplayer.")
+REXCVAR_DEFINE_BOOL(no_notes_spent, false, "Nuts&Bolts/Cheats", "hook created by serenity. Off in online multiplayer and co-op unless the host allows cheats.")
 .validator(CheatValueAllowed);
 // Name = "Disable LOD"
 REXCVAR_DEFINE_BOOL(disable_lod, false, "Nuts&Bolts/Graphics", "Disables LOD (Level of Detail) scaling");
 // Name = "Infinite Fuel and Ammo"
-REXCVAR_DEFINE_BOOL(infinite_fuel_and_ammo, false, "Nuts&Bolts/Cheats", "fuel never decreases. Off in online multiplayer.")
+REXCVAR_DEFINE_BOOL(infinite_fuel_and_ammo, false, "Nuts&Bolts/Cheats", "fuel never decreases. Off in online multiplayer and co-op unless the host allows cheats.")
 .validator(CheatValueAllowed);
 // Name = "Infinite Health"
-REXCVAR_DEFINE_BOOL(infinite_health, false, "Nuts&Bolts/Cheats", "health never decreases. Off in online multiplayer.")
+REXCVAR_DEFINE_BOOL(infinite_health, false, "Nuts&Bolts/Cheats", "health never decreases. Off in online multiplayer and co-op unless the host allows cheats.")
 .validator(CheatValueAllowed);
 // Name = "Infinite Parts"
-REXCVAR_DEFINE_BOOL(infinite_parts, false, "Nuts&Bolts/Cheats", "vehicle parts never decreases. Off in online multiplayer.")
+REXCVAR_DEFINE_BOOL(infinite_parts, false, "Nuts&Bolts/Cheats", "vehicle parts never decreases. Off in online multiplayer and co-op unless the host allows cheats.")
 .validator(CheatValueAllowed);
 // Name = "Banjo Skins"
 REXCVAR_DEFINE_STRING(banjo_skin, "default", "Nuts&Bolts/Skins", "Banjo skin override")
 .allowed({ "default", "robot", "tuxedo" });
 // Name = "Max Acquired Parts Access"
-REXCVAR_DEFINE_BOOL(max_acquired_parts_access, false, "Nuts&Bolts/Cheats", "Allows max acquired vehicle parts. Off in online multiplayer.")
+REXCVAR_DEFINE_BOOL(max_acquired_parts_access, false, "Nuts&Bolts/Cheats", "Allows max acquired vehicle parts. Off in online multiplayer and co-op unless the host allows cheats.")
 .validator(CheatValueAllowed);
 
 

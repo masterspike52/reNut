@@ -136,6 +136,9 @@ struct VideoState {
   // Swapchain; present semaphores are per swapchain image (a binary semaphore
   // can only be re-signalled once its image has been re-acquired).
   std::unique_ptr<plume::RenderSwapChain> swap_chain;
+  // The swapchain was made with present wait: each frame waits for the one
+  // before last to reach the display (PresentLocked).
+  bool present_wait = false;
   std::vector<std::unique_ptr<plume::RenderFramebuffer>> swap_framebuffers;
   std::vector<std::unique_ptr<plume::RenderCommandSemaphore>> present_semaphores;
   std::atomic<bool> resize_requested{false};

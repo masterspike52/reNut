@@ -289,6 +289,11 @@ constexpr u32 kDeviceOffsetVertexShader = 0x31A0;       // SetVertexShader
 constexpr u32 kDeviceOffsetTessellationControl = 0x2978;
 constexpr u32 kDeviceOffsetMaxTessellationLevel = 0x297C;
 constexpr u32 kDeviceOffsetMinTessellationLevel = 0x2980;
+// In m_PointPacket: the float PA_SU_POLY_OFFSET_FRONT_OFFSET / BACK_OFFSET
+// (SetRenderState_DepthBias 0x821CAFA8 stores the bias in both and enables
+// them with PA_SU_SC_MODE_CNTL bits 11 and 12).
+constexpr u32 kDeviceOffsetDepthBiasFront = 0x2A54;
+constexpr u32 kDeviceOffsetDepthBiasBack = 0x2A5C;
 // Tile predication mask of the draws that follow, ~0 for none
 // (D3DDevice_SetPredication 0x821F9A48 and SetCommandBufferPredication).
 // Bits 2i and 2i+1 run the commands in tile i's pass of predicated tiling (Z

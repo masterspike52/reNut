@@ -89,6 +89,9 @@ struct HostTexture {
   bool dynamic = false;        // changes all the time (movie frames)
   uint32_t changes = 0;        // checks in a row that saw the content change
   uint64_t verified_frame = 0; // last periodic full check
+  // MenuColourGeneration at the last upload: a menu panel candidate
+  // (MenuPanelCandidate) is uploaded again when the panels' colour changes.
+  uint32_t menu_colour = 0;
   // What SampleHash / ContentHash read: the base level's and the mip chain's
   // first page and extent in bytes, fixed by desc, worked out at the first check.
   bool sample_known = false;

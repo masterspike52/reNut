@@ -13,7 +13,7 @@
  * Every record takes a new entry through padStatePush (sub_821CB628). The game
  * reads player 1's input from his port's record:
  * - in play, through his input device (inputDeviceCreatePlayerPad, type 3),
- *   whose update copies g_padInputs[player + 108]'s current entry into its own
+ *   whose update copies g_padInputs[player + 128]'s current entry into its own
  *   record (inputDeviceUpdatePlayerPad); the game reads the device's record,
  *   button bits inline, everywhere;
  * - before there is a player (title, menus), from the ports' records directly
@@ -59,6 +59,7 @@
 #include <cstdint>
 #include <cstring>
 #include <string>
+#include <utility>
 
 #include "renut_engine/game/mouse_camera.h"
 #include "renut_engine/gpu/overlay/overlay_ui.h"
@@ -103,7 +104,9 @@ constexpr uint32_t kPadPortBits = 0x821051D8;     // g_padPortBits[port]
 constexpr uint32_t kPlayerProfiles = 0x82E1B280;  // dword_82E1B280[player]: player slots
 constexpr uint32_t kPorts = 4;
 constexpr uint32_t kPadRecord = 52;               // g_padInputs[port] + 52: the port's record
-constexpr uint32_t kPlayerPort = 108;             // player slot + 108: his port
+// Player slot + 128: his port (TU3; 108 before it). sub_821DD268 finds the
+// player of a port by it.
+constexpr uint32_t kPlayerPort = 128;
 constexpr uint32_t kEntrySize = 40;
 
 // Pad entry buttons (XINPUT_GAMEPAD, plus the triggers).
@@ -186,6 +189,7 @@ public:
     window_ = window;
     window->AddInputListener(this, kZOrder);
     window->AddListener(this);
+    RNUT_INFO("Keyboard: listening to the game window");
   }
 
   void Detach() {
@@ -199,7 +203,15 @@ public:
 
   rex::ui::Window *window() const { return window_; }
 
-  void OnKeyDown(rex::ui::KeyEvent &e) override { Set(e.virtual_key(), true); }
+  void OnKeyDown(rex::ui::KeyEvent &e) override {
+    if (!std::exchange(first_key_logged_, true)) {
+      const std::string window = renut::gpu::overlay::InputWindowName();
+      RNUT_INFO("Keyboard: first key {} (renut_keyboard {}{}{})", int(e.virtual_key()),
+                REXCVAR_GET(renut_keyboard) ? "on" : "off",
+                window.empty() ? "" : "; taken by the overlay window ", window);
+    }
+    Set(e.virtual_key(), true);
+  }
   void OnKeyUp(rex::ui::KeyEvent &e) override { Set(e.virtual_key(), false); }
 
   // Before the mouse camera's listener: the click that captures the mouse
@@ -261,6 +273,7 @@ private:
 
   rex::ui::Window *window_ = nullptr;
   std::bitset<256> held_;
+  bool first_key_logged_ = false;
 };
 
 KeyboardListener g_listener;

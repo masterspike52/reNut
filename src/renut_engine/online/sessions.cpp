@@ -16,7 +16,9 @@
 #include <algorithm>
 #include <atomic>
 #include <cstring>
+#include <mutex>
 #include <random>
+#include <string>
 
 #include <rex/hook.h>
 #include <rex/system/kernel_state.h>
@@ -76,6 +78,29 @@ void Store32(uint8_t *base, uint32_t va, uint32_t value) {
 // the same handle, so they are counted rather than told apart.
 std::atomic<int> g_sessions{0};
 
+// Who hosts the sessions: player 1 (it created one as host, or took them over
+// when the host left), else the player whose XNADDR the session info named.
+std::atomic<bool> g_hosting{false};
+std::mutex g_host_mutex;
+std::string g_host_id;  // under g_host_mutex
+
+void SetHost(bool hosting, const std::string &id) {
+  bool changed;
+  {
+    std::lock_guard lock(g_host_mutex);
+    changed = g_hosting.load() != hosting || g_host_id != id;
+    g_hosting = hosting;
+    g_host_id = id;
+  }
+  if (!changed)
+    return;
+  ForgetSessionCheats();
+  if (hosting)
+    RONL_INFO("Online: this player hosts the session");
+  else if (!id.empty())
+    RONL_INFO("Online: the session's host is {}", id);
+}
+
 std::mt19937_64 &Random() {
   static std::mt19937_64 random(std::random_device{}());
   return random;
@@ -101,6 +126,17 @@ void Succeed(PPCContext &ctx, uint32_t overlapped) {
 
 bool renut::online::InSession() {
   return g_sessions.load() > 0;
+}
+
+bool renut::online::HostingSession() {
+  return InSession() && g_hosting.load();
+}
+
+std::string renut::online::SessionHostId() {
+  if (!InSession())
+    return {};
+  std::lock_guard lock(g_host_mutex);
+  return g_hosting.load() ? eos::OwnId() : g_host_id;
 }
 
 // DWORD XSessionLeaveLocal(HANDLE session, DWORD count, const DWORD *users,
@@ -155,6 +191,9 @@ REX_HOOK_RAW(rex_XSessionMigrateHost) {
     const friends::XnAddr own = OwnXnAddr();
     std::memcpy(base + info + kInfoAddressOffset, own.data(), own.size());
     RONL_INFO("Online: the host left; this player hosts the session now");
+    SetHost(true, {});
+  } else if (info) {
+    SetHost(false, xnaddr::IdOf(base + info + kInfoAddressOffset));
   }
   Succeed(ctx, ctx.r6.u32);
   TraceCall("XSessionMigrateHost", args, ctx.r3.u32);
@@ -174,7 +213,14 @@ REX_HOOK_RAW(sub_82C51750) {
   TraceCall("XSessionCreate", args, ctx.r3.u32);
   if (ctx.r3.u32 == X_ERROR_SUCCESS || ctx.r3.u32 == X_ERROR_IO_PENDING) {
     if (g_sessions.fetch_add(1) == 0)
-      RONL_INFO("Online: in a multiplayer session: cheats are off until it ends");
+      RONL_INFO("Online: in a multiplayer session: cheats are off unless its host allows them");
+    // Its host: player 1, or the player the session info (joined by) names.
+    // A session joined after hosting one (the game hosts its match setup's)
+    // keeps player 1 the host.
+    if (flags & kCreateHost)
+      SetHost(true, {});
+    else if (info && !g_hosting.load())
+      SetHost(false, xnaddr::IdOf(base + info + kInfoAddressOffset));
   }
   if (!Enabled() || !(flags & kCreateHost) || !info)
     return;
@@ -219,8 +265,10 @@ REX_HOOK_RAW(rex_XSessionDelete) {
   int sessions = g_sessions.load();
   while (sessions > 0 && !g_sessions.compare_exchange_weak(sessions, sessions - 1)) {
   }
-  if (sessions == 1)
+  if (sessions == 1) {
     RONL_INFO("Online: the last multiplayer session ended: cheats are allowed again");
+    SetHost(false, {});
+  }
   // The SDK gives every session the same handle: any deletion ends hosting
   // until the game hosts again.
   if (Enabled())

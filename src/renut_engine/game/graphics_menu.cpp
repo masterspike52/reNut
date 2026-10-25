@@ -29,7 +29,8 @@
  * A list's rows are 3024-byte records (+ 8: column 0's text, wchar_t[128],
  * then + 268 = 0, + 272 its length), filled when shown while + 3016 is 0.
  *
- * Here Display Settings gets a row under its last, GRAPHICS: a button made at
+ * Here the big font row is hidden (it has its init's hide arg) and Display
+ * Settings gets a row under contrast, GRAPHICS: a button made at
  * init with Game Information's menu item visual (list_pause_menu_item, its
  * text set by XM_SET_TEXT 0x7E0), linked into the navigation, the rows
  * respaced to fit the box. A on it opens Game Information the way the host
@@ -43,7 +44,8 @@
  * code only (its press handler or its update), never from the page's: the
  * switch destroys the page. Display Settings' name, text key
  * pause_displaysettings (the pause tab's title and the main menu's entry,
- * looked up by sub_825D7F28), reads Display/Graphics.
+ * looked up by sub_825D7F28), reads DISPLAY/GRAPHICS (capitals, as the
+ * game's menu text is).
  */
 #include <rex/cvar.h>
 #include <rex/hook.h>
@@ -106,7 +108,7 @@ REX_IMPORT(__imp__sub_823B2130, ListInsertItems, u32(u32, u32));          // (li
 REX_IMPORT(__imp__sub_824FC1B8, ElementShow, u32(u32, u32));              // XM 0x12
 REX_IMPORT(__imp__sub_823B26F0, ElementEnable, u32(u32, u32));            // XM_SET_ENABLE
 REX_IMPORT(__imp__sub_8254B0F0, SetNavUpDown, void(u32, u32, u32));       // (h, NavUp id, NavDown id)
-REX_IMPORT(__imp__sub_8254B1A8, MakeLabelMessage, void(u32, u32, u32, u32, u32, u32));  // (msg, data, 0, 0, 0, text)
+REX_IMPORT(__imp__sub_8254B1A8, MakeLabelMessage, void(u32, u32, u32));  // (msg, data, text)
 REX_IMPORT(__imp__sub_82A25808, XuiImageElementSetImagePath, u32(u32, u32));
 REX_IMPORT(__imp__sub_8254B058, AddAssetTexture, u32(u32, u32, u32, u32));  // (texture asset, name, HXUITEX *, 0)
 REX_IMPORT(__imp__gameAssetRefGetAid, GameAssetRefGetAid, u32(u32, u32, u32));
@@ -180,7 +182,7 @@ constexpr uint32_t kMainBackKey = kKeyBack;
 
 // Display Settings' name (the pause tab's title, the main menu's entry).
 constexpr const char kDisplayNameKey[] = "pause_displaysettings";
-constexpr const char kDisplayName[] = "Display/Graphics";
+constexpr const char kDisplayName[] = "DISPLAY/GRAPHICS";
 
 // The TV on GRAPHICS, by the row's height: as big and as far in as the
 // sliders' icons. XuiImage SizeMode 0x10: stretched to fit, aspect kept,
@@ -540,7 +542,7 @@ void AddGraphicsRow(PPCContext &ctx, uint8_t *base, uint32_t page) {
   // XuiControlSetText's message.
   const uint32_t message = g.Alloc(0x20);
   const uint32_t data = g.Alloc(0x30);
-  MakeLabelMessage(f, base, message, data, 0, 0, 0, Wide(base, kTitle));
+  MakeLabelMessage(f, base, message, data, Wide(base, kTitle));
   XuiSendMessage(f, base, row, message);
   // The visual takes its icon from a list's second column, which a button
   // doesn't have: the TV is an image of its own on the button, where the
@@ -700,8 +702,20 @@ void SetConfigPath(const std::filesystem::path &path) { g_config_path = path; }
 
 }  // namespace renut::graphics_menu
 
+// The init's args (r4: three words, kept at + 224, + 228, + 232): the third
+// set hides the big font row (LARGE DIALOGUE TEXT), as the game does when it
+// asks: the init then hides its button, tick and tick box and leaves them
+// unset. The game's args are left alone; the init reads a copy.
 REX_HOOK_RAW(sub_82560958) {
   const uint32_t page = ctx.r3.u32;
+  static uint32_t args = 0;
+  if (!args)
+    args = REX_KERNEL_MEMORY()->SystemHeapAlloc(12);
+  if (args && ctx.r4.u32) {
+    std::memcpy(base + args, base + ctx.r4.u32, 8);
+    Store32(base, args + 8, 1);
+    ctx.r4.u64 = args;
+  }
   __imp__sub_82560958(ctx, base);
   AddGraphicsRow(ctx, base, page);
 }

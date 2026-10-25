@@ -581,6 +581,39 @@ float rsqf(float value)
     return isinf(result) ? 0.0 : result;
 }
 
+// A dot product rounded about once, for the dot products of the position (findPositionDots in
+// shader_recompiler.cpp): each product's rounding error is found exactly by Dekker's split
+// (no float fma in HLSL), and the sum's are carried beside it. 'precise' keeps the compiler
+// and driver from contracting or reordering it away.
+float dotPrecise(float4 a, float4 b)
+{
+    precise float sum = 0.0;
+    precise float error = 0.0;
+    [unroll] for (uint i = 0; i < 4; i++)
+    {
+        precise float product = a[i] * b[i];
+        precise float aSplit = a[i] * 4097.0;
+        precise float aHigh = aSplit - (aSplit - a[i]);
+        precise float aLow = a[i] - aHigh;
+        precise float bSplit = b[i] * 4097.0;
+        precise float bHigh = bSplit - (bSplit - b[i]);
+        precise float bLow = b[i] - bHigh;
+        precise float productError = ((aHigh * bHigh - product) + aHigh * bLow + aLow * bHigh) + aLow * bLow;
+        precise float total = sum + product;
+        precise float carried = total - sum;
+        error += ((sum - (total - carried)) + (product - carried)) + productError;
+        sum = total;
+    }
+    precise float result = sum + error;
+    // Huge operands overflow the split.
+    return isfinite(result) ? result : dot(a, b);
+}
+
+float dotPrecise(float3 a, float3 b)
+{
+    return dotPrecise(float4(a, 0.0), float4(b, 0.0));
+}
+
 // Xenos alpha test (fixed-function in the ROP): RB_COLORCONTROL ALPHA_FUNC, 0 NEVER, 1 LESS,
 // 2 EQUAL, 3 LEQUAL, 4 GREATER, 5 NOTEQUAL, 6 GEQUAL, 7 ALWAYS. The host passes 7 when the
 // test is disabled. Arguments rather than globals: the cbuffer is declared after this file.
