@@ -639,24 +639,30 @@ void alphaTest(float alpha, uint func, float reference)
 // some shaders without a vertex declaration read their stream by vertex index. The fetch reads the
 // host's per-draw copy of the fetch constant's buffer, applies its endian swap and decodes the format.
 
-uint loadVertexFetchData(uint byteOffset)
+// The four dwords from byteOffset (dword-aligned), in one load.
+uint4 loadVertexFetchData4(uint byteOffset)
 {
 #ifdef __spirv__
-    return vk::RawBufferLoad<uint>(g_VertexFetchDataAddress + byteOffset, 4);
+    return vk::RawBufferLoad<uint4>(g_VertexFetchDataAddress + byteOffset, 4);
 #else
-    return g_VertexFetchData.Load(byteOffset);
+    return g_VertexFetchData.Load4(byteOffset);
 #endif
 }
 
-uint vfetchSwap(uint value, uint endian)
+// The fetch endian swap (0 none, 1 8in16, 2 8in32, 3 16in32), branch-free on whole dwords:
+// 8in32 is 8in16 followed by 16in32. Intel's compiler (IGC) lowered the per-mode branches with
+// byte-granular 8in32 swap to in-place byte moves that read bytes they had already overwritten
+// ([b0,b1,b1,b0] rather than [b3,b2,b1,b0]), so vertices decoded to NaN positions and garbage
+// UVs on Intel GPUs (D3D12 and Vulkan alike). Masks rather than branches give it nothing to
+// lower that way.
+uint4 vfetchSwap(uint4 value, uint endian)
 {
-    if (endian == 1) // 8in16
-        value = ((value & 0x00FF00FF) << 8) | ((value >> 8) & 0x00FF00FF);
-    else if (endian == 2) // 8in32
-        value = (value << 24) | ((value << 8) & 0x00FF0000) | ((value >> 8) & 0x0000FF00) | (value >> 24);
-    else if (endian == 3) // 16in32
-        value = (value << 16) | (value >> 16);
-    return value;
+    uint swap8 = (endian == 1u || endian == 2u) ? 0xFFFFFFFFu : 0u;
+    uint swap16 = (endian == 2u || endian == 3u) ? 0xFFFFFFFFu : 0u;
+    uint4 swapped8 = ((value & 0x00FF00FFu) << 8) | ((value >> 8) & 0x00FF00FFu);
+    value = (swapped8 & swap8) | (value & ~swap8);
+    uint4 swapped16 = (value << 16) | (value >> 16);
+    return (swapped16 & swap16) | (value & ~swap16);
 }
 
 // One packed integer component: signed/unsigned, normalized ("fraction") or integer.
@@ -686,11 +692,8 @@ float4 vfetchMemory(uint slot, float indexValue, bool roundIndex, int offsetDwor
     uint address = (slot & ~0x3u) + uint(index * int(strideDwords) + offsetDwords) * 4u;
     uint endian = slot & 0x3u;
 
-    uint4 w;
-    w.x = vfetchSwap(loadVertexFetchData(address), endian);
-    w.y = vfetchSwap(loadVertexFetchData(address + 4), endian);
-    w.z = vfetchSwap(loadVertexFetchData(address + 8), endian);
-    w.w = vfetchSwap(loadVertexFetchData(address + 12), endian);
+    // The record loaded once, then swapped as whole dwords (see vfetchSwap).
+    uint4 w = vfetchSwap(loadVertexFetchData4(address), endian);
 
     float4 result = float4(0.0, 0.0, 0.0, 1.0);
     bool isFloat = false;
@@ -933,15 +936,10 @@ uint memExportElement(float4 data, uint format, uint numFormat, out uint4 words)
 }
 
 // The fetch/export endian swap of one dword (the 8in32 N&B uses, and the other 32-bit modes).
+// Branch-free on the whole dword, as vfetchSwap (and for the same reason).
 uint memExportSwap(uint value, uint endian)
 {
-    if (endian == 2u)
-        return (value >> 24) | ((value >> 8) & 0xFF00u) | ((value << 8) & 0xFF0000u) | (value << 24);
-    if (endian == 1u)
-        return ((value >> 8) & 0x00FF00FFu) | ((value << 8) & 0xFF00FF00u);
-    if (endian == 3u)
-        return (value >> 16) | (value << 16);
-    return value;
+    return vfetchSwap(uint4(value, 0u, 0u, 0u), endian).x;
 }
 
 // stream0..3 = g_MemExportStream(0..3), passed by the caller: on DXIL they live in the shader's
