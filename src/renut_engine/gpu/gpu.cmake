@@ -17,8 +17,8 @@ set(RENUT_SHADER_DUMP_DIR "${CMAKE_SOURCE_DIR}/shaders" CACHE PATH
 set(RENUT_ASSETS_DIR "${CMAKE_SOURCE_DIR}/assets" CACHE PATH
     "Game assets the shaders are dumped from (default.xex and Bundle/)")
 set(RENUT_SHADER_CAPTURE_DIR "${CMAKE_BINARY_DIR}/shader_capture" CACHE PATH
-    "Where reNut, run from the build directory, captures shaders its cache lacks "
-    "(renut_shader_capture_dir); the build adds them to RENUT_SHADER_DUMP_DIR")
+    "Where reNut, run from the build directory, captures shaders its cache lacks 
+    (renut_shader_capture_dir); the build adds them to RENUT_SHADER_DUMP_DIR")
 
 # tools/dump_shaders.py, which runs when there are no dumped shaders yet
 # (renut_xenos_shader_cache), needs Python 3 with the xxhash module.
