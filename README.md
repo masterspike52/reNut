@@ -43,6 +43,14 @@ currently the only devices supported are linux devices and windows devices, i ha
 
 * you can also use dlc by taking the package for the dlc (E41F20AAF7094B9AFCA8CC90489D689D72A5062B4D) and place it in a folder named dlc next to the exe(appimage for linux)
 
+
+
+Theres an android port
+------------------------------------------------------
+EtoneDemid has made an android port found in this fork https://github.com/etonedemid/reNut-android, the reason it isnt in main is because i myself couldnt get it to work well on lower end phones. if you wish to play the android port, it should run pretty well 
+
+
+
 Online play
 --------------------------------------
 * online play uses Epic Online Services (for windows this includes a dll for linux i havent tested but should be part of the appimage)
