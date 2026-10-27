@@ -42,16 +42,17 @@ uint LoadSource(uint address)
     return g_Buffers[g_Push.source].Load(address);
 }
 
-// SwapDword in vertex_format.cpp.
+// SwapDword in vertex_format.cpp (0 none, 1 8in16, 2 8in32, 3 16in32), branch-free on the whole
+// dword: 8in32 is 8in16 followed by 16in32. Intel's compiler (IGC) lowered the per-mode branches 
+// with a byte-granular 8in32 swap to in-place byte moves that read bytes they had already overwritten.
 uint SwapWord(uint value, uint endian)
 {
-    if (endian == 1) // 8in16
-        return ((value & 0x00FF00FFu) << 8) | ((value >> 8) & 0x00FF00FFu);
-    if (endian == 2) // 8in32
-        return (value << 24) | ((value << 8) & 0x00FF0000u) | ((value >> 8) & 0x0000FF00u) | (value >> 24);
-    if (endian == 3) // 16in32
-        return (value << 16) | (value >> 16);
-    return value;
+    const uint swap8 = (endian == 1u || endian == 2u) ? 0xFFFFFFFFu : 0u;
+    const uint swap16 = (endian == 2u || endian == 3u) ? 0xFFFFFFFFu : 0u;
+    const uint swapped8 = ((value & 0x00FF00FFu) << 8) | ((value >> 8) & 0x00FF00FFu);
+    value = (swapped8 & swap8) | (value & ~swap8);
+    const uint swapped16 = (value << 16) | (value >> 16);
+    return (swapped16 & swap16) | (value & ~swap16);
 }
 
 // DecodeComponent in vertex_format.cpp.
