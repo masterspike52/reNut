@@ -10,6 +10,10 @@ Discord
 https://discord.gg/D5Bz2ZsHdY - you can join the discord here
 
 
+Issues
+-------------------------------------------
+* the games physics are funky above 60fps, please set your frame limit to 60 in F4 > Performance to avoid physics issues like banjo being flung through space. i will not be changing this because fucking with the physics engine is scary and it scared me to mess with it for 60.
+
 About
 --------------------------------------------
 * Renut is a Recompilation of Banjo-Kazooie: Nuts and Bolts using the Rexglue-SDK
