@@ -47,38 +47,32 @@ currently the only devices supported are linux devices and windows devices, i ha
 
 Theres an android port
 ------------------------------------------------------
-EtoneDemid has made an android port found in this fork https://github.com/etonedemid/reNut-android, the reason it isnt in main is because i myself couldnt get it to work well on lower end phones. if you wish to play the android port, it should run pretty well 
+EtoneDemid has made an android port found in this fork https://github.com/etonedemid/reNut-android, the reason it isn't in main is because i myself couldn't get it to work well on lower end phones. if you wish to play the android port, it should run pretty well 
 
 
 
 Online play
 --------------------------------------
-* online play uses Epic Online Services (for windows this includes a dll for linux i havent tested but should be part of the appimage)
+* online play now uses <a href="https://github.com/masterspike52/RexLiveless">rexliveless</a>, this allows for things like matchmaking and leaderboards as well as P2P lobby play
 
-* if you wish to play online you must press F5 and check the signed into live box (this spoofs your xbox live to be Gold so you can get into the xbox live option) as well as set your name itll look like this
-  <img width="562" height="129" alt="image" src="https://github.com/user-attachments/assets/76be801c-a6e2-4ff9-9629-860ee72b5f01" />
+* rexliveless adds a blades-like menu by either pressing F10 or the guide/guide equivalent on your controller. the menu allows for things like custom gamer profile pictures and themes (made by trusted users, you are also free to suggest a theme you created)
 
-* pressing F6 opens the friends list and displays your online id (also known as a machine id)
+* the menu is setup the same way it was setup on the xbox 360 which allows you to add your friends via username
 
-* to add friends you press F6 and send them your friend id or they can send you theirs in which you can copy paste it into the online id box and click send friend request
-<br>
-  <img width="640" height="147" alt="image" src="https://github.com/user-attachments/assets/c19c2008-c676-4e24-a7ae-90945446aafd" />
+* this is an example of a custom theme
+<img width="1561" height="862" alt="image" src="https://github.com/user-attachments/assets/d3c2a9a7-304d-406f-a649-6dcd6d6916c4" />
+
+* this is an example of a custom gamer profile pic
+
+<img width="1630" height="1107" alt="image" src="https://github.com/user-attachments/assets/bbcdef35-0007-42e6-ba53-da89b478f862" />
 
 
-* the friend will see an invite in the F6 imgui that they can accept their new friend
-
-* go into the game and select multiplayer > Xbox Live
-
-* hit RB then select your friend to join them
 
 
 things i havent tested for online
 -------------------------------------
-* matchmaking, reasoning is it may require a server, if it does i will not be implementing this
+* haven't tested on linux yet, i implore users on linux to make sure they can sign-in/make an account on rexliveless and inform me or SolarCookies of any issues that may arise
 
-Things that dont work
-----------------------------------
-leaderboards, this is because it does require a server unless i wanna set up 100+ things in the EOS dev portal for every mission and other things that use the leaderboard (thanks rare)
 
 Mods
 --------------------------------------------
