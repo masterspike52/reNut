@@ -968,6 +968,7 @@ TextureBinding BindUncached(u32 texture_va, const TextureFetch &device_fetch,
     binding.stacked = resolved->stacked;
     binding.scale = resolved->scale;
     binding.lod_scale = resolved->extra_levels ? resolved->scale : RenderScale{};
+    binding.shadow_map = resolved->shadow_map;
     return binding;
   }
   auto &slot = TextureSlot(texture_va);
@@ -1016,6 +1017,7 @@ TextureBinding BindUncached(u32 texture_va, const TextureFetch &device_fetch,
 
   if (depth_source && !t.gpu_written) {
     CopyDepthWords(t, *depth_source);
+    t.shadow_map = depth_source->shadow_map;
   } else if (!t.gpu_written && t.checked_frame != g_frame) {
     t.checked_frame = g_frame;
     // The menus' panel colour changed since it was uploaded.
@@ -1038,6 +1040,7 @@ TextureBinding BindUncached(u32 texture_va, const TextureFetch &device_fetch,
   binding.stacked = t.stacked;
   binding.scale = t.scale;
   binding.lod_scale = t.extra_levels ? t.scale : RenderScale{};
+  binding.shadow_map = t.shadow_map;
   return binding;
 }
 

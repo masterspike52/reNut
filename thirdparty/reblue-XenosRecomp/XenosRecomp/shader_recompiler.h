@@ -108,6 +108,13 @@ struct ShaderRecompiler : StringBuffer
     // as dotPrecise (see findPositionDots), and of the ALU instruction being recompiled.
     std::unordered_set<uint32_t> positionDots;
     uint32_t aluAddress = 0;
+    // Depth-like texture fetches, for renutShadowCompare (shader_common.h). A register lane
+    // (register * 4 + lane) a fetch's X lands in gets the fetch's coordinate, texture and sampler
+    // in variables of its own (renutTapUV_<register>_<lane> and so on), set where the fetch runs:
+    // of fetches in branches, the one that ran. renutTapLanes holds the lanes whose value is such
+    // a fetch's until something else writes them; renutTapDeclared every lane that has them.
+    std::unordered_set<uint32_t> renutTapLanes;
+    std::unordered_set<uint32_t> renutTapDeclared;
 #endif
 
 #ifdef REBLUE_RECOMP

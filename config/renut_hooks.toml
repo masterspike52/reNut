@@ -17,6 +17,18 @@ registers = []
 after_instruction = false
 
 [[midasm_hook]]
+address = 0x823C519C
+name = "klungoDlcConstruct_hook"
+registers = []
+after_instruction = false
+
+[[midasm_hook]]
+address = 0x823C6B80
+name = "klungoDlcDestruct_hook"
+registers = []
+after_instruction = false
+
+[[midasm_hook]]
 address = 0x8258DE80
 name = "overworld_vehicles_hook"
 registers = ["r23", "r26"]
@@ -136,3 +148,24 @@ address = 0x821FF758
 name = "StatusDial_fill_colour"
 registers = ["r9", "r30"]
 after_instruction = false
+
+[[midasm_hook]]
+address = 0x8223FF84
+name = "town_jet_thrust"
+registers = []
+after_instruction = false
+jump_address_on_true = 0x8223FF90
+
+[[midasm_hook]]
+address = 0x8234591C
+name = "town_boundary_pass"
+registers = ["r23", "r24", "r25", "r27"]
+after_instruction = false
+jump_address_on_true = 0x82345960
+
+[[midasm_hook]]
+address = 0x8238DE18
+name = "keep_escaped_vehicle"
+registers = ["r30", "r31"]
+after_instruction = false
+jump_address_on_true = 0x8238DE40

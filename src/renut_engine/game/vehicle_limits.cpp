@@ -50,7 +50,7 @@
 
 REXCVAR_DEFINE_BOOL(unlimited_vehicle_building, false, "Nuts&Bolts/Cheats",
                     "Vehicles in the garage can span 128 cells a side (not 19) and hold 2048 parts "
-                    "(not 250). Off in online multiplayer and co-op unless the host allows cheats.");
+                    "(not 250). Off in online multiplayer unless the host allows cheats.");
 
 REX_EXTERN(__imp__sub_8254CEF0);  // spawns a vehicle from its blueprint
 REX_EXTERN(__imp__sub_8250FD28);  // a blueprint's per-part flags (parts left out)

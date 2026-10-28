@@ -6,10 +6,10 @@
 #include <algorithm>
 #include <condition_variable>
 #include <cstring>
+#include <ctime>
 #include <deque>
 #include <filesystem>
 #include <fstream>
-#include <iterator>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -34,15 +34,17 @@
 #include <windows.h>
 #endif
 
+#include "renut_engine/app/app_paths.h"
 #include "renut_engine/gpu/backend/backend.h"
 #include "renut_engine/gpu/render/format.h"
 #include "renut_engine/gpu/log.h"
 #include "renut_engine/gpu/guest/resources.h"
 #include "renut_engine/gpu/render/shader_library.h"
 
-REXCVAR_DEFINE_STRING(renut_pipeline_list, "pipeline_list.bin", "Nuts&Bolts/Graphics",
-                      "The pipelines the renderer has built, which it builds ahead of use at the "
-                      "next start (delete it to start over)");
+REXCVAR_DEFINE_BOOL(renut_pipeline_capture, false, "Nuts&Bolts/Debug",
+                    "Writes each pipeline a draw had to build itself (none of the built-in "
+                    "list's) to pipeline_capture_<date>.txt next to renut, for "
+                    "tools/pipeline_cache.py to add to the built-in list");
 
 namespace renut::gpu {
 
@@ -251,234 +253,207 @@ std::unique_ptr<plume::RenderPipeline> Build(const PipelineKey &key, const Pipel
 }
 
 // ---------------------------------------------------------------------------
-// The pipeline list file
+// The built-in pipeline list
 // ---------------------------------------------------------------------------
 //
-// A header, then records: u32 byte size of the rest of the record, the key
-// with the two shader pointers replaced by the shaders' cache hashes, the
-// layout's streams (u8 used, u32 host stride, 16 of them), u32 input element
-// count, and each element (u8 name length, the name, u32 semantic index,
-// location, format, slot, offset). A build whose PipelineKey or layout differs
-// bumps kListVersion; a file of another version is started over.
+// pipeline_cache_data.inc, made by tools/pipeline_cache.py from pipeline
+// captures (below): the pipelines with their shaders as cache hashes, and the
+// vertex layouts they share. Each array ends in an empty entry.
 
-constexpr char kListMagic[4] = {'R', 'N', 'P', 'L'};
-constexpr u32 kListVersion = 2;
-
-struct ListHeader {
-  char magic[4];
-  u32 version;
-  u32 key_size;
-  u32 streams;
+struct BuiltInElement {
+  const char *name;
+  u32 semantic_index;
+  u32 location;
+  u32 format;
+  u32 slot;
+  u32 offset;
 };
 
-class ByteWriter {
-public:
-  template <typename T>
-  void Put(const T &value) {
-    const auto *p = reinterpret_cast<const char *>(&value);
-    bytes_.insert(bytes_.end(), p, p + sizeof(T));
-  }
-  void PutBytes(const void *data, size_t size) {
-    const auto *p = static_cast<const char *>(data);
-    bytes_.insert(bytes_.end(), p, p + size);
-  }
-  const std::vector<char> &Bytes() const { return bytes_; }
-
-private:
-  std::vector<char> bytes_;
+struct BuiltInLayout {
+  u32 first_element;
+  u32 element_count;
+  uint64_t hash;      // PipelineKey::layout_hash
+  u32 used_streams;   // a bit each
+  u32 strides[kMaxVertexStreams];
 };
 
-class ByteReader {
-public:
-  ByteReader(const char *data, size_t size) : data_(data), size_(size) {}
-  template <typename T>
-  bool Get(T &value) {
-    if (size_ - at_ < sizeof(T))
-      return false;
-    std::memcpy(&value, data_ + at_, sizeof(T));
-    at_ += sizeof(T);
-    return true;
-  }
-  bool GetBytes(void *out, size_t size) {
-    if (size_ - at_ < size)
-      return false;
-    std::memcpy(out, data_ + at_, size);
-    at_ += size;
-    return true;
-  }
-
-private:
-  const char *data_;
-  size_t size_;
-  size_t at_ = 0;
+// The PipelineKey's fields, the shaders as cache hashes (pixel 0: none).
+struct BuiltInPipeline {
+  uint64_t vertex_shader;
+  uint64_t pixel_shader;
+  u32 layout;
+  u32 topology;
+  u32 color_formats[d3d::kMaxRenderTargets];
+  u32 depth_format;
+  u32 color_count;
+  u32 samples;
+  u32 blend_control[d3d::kMaxRenderTargets];
+  u32 color_mask;
+  u32 depth_control;
+  u32 stencil_ref_mask;
+  u32 stencil_ref_mask_bf;
+  u32 mode_control;
+  int32_t depth_bias;
+  float depth_bias_clamp;
+  u32 alpha_to_coverage;
+  u32 per_instance_streams;
+  u32 rectangle_list;
+  u32 point_sprite;
 };
 
-// The key as stored: the shader pointers as their cache hashes.
-PipelineKey StoredKey(const PipelineKey &key) {
-  PipelineKey stored = key;
+#include "renut_engine/gpu/render/pipeline_cache_data.inc"
+
+// ---------------------------------------------------------------------------
+// Pipeline captures
+// ---------------------------------------------------------------------------
+//
+// With renut_pipeline_capture on, each pipeline a draw builds itself (none of
+// the built-in list's) goes to a file of this session, a line each of
+// name=value fields: the shaders as cache hashes, the layout written out, the
+// rest of the key. tools/pipeline_cache.py adds them to the built-in list.
+
+std::filesystem::path CapturePath() {
+  const std::time_t now = std::time(nullptr);
+  std::tm local{};
+#if defined(_WIN32)
+  localtime_s(&local, &now);
+#else
+  localtime_r(&now, &local);
+#endif
+  char name[64];
+  std::strftime(name, sizeof(name), "pipeline_capture_%Y%m%d-%H%M%S.txt", &local);
+  return renut::paths::WritableFolder() / name;
+}
+
+std::string CaptureLine(const PipelineKey &key, const HostVertexLayout &layout) {
   const auto *vs = static_cast<const ShaderCacheEntry *>(key.vertex_shader);
   const auto *ps = static_cast<const ShaderCacheEntry *>(key.pixel_shader);
-  const uint64_t vs_hash = vs ? vs->hash : 0, ps_hash = ps ? ps->hash : 0;
-  static_assert(sizeof(stored.vertex_shader) == sizeof(uint64_t));
-  std::memcpy(&stored.vertex_shader, &vs_hash, sizeof(vs_hash));
-  std::memcpy(&stored.pixel_shader, &ps_hash, sizeof(ps_hash));
-  return stored;
+  u32 used = 0;
+  std::string strides, elements;
+  for (u32 s = 0; s < kMaxVertexStreams; ++s) {
+    used |= layout.streams[s].used ? 1u << s : 0u;
+    strides += fmt::format("{}{}", s ? "," : "", layout.streams[s].host_stride);
+  }
+  for (const plume::RenderInputElement &e : layout.input_elements) {
+    elements += fmt::format("{}{}:{}:{}:{}:{}:{}", elements.empty() ? "" : ",",
+                            e.semanticName ? e.semanticName : "", e.semanticIndex, e.location,
+                            u32(e.format), e.slotIndex, e.alignedByteOffset);
+  }
+  auto four = [](const auto &values) {
+    return fmt::format("{},{},{},{}", u32(values[0]), u32(values[1]), u32(values[2]),
+                       u32(values[3]));
+  };
+  static_assert(d3d::kMaxRenderTargets == 4);
+  return fmt::format(
+      "vs=0x{:016X} ps=0x{:016X} layout=0x{:016X} used=0x{:04X} strides={} elements={} "
+      "topology={} color_formats={} depth_format={} color_count={} samples={} blend_control={} "
+      "color_mask={} depth_control={} stencil_ref_mask={} stencil_ref_mask_bf={} mode_control={} "
+      "depth_bias={} depth_bias_clamp={:.9g} alpha_to_coverage={} per_instance_streams={} "
+      "rectangle_list={} point_sprite={}",
+      vs ? vs->hash : 0, ps ? ps->hash : 0, key.layout_hash, used, strides, elements,
+      u32(key.topology), four(key.color_formats), u32(key.depth_format), key.color_count,
+      key.samples, four(key.blend_control), key.color_mask, key.depth_control,
+      key.stencil_ref_mask, key.stencil_ref_mask_bf, key.mode_control, key.depth_bias,
+      key.depth_bias_clamp, key.alpha_to_coverage, key.per_instance_streams, key.rectangle_list,
+      key.point_sprite);
 }
 
-std::vector<char> EncodeRecord(const PipelineKey &key, const HostVertexLayout &layout) {
-  ByteWriter w;
-  w.Put(StoredKey(key));
-  for (u32 s = 0; s < kMaxVertexStreams; ++s) {
-    w.Put(u8(layout.streams[s].used ? 1 : 0));
-    w.Put(u32(layout.streams[s].host_stride));
+// Render thread. Each key is built once (GetPipelineLocked keeps even a
+// failed build), so each is written once.
+struct PipelineCapture {
+  std::ofstream out;
+  bool failed = false;
+
+  void Add(const PipelineKey &key, const HostVertexLayout &layout) {
+    if (failed || !REXCVAR_GET(renut_pipeline_capture))
+      return;
+    if (!out.is_open()) {
+      const std::filesystem::path path = CapturePath();
+      out.open(path, std::ios::binary | std::ios::trunc);
+      if (!out) {
+        failed = true;
+        RGPU_WARN("Pipeline capture {} cannot be written", path.string());
+        return;
+      }
+      RGPU_INFO("Pipeline capture: the pipelines draws build themselves go to {}", path.string());
+      out << "# reNut pipeline capture 1 (tools/pipeline_cache.py)\n";
+    }
+    out << CaptureLine(key, layout) << '\n';
+    out.flush();
   }
-  w.Put(u32(layout.input_elements.size()));
-  for (const plume::RenderInputElement &e : layout.input_elements) {
-    const std::string name = e.semanticName ? e.semanticName : "";
-    w.Put(u8(name.size()));
-    w.PutBytes(name.data(), name.size());
-    w.Put(u32(e.semanticIndex));
-    w.Put(u32(e.location));
-    w.Put(u32(e.format));
-    w.Put(u32(e.slotIndex));
-    w.Put(u32(e.alignedByteOffset));
-  }
-  return w.Bytes();
-}
+};
+PipelineCapture g_capture;
 
 // A listed pipeline, as the worker threads build it.
 struct Job {
   PipelineKey key{};
   uint64_t hash = 0;
-  HostVertexLayout layout;
-  std::deque<std::string> names;  // the elements' semantic names point here
+  const HostVertexLayout *layout = nullptr;  // g_built_in_layouts
   enum class Stage { Pending, Building, Done } stage = Stage::Pending;
   std::unique_ptr<plume::RenderPipeline> pipeline;  // Done: nullptr if taken or failed
   // Its shaders the game has not made yet (PipelineShaderLoaded); queued at 0.
   u32 shaders_missing = 0;
 };
 
-bool DecodeRecord(const char *data, size_t size, Job &job) {
-  ByteReader r(data, size);
-  PipelineKey stored;
-  if (!r.Get(stored))
-    return false;
-  uint64_t vs_hash, ps_hash;
-  std::memcpy(&vs_hash, &stored.vertex_shader, sizeof(vs_hash));
-  std::memcpy(&ps_hash, &stored.pixel_shader, sizeof(ps_hash));
-  const ShaderCacheEntry *vs = FindShaderEntry(vs_hash);
-  const ShaderCacheEntry *ps = ps_hash ? FindShaderEntry(ps_hash) : nullptr;
-  if (!vs || (ps_hash && !ps))
-    return false;  // a shader this build lacks
-  job.key = stored;
-  job.key.vertex_shader = vs;
-  job.key.pixel_shader = ps;
-  job.hash = HashKey(job.key);
-  for (u32 s = 0; s < kMaxVertexStreams; ++s) {
-    u8 used;
-    u32 stride;
-    if (!r.Get(used) || !r.Get(stride))
-      return false;
-    job.layout.streams[s].used = used != 0;
-    job.layout.streams[s].host_stride = stride;
-  }
-  u32 count;
-  if (!r.Get(count) || count > 64)
-    return false;
-  for (u32 i = 0; i < count; ++i) {
-    u8 length;
-    std::string name;
-    u32 index, location, format, slot, offset;
-    if (!r.Get(length))
-      return false;
-    name.resize(length);
-    if (!r.GetBytes(name.data(), length) || !r.Get(index) || !r.Get(location) || !r.Get(format) ||
-        !r.Get(slot) || !r.Get(offset)) {
-      return false;
+// The built-in list's layouts, made at the start.
+std::vector<HostVertexLayout> g_built_in_layouts;
+
+// The built-in list's pipelines, but those of shaders this build lacks.
+std::vector<std::unique_ptr<Job>> BuiltInJobs() {
+  const size_t layouts = std::size(kBuiltInLayouts) - 1;
+  g_built_in_layouts.resize(layouts);
+  for (size_t i = 0; i < layouts; ++i) {
+    const BuiltInLayout &in = kBuiltInLayouts[i];
+    HostVertexLayout &layout = g_built_in_layouts[i];
+    for (u32 s = 0; s < kMaxVertexStreams; ++s) {
+      layout.streams[s].used = (in.used_streams >> s) & 1;
+      layout.streams[s].host_stride = in.strides[s];
     }
-    job.names.push_back(std::move(name));
-    job.layout.input_elements.emplace_back(job.names.back().c_str(), index, location,
-                                           plume::RenderFormat(format), slot, offset);
-  }
-  return true;
-}
-
-// The list's records, and the file the new ones are appended to. Render
-// thread, except the load at the start.
-struct PipelineList {
-  std::ofstream out;
-  bool failed = false;
-  std::unordered_set<uint64_t> listed;  // key hashes in the file
-
-  void Append(const PipelineKey &key, uint64_t hash, const HostVertexLayout &layout) {
-    if (failed || !listed.insert(hash).second)
-      return;
-    if (!out.is_open()) {
-      const std::filesystem::path path(REXCVAR_GET(renut_pipeline_list));
-      std::error_code ec;
-      const bool fresh = !std::filesystem::exists(path, ec) || std::filesystem::file_size(path, ec) == 0;
-      out.open(path, std::ios::binary | std::ios::app);
-      if (!out) {
-        failed = true;
-        RGPU_WARN("Pipeline list {} cannot be written; pipelines are not built ahead next time",
-                  path.string());
-        return;
-      }
-      if (fresh) {
-        ListHeader header{};
-        std::memcpy(header.magic, kListMagic, 4);
-        header.version = kListVersion;
-        header.key_size = sizeof(PipelineKey);
-        header.streams = kMaxVertexStreams;
-        out.write(reinterpret_cast<const char *>(&header), sizeof(header));
-      }
+    for (u32 e = 0; e < in.element_count; ++e) {
+      const BuiltInElement &element = kBuiltInElements[in.first_element + e];
+      layout.input_elements.emplace_back(element.name, element.semantic_index, element.location,
+                                         plume::RenderFormat(element.format), element.slot,
+                                         element.offset);
     }
-    const std::vector<char> record = EncodeRecord(key, layout);
-    const u32 size = u32(record.size());
-    out.write(reinterpret_cast<const char *>(&size), sizeof(size));
-    out.write(record.data(), std::streamsize(record.size()));
-    out.flush();
   }
-};
-PipelineList g_list;
-
-// The records of the list file; empty (and the file started over) when it
-// is missing or from another version.
-std::vector<std::unique_ptr<Job>> LoadList() {
   std::vector<std::unique_ptr<Job>> jobs;
-  const std::filesystem::path path(REXCVAR_GET(renut_pipeline_list));
-  std::ifstream in(path, std::ios::binary);
-  if (!in)
-    return jobs;
-  const std::vector<char> bytes((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
-  in.close();
-  ListHeader header{};
-  if (bytes.size() >= sizeof(header))
-    std::memcpy(&header, bytes.data(), sizeof(header));
-  const bool valid = bytes.size() >= sizeof(header) && std::memcmp(header.magic, kListMagic, 4) == 0 &&
-                     header.version == kListVersion && header.key_size == sizeof(PipelineKey) &&
-                     header.streams == kMaxVertexStreams;
-  if (!valid) {
-    std::error_code ec;
-    std::filesystem::remove(path, ec);
-    return jobs;
-  }
   std::unordered_set<uint64_t> seen;
-  size_t at = sizeof(header);
-  while (bytes.size() - at >= sizeof(u32)) {
-    u32 size;
-    std::memcpy(&size, bytes.data() + at, sizeof(size));
-    at += sizeof(size);
-    if (bytes.size() - at < size)
-      break;  // cut short (the game closed while writing)
+  for (size_t i = 0; i + 1 < std::size(kBuiltInPipelines); ++i) {
+    const BuiltInPipeline &p = kBuiltInPipelines[i];
+    const ShaderCacheEntry *vs = FindShaderEntry(p.vertex_shader);
+    const ShaderCacheEntry *ps = p.pixel_shader ? FindShaderEntry(p.pixel_shader) : nullptr;
+    if (!vs || (p.pixel_shader && !ps) || p.layout >= layouts)
+      continue;
     auto job = std::make_unique<Job>();
-    if (DecodeRecord(bytes.data() + at, size, *job) && seen.insert(job->hash).second)
+    PipelineKey &key = job->key;
+    std::memset(&key, 0, sizeof(key));
+    key.vertex_shader = vs;
+    key.pixel_shader = ps;
+    key.layout_hash = kBuiltInLayouts[p.layout].hash;
+    key.topology = plume::RenderPrimitiveTopology(p.topology);
+    for (u32 t = 0; t < d3d::kMaxRenderTargets; ++t) {
+      key.color_formats[t] = plume::RenderFormat(p.color_formats[t]);
+      key.blend_control[t] = p.blend_control[t];
+    }
+    key.depth_format = plume::RenderFormat(p.depth_format);
+    key.color_count = p.color_count;
+    key.samples = p.samples;
+    key.color_mask = p.color_mask;
+    key.depth_control = p.depth_control;
+    key.stencil_ref_mask = p.stencil_ref_mask;
+    key.stencil_ref_mask_bf = p.stencil_ref_mask_bf;
+    key.mode_control = p.mode_control;
+    key.depth_bias = p.depth_bias;
+    key.depth_bias_clamp = p.depth_bias_clamp;
+    key.alpha_to_coverage = p.alpha_to_coverage;
+    key.per_instance_streams = p.per_instance_streams;
+    key.rectangle_list = p.rectangle_list;
+    key.point_sprite = p.point_sprite;
+    job->layout = &g_built_in_layouts[p.layout];
+    job->hash = HashKey(key);
+    if (seen.insert(job->hash).second)
       jobs.push_back(std::move(job));
-    at += size;
   }
-  // Records of shaders this build lacks stay out of 'listed': a later build
-  // that has them lists the pipelines again.
-  g_list.listed = std::move(seen);
   return jobs;
 }
 
@@ -488,8 +463,8 @@ std::vector<std::unique_ptr<Job>> LoadList() {
 //
 // A listed pipeline is built once the game has made both of its shaders (a
 // level's shaders come with its load), not at the start: the list holds every
-// level ever played, and the driver keeps each built pipeline's shaders and
-// code in host memory. What is built stays built.
+// level's, and the driver keeps each built pipeline's shaders and code in host
+// memory. What is built stays built.
 
 struct Prebuild {
   std::mutex mutex;
@@ -538,7 +513,7 @@ void PrebuildWorker() {
     PipelineInputs inputs;
     inputs.vertex_shader = PrebuildShader(static_cast<const ShaderCacheEntry *>(job.key.vertex_shader));
     inputs.pixel_shader = PrebuildShader(static_cast<const ShaderCacheEntry *>(job.key.pixel_shader));
-    inputs.layout = &job.layout;
+    inputs.layout = job.layout;
     const bool shaders = inputs.vertex_shader && (!job.key.pixel_shader || inputs.pixel_shader);
     lock.unlock();
     std::unique_ptr<plume::RenderPipeline> pipeline = shaders ? Build(job.key, inputs) : nullptr;
@@ -665,7 +640,7 @@ plume::RenderPipeline *GetPipelineLocked(const PipelineKey &key, const PipelineI
   if (!TakePrebuilt(key, hash, pipeline, claimed)) {
     pipeline = Build(key, inputs);
     if (pipeline && !claimed)
-      g_list.Append(key, hash, *inputs.layout);
+      g_capture.Add(key, *inputs.layout);
   }
   if (!pipeline) {
     static uint32_t logged = 0;
@@ -693,7 +668,9 @@ plume::RenderPipeline *GetPipelineLocked(const PipelineKey &key, const PipelineI
 }
 
 void StartPipelinePrebuild() {
-  std::vector<std::unique_ptr<Job>> jobs = LoadList();
+  std::vector<std::unique_ptr<Job>> jobs = BuiltInJobs();
+  RGPU_INFO("Pipelines: {} of the built-in list's {} are built ahead as the game makes their "
+            "shaders", jobs.size(), std::size(kBuiltInPipelines) - 1);
   if (jobs.empty())
     return;
   std::lock_guard lock(g_prebuild.mutex);

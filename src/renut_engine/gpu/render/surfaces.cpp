@@ -326,6 +326,7 @@ HostSurface *GetHostSurfaceLocked(u32 surface_va) {
   }
   if (!BuildTarget(*slot, *desc, min_width, min_height, scale))
     return nullptr;
+  slot->shadow_map = IsShadowMapSurface(*desc);
   // No defined content yet; D3D12 wants a new target discarded (or cleared)
   // before anything else uses it, and a resolve may read it before any draw.
   if (plume::RenderCommandList *cmd = Video::CommandListLocked()) {

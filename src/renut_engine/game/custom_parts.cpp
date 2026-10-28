@@ -77,6 +77,7 @@
 
 #include "renut_engine/app/renut_logging.h"
 #include "renut_engine/game/part_classes.h"
+#include "renut_engine/game/restored_parts.h"
 #include "renut_engine/mods/custom_parts.h"
 
 REX_EXTERN(__imp__assetManOpenParams);
@@ -135,8 +136,10 @@ constexpr uint32_t kAnyProvider = 0xFF;
 constexpr uint32_t kGroupingSize = 204;
 constexpr uint32_t kGroupingName = 0;
 constexpr uint32_t kGroupingTextKey = 64;
-constexpr uint32_t kGroupingNext = 128;  // the next level's table aid
+constexpr uint32_t kGroupingNext = 128;         // the next level's table aid
+constexpr uint32_t kGroupingDescription = 132;  // its garage description (a dialog aid), then its seen flag
 constexpr uint32_t kGroupingStringSize = 64;
+constexpr uint8_t kTypeDialog = 0x43;
 // The part opened in place of a missing one: the light cube
 // (vehicleBlock, "lightcube", body / light), in every game's inventory.
 constexpr uint32_t kPlaceholderPartAid = 0x1F4BB5E1;
@@ -278,12 +281,15 @@ void Initialize(uint8_t *base) {
     return;
   g_initialized = true;
   const std::vector<CustomPart> &parts = renut::mods::CustomParts();
+  // The game's own parts reNut gives from the start (restored_parts.h) join
+  // the blockset after the custom parts.
+  const std::vector<renut::game::RestoredPart> restored = renut::game::RestoredParts();
   // Base aid words, the blockset's aid word, the scratch word, the
   // placeholder's aid word, the blockset, then the remembered parts' base aid
   // words.
   const uint32_t count = uint32_t(parts.size());
   const uint32_t known_count = uint32_t(renut::mods::KnownCustomParts().size());
-  g_blockset_size = 8 * count;
+  g_blockset_size = 8 * (count + uint32_t(restored.size()));
   const uint32_t block =
       REX_KERNEL_MEMORY()->SystemHeapAlloc(4 * count + 12 + g_blockset_size + 4 * known_count);
   if (!block) {
@@ -296,9 +302,13 @@ void Initialize(uint8_t *base) {
   g_blockset = g_placeholder_aid_va + 4;
   Store32(base, g_placeholder_aid_va, kPlaceholderPartAid);
   const uint32_t known_words = g_blockset + g_blockset_size;
-  if (count) {
+  if (g_blockset_size) {
     g_blockset_aid = renut::mods::AssetId(kTypeMisc, kBlocksetAsset);
     Store32(base, g_blockset_aid_va, g_blockset_aid);
+  }
+  for (uint32_t i = 0; i < restored.size(); ++i) {
+    Store32(base, g_blockset + 8 * (count + i), restored[i].count);
+    Store32(base, g_blockset + 8 * (count + i) + 4, restored[i].aid);
   }
   for (uint32_t i = 0; i < count; ++i) {
     GuestPart gp;
@@ -670,6 +680,65 @@ void PrepareSizes(PPCContext &ctx, uint8_t *base) {
       add(by_size_table, sizes_aid, {&gp, record, sizes_aid});
   }
 
+  // The game's own parts given from the start (restored_parts.h) whose type no
+  // category lists (the Remote Control) get one: the category's
+  // first type's record, renamed to theirs, its text their name, no sizes, its
+  // description and seen flag theirs (aid_dialog_banjox_garage_description_
+  // block_<name key>, gameFlag_Normal_Garage_Group_Seen_Block_<Class>).
+  std::vector<std::pair<uint32_t, std::vector<std::vector<uint8_t>>>> restored_types;
+  for (const renut::game::RestoredPart &rp : renut::game::RestoredParts()) {
+    Store32(base, g_scratch_aid_va, rp.aid);
+    ctx.r3.u64 = g_scratch_aid_va;
+    ctx.r4.u64 = 1;
+    __imp__assetManOpenParams(ctx, base);
+    const uint32_t record = ctx.r3.u32;
+    if (!record)
+      continue;
+    const std::string category = GuestString(base, record + kRecordCategory, kRecordGroupingNameSize);
+    const std::string type = GuestString(base, record + kRecordType, kRecordGroupingNameSize);
+    const std::string name_key = GuestString(base, record + kRecordNameKey, kRecordNameKeySize);
+    const std::string class_name = GuestString(base, record + kRecordClassName, kRecordClassNameSize);
+    ctx.r3.u64 = record;
+    __imp__sub_82204DF0(ctx, base);
+    const uint32_t category_record = FindGrouping(ctx, base, groupings, category);
+    const uint32_t types_aid = category_record ? Load32(base, category_record + kGroupingNext) : 0;
+    const std::vector<uint8_t> types = types_aid ? ReadGroupingTable(ctx, base, types_aid) : std::vector<uint8_t>();
+    if (types.empty() || GroupingRecordOffset(types, type) != 0 ||
+        SameName(GuestString(types.data(), kGroupingName, kGroupingStringSize), type))
+      continue;  // listed already (the Stereo), or no category for it
+    std::vector<uint8_t> own(types.begin(), types.begin() + kGroupingSize);
+    PutString(own.data() + kGroupingName, type, kGroupingStringSize);
+    PutString(own.data() + kGroupingTextKey, name_key, kGroupingStringSize);
+    Store32(own.data(), kGroupingNext, 0);
+    Store32(own.data(), kGroupingDescription,
+            renut::mods::AssetId(kTypeDialog, "banjox_garage_description_block_" + name_key));
+    constexpr const char kSeenFlag[] = "gameFlag_";
+    const std::string prefix = "vehicleBlock";
+    const std::string short_class = class_name.rfind(prefix, 0) == 0 ? class_name.substr(prefix.size()) : class_name;
+    for (size_t at = kGroupingNext + 4; at + sizeof(kSeenFlag) - 1 < kGroupingSize; ++at) {
+      if (std::memcmp(own.data() + at, kSeenFlag, sizeof(kSeenFlag) - 1) == 0) {
+        PutString(own.data() + at, "gameFlag_Normal_Garage_Group_Seen_Block_" + short_class,
+                  std::min<size_t>(kGroupingSize - at, kGroupingStringSize));
+        break;
+      }
+    }
+    auto it = std::find_if(restored_types.begin(), restored_types.end(),
+                           [&](const auto &e) { return e.first == types_aid; });
+    if (it == restored_types.end())
+      it = restored_types.insert(restored_types.end(), {types_aid, {}});
+    it->second.push_back(std::move(own));
+  }
+  auto take_restored = [&](uint32_t types_aid) {
+    std::vector<std::vector<uint8_t>> records;
+    auto it = std::find_if(restored_types.begin(), restored_types.end(),
+                           [&](const auto &e) { return e.first == types_aid; });
+    if (it != restored_types.end()) {
+      records = std::move(it->second);
+      restored_types.erase(it);
+    }
+    return records;
+  };
+
   for (auto &[sizes_aid, parts] : by_size_table) {
     std::vector<uint8_t> sizes = ReadGroupingTable(ctx, base, sizes_aid);
     if (sizes.empty())
@@ -711,8 +780,22 @@ void PrepareSizes(PPCContext &ctx, uint8_t *base) {
       types.insert(types.end(), own.begin(), own.end());
       PutString(base + p.record + kRecordType, own_name, kRecordGroupingNameSize);
     }
+    for (const std::vector<uint8_t> &own : take_restored(types_aid))
+      types.insert(types.end(), own.begin(), own.end());
     ServeGroupingTable(base, types_aid, types);
     RNUT_INFO("Custom parts: {} type(s) added to the garage's type table {:08X}", parts.size(), types_aid);
+  }
+
+  while (!restored_types.empty()) {
+    const uint32_t types_aid = restored_types.front().first;
+    std::vector<uint8_t> types = ReadGroupingTable(ctx, base, types_aid);
+    const std::vector<std::vector<uint8_t>> records = take_restored(types_aid);
+    if (types.empty())
+      continue;
+    for (const std::vector<uint8_t> &own : records)
+      types.insert(types.end(), own.begin(), own.end());
+    ServeGroupingTable(base, types_aid, types);
+    RNUT_INFO("Restored parts: {} type(s) added to the garage's type table {:08X}", records.size(), types_aid);
   }
 }
 
@@ -888,7 +971,8 @@ REX_HOOK_RAW(sub_8228F0F0) {
 // sub_824FA3D8(): rebuilds the garage inventory; the custom parts join it.
 REX_HOOK_RAW(sub_824FA3D8) {
   __imp__sub_824FA3D8(ctx, base);
-  if (renut::mods::CustomParts().empty() || !Load32(base, kBlockClassGroupings))
+  if ((renut::mods::CustomParts().empty() && renut::game::RestoredParts().empty()) ||
+      !Load32(base, kBlockClassGroupings))
     return;
   const uint64_t result = ctx.r3.u64;
   Initialize(base);
@@ -900,7 +984,8 @@ REX_HOOK_RAW(sub_824FA3D8) {
     static bool logged = false;
     if (!logged) {
       logged = true;
-      RNUT_INFO("Custom parts: {} part(s) added to the garage inventory", g_parts.size());
+      RNUT_INFO("Custom parts: {} custom and {} restored part(s) added to the garage inventory", g_parts.size(),
+                g_blockset_size / 8 - g_parts.size());
     }
   }
   ctx.r3.u64 = result;

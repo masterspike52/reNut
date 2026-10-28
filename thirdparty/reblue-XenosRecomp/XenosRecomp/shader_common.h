@@ -568,17 +568,64 @@ float4 tfetchCubeLevel(uint resourceDescriptorIndex, uint samplerDescriptorIndex
     return g_TextureCubeDescriptorHeap[renutDescriptor(resourceDescriptorIndex)].SampleLevel(g_SamplerDescriptorHeap[samplerDescriptorIndex], cubeMapData.cubeMapDirections[texCoord.z], lod);
 }
 
+// Xenos rcp / rsq / log with their special results picked from the operand's bits, not by
+// clamping or testing an infinity afterwards: DXC marks float math 'fast' and Vulkan doesn't keep
+// infinities or NaNs either, so a driver may drop such a clamp (Intel's does) and the infinity
+// goes on into the lighting. The results are what the clamps gave: an infinity becomes FLT_MAX
+// with its sign, a NaN FLT_MIN (-FLT_MAX). Zeros and denormals (flushed) count as zero.
+bool isZeroOrDenormal(float value)
+{
+    return (asuint(value) & 0x7fffffffu) < 0x00800000u;
+}
+
+bool isNaNBits(float value)
+{
+    return (asuint(value) & 0x7fffffffu) > 0x7f800000u;
+}
+
+bool isNegativeBits(float value)
+{
+    return (asuint(value) & 0x80000000u) != 0u;
+}
+
+float rcpClamped(float value)
+{
+    if (isNaNBits(value))
+        return FLT_MIN;
+    if (isZeroOrDenormal(value))
+        return isNegativeBits(value) ? FLT_MIN : FLT_MAX;
+    return rcp(value);
+}
+
+float rsqClamped(float value)
+{
+    if (isNaNBits(value))
+        return FLT_MIN;
+    if (isZeroOrDenormal(value))
+        return isNegativeBits(value) ? FLT_MIN : FLT_MAX;
+    if (isNegativeBits(value))
+        return FLT_MIN;
+    return rsqrt(value);
+}
+
+float logClamped(float value)
+{
+    if (isNaNBits(value) || isZeroOrDenormal(value) || isNegativeBits(value))
+        return FLT_MIN;
+    if (asuint(value) == 0x7f800000u)
+        return FLT_MAX;
+    return log2(value);
+}
+
 // Xenos rcpf / rsqf: infinities become 0 rather than clamping to FLT_MAX.
 float rcpf(float value)
 {
-    float result = 1.0 / value;
-    return isinf(result) ? 0.0 : result;
+    return isZeroOrDenormal(value) ? 0.0 : rcp(value);
 }
 
 float rsqf(float value)
 {
-    float result = rsqrt(value);
-    return isinf(result) ? 0.0 : result;
+    return isZeroOrDenormal(value) ? 0.0 : rsqrt(value);
 }
 
 // A dot product rounded about once, for the dot products of the position (findPositionDots in
@@ -605,8 +652,8 @@ float dotPrecise(float4 a, float4 b)
         sum = total;
     }
     precise float result = sum + error;
-    // Huge operands overflow the split.
-    return isfinite(result) ? result : dot(a, b);
+    // Huge operands overflow the split (tested on the bits: see rcpClamped).
+    return (asuint(result) & 0x7f800000u) != 0x7f800000u ? result : dot(a, b);
 }
 
 float dotPrecise(float3 a, float3 b)
@@ -617,8 +664,15 @@ float dotPrecise(float3 a, float3 b)
 // Xenos alpha test (fixed-function in the ROP): RB_COLORCONTROL ALPHA_FUNC, 0 NEVER, 1 LESS,
 // 2 EQUAL, 3 LEQUAL, 4 GREATER, 5 NOTEQUAL, 6 GEQUAL, 7 ALWAYS. The host passes 7 when the
 // test is disabled. Arguments rather than globals: the cbuffer is declared after this file.
-void alphaTest(float alpha, uint func, float reference)
+// Returns the alpha the shader writes. With RENUT_ALPHA_TO_COVERAGE (renut_alpha_to_coverage,
+// on GREATER / GEQUAL tests into a multisampled target with alpha to coverage on) nothing is
+// discarded: the alpha becomes the share of the pixel's samples that pass, sharpened to about a
+// pixel's width around the reference, so a cut-out's edge is smoothed instead of stair-stepped.
+#define RENUT_ALPHA_TO_COVERAGE 0x10u
+float alphaTest(float alpha, uint func, float reference)
 {
+    if ((func & RENUT_ALPHA_TO_COVERAGE) != 0u)
+        return saturate(0.5 + (alpha - reference) / max(fwidth(alpha), 1e-6));
     bool pass;
     switch (func)
     {
@@ -633,30 +687,114 @@ void alphaTest(float alpha, uint func, float reference)
     }
     if (!pass)
         discard;
+    return alpha;
+}
+
+// Shadow filtering (renut_shadow_softness). N&B shadows a pixel with binary compares of depths it
+// fetched from a shadow map: `tap >= reference` and the like, 1 or 0 per tap. The recompiler keeps
+// a depth-like fetch's coordinate and re-emits such a compare as renutShadowCompare. For a texture
+// the host flags (bits 29-31 of a 2D descriptor index, kShadowFilterShift) the compare is filtered
+// over the texels around the tap instead: 1 a bilinear compare (as hardware PCF), 2 to 7 four
+// bilinear compares 0.5, 1, 1.5, 2, 3 or 4 guest texels out (the host picks them so the sun's
+// cascades blur alike in the world). mode: bit 0 the tap is the compare's first operand, bit 1 the
+// compare includes equality.
+#define RENUT_SHADOW_FILTER_SHIFT 29u
+
+float4 renutShadowCompare4(float4 depths, float reference, uint mode)
+{
+    bool4 result;
+    if (mode == 3u)
+        result = depths >= reference;
+    else if (mode == 1u)
+        result = depths > reference;
+    else if (mode == 2u)
+        result = reference >= depths;
+    else
+        result = reference > depths;
+    return float4(result);
+}
+
+// The compare over the 2x2 texels around 'uv', weighted as bilinear filtering weights them.
+float renutShadowBilinear(Texture2D<float4> texture, SamplerState samplerState, float2 uv, float2 size,
+    float reference, uint mode)
+{
+    const float2 coord = uv * size - 0.5;
+    const float2 weight = frac(coord);
+    // Gather: x (0, 1), y (1, 1), z (1, 0), w (0, 0) of the quad at the texel corner below 'uv'.
+    const float4 lit = renutShadowCompare4(texture.GatherRed(samplerState, (floor(coord) + 1.0) / size), reference, mode);
+    return lerp(lerp(lit.w, lit.z, weight.x), lerp(lit.x, lit.y, weight.x), weight.y);
+}
+
+float renutShadowCompare(uint resourceDescriptorIndex, uint samplerDescriptorIndex, float2 uv, float tap,
+    float reference, uint mode)
+{
+    const uint filter = (resourceDescriptorIndex >> RENUT_SHADOW_FILTER_SHIFT) & 7u;
+    if (filter == 0u)
+        return renutShadowCompare4(tap.xxxx, reference, mode).x;
+    Texture2D<float4> texture = getTexture2D(resourceDescriptorIndex);
+    SamplerState samplerState = g_SamplerDescriptorHeap[samplerDescriptorIndex];
+    const float2 size = float2(getTexture2DDimensions(texture));
+    if (filter == 1u)
+        return renutShadowBilinear(texture, samplerState, uv, size, reference, mode);
+    const float texels = filter == 2u ? 0.5f : filter == 3u ? 1.0f : filter == 4u ? 1.5f
+                       : filter == 5u ? 2.0f : filter == 6u ? 3.0f : 4.0f;
+    // Host texels per guest texel: the spread is the same share of the map at any shadow resolution.
+    const float2 spread = texels * renutTextureScale(resourceDescriptorIndex) / size;
+    // A loop, not four copies: N&B's shaders hold 24 taps, and the driver compiles each at load.
+    float lit = 0.0f;
+    [loop] for (uint corner = 0u; corner < 4u; corner++)
+    {
+        const float2 offset = float2((corner & 1u) != 0u ? spread.x : -spread.x, (corner & 2u) != 0u ? spread.y : -spread.y);
+        lit += renutShadowBilinear(texture, samplerState, uv + offset, size, reference, mode);
+    }
+    return 0.25f * lit;
+}
+
+// One Sgt / Sge instruction's lanes (bit i of 'lanes' lane i), as one loop: the compare is
+// written once per instruction rather than per lane, which keeps the shaders the driver compiles
+// at load small.
+float4 renutShadowCompareLanes(uint4 resourceDescriptorIndices, uint4 samplerDescriptorIndices, float2 uv0,
+    float2 uv1, float2 uv2, float2 uv3, float4 taps, float4 references, uint mode, uint lanes)
+{
+    const float2 uvs[4] = { uv0, uv1, uv2, uv3 };
+    float4 result = 0.0;
+    [loop] for (uint lane = 0u; lane < 4u; lane++)
+    {
+        if (((lanes >> lane) & 1u) != 0u)
+            result[lane] = renutShadowCompare(resourceDescriptorIndices[lane], samplerDescriptorIndices[lane],
+                uvs[lane], taps[lane], references[lane], mode);
+    }
+    return result;
 }
 
 // Vertex fetch without a vertex element: N&B reads bone/instance data with computed indices, and
 // some shaders without a vertex declaration read their stream by vertex index. The fetch reads the
 // host's per-draw copy of the fetch constant's buffer, applies its endian swap and decodes the format.
 
-uint loadVertexFetchData(uint byteOffset)
+// The four dwords from byteOffset (dword-aligned), in one load.
+uint4 loadVertexFetchData4(uint byteOffset)
 {
 #ifdef __spirv__
-    return vk::RawBufferLoad<uint>(g_VertexFetchDataAddress + byteOffset, 4);
+    return vk::RawBufferLoad<uint4>(g_VertexFetchDataAddress + byteOffset, 4);
 #else
-    return g_VertexFetchData.Load(byteOffset);
+    return g_VertexFetchData.Load4(byteOffset);
 #endif
 }
 
-uint vfetchSwap(uint value, uint endian)
+// The fetch endian swap (0 none, 1 8in16, 2 8in32, 3 16in32), branch-free on whole dwords:
+// 8in32 is 8in16 followed by 16in32. Intel's compiler (IGC) lowered the per-mode branches with
+// byte-granular 8in32 swap to in-place byte moves that read bytes they had already overwritten
+// ([b0,b1,b1,b0] rather than [b3,b2,b1,b0]), so vertices decoded to NaN positions and garbage
+// UVs on Intel GPUs (D3D12 and Vulkan alike). Masks rather than branches give it nothing to
+// lower that way.
+uint4 vfetchSwap(uint4 value, uint endian)
 {
-    if (endian == 1) // 8in16
-        value = ((value & 0x00FF00FF) << 8) | ((value >> 8) & 0x00FF00FF);
-    else if (endian == 2) // 8in32
-        value = (value << 24) | ((value << 8) & 0x00FF0000) | ((value >> 8) & 0x0000FF00) | (value >> 24);
-    else if (endian == 3) // 16in32
-        value = (value << 16) | (value >> 16);
-    return value;
+    uint swap8 = (endian == 1u || endian == 2u) ? 0xFFFFFFFFu : 0u;
+    uint swap16 = (endian == 2u || endian == 3u) ? 0xFFFFFFFFu : 0u;
+    uint4 swapped8 = ((value & 0x00FF00FFu) << 8) | ((value >> 8) & 0x00FF00FFu);
+    value = (swapped8 & swap8) | (value & ~swap8);
+    uint4 swapped16 = (value << 16) | (value >> 16);
+    return (swapped16 & swap16) | (value & ~swap16);
 }
 
 // One packed integer component: signed/unsigned, normalized ("fraction") or integer.
@@ -686,11 +824,8 @@ float4 vfetchMemory(uint slot, float indexValue, bool roundIndex, int offsetDwor
     uint address = (slot & ~0x3u) + uint(index * int(strideDwords) + offsetDwords) * 4u;
     uint endian = slot & 0x3u;
 
-    uint4 w;
-    w.x = vfetchSwap(loadVertexFetchData(address), endian);
-    w.y = vfetchSwap(loadVertexFetchData(address + 4), endian);
-    w.z = vfetchSwap(loadVertexFetchData(address + 8), endian);
-    w.w = vfetchSwap(loadVertexFetchData(address + 12), endian);
+    // The record loaded once, then swapped as whole dwords (see vfetchSwap).
+    uint4 w = vfetchSwap(loadVertexFetchData4(address), endian);
 
     float4 result = float4(0.0, 0.0, 0.0, 1.0);
     bool isFloat = false;
@@ -933,15 +1068,10 @@ uint memExportElement(float4 data, uint format, uint numFormat, out uint4 words)
 }
 
 // The fetch/export endian swap of one dword (the 8in32 N&B uses, and the other 32-bit modes).
+// Branch-free on the whole dword, as vfetchSwap (and for the same reason).
 uint memExportSwap(uint value, uint endian)
 {
-    if (endian == 2u)
-        return (value >> 24) | ((value >> 8) & 0xFF00u) | ((value << 8) & 0xFF0000u) | (value << 24);
-    if (endian == 1u)
-        return ((value >> 8) & 0x00FF00FFu) | ((value << 8) & 0xFF00FF00u);
-    if (endian == 3u)
-        return (value >> 16) | (value << 16);
-    return value;
+    return vfetchSwap(uint4(value, 0u, 0u, 0u), endian).x;
 }
 
 // stream0..3 = g_MemExportStream(0..3), passed by the caller: on DXIL they live in the shader's

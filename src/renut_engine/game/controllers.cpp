@@ -42,6 +42,8 @@
 #include <cstring>
 #include <string>
 
+#include <rexglue_guide/guide.h>
+
 #include "renut_engine/game/controllers.h"
 #include "renut_engine/game/keyboard_input.h"
 
@@ -81,6 +83,7 @@ constexpr uint32_t kStateSize = 16;
 constexpr uint32_t kStateButtonsOffset = 4;
 // XINPUT_GAMEPAD_A | XINPUT_GAMEPAD_START: the buttons that claim player 1.
 constexpr uint16_t kClaimButtons = 0x1000 | 0x0010;
+constexpr uint16_t kGuideButton = 0x0400;  // XINPUT_GAMEPAD_GUIDE
 // XINPUT_KEYSTROKE: VirtualKey, Unicode, Flags (2 bytes each), UserIndex,
 // HidCode (1 byte each).
 constexpr uint32_t kKeystrokeSize = 8;
@@ -111,8 +114,6 @@ int g_logged_pad[kUserCount] = {kNoPad, kNoPad, kNoPad, kNoPad};
 uint32_t g_logged_ignored = 0;
 int g_logged_focus = -1;        // whether the game window had the focus
 bool g_logged_press = false;    // player 1's first press, since its controller changed
-// Player 1's buttons from the game's last read (Player1Buttons).
-std::atomic<uint16_t> g_player1_buttons{0};
 
 uint16_t Load16(const uint8_t *p) {
   return rex::byte_swap(*reinterpret_cast<const uint16_t *>(p));
@@ -221,8 +222,12 @@ void ClaimPlayer1(uint32_t pad, const char *how) {
   AssignPlayers(connected);
 }
 
+// Player 1 always; players 2-4 with renut_disable_extra_controllers off, or
+// once they sign in through the Guide (their controller's Guide button), as
+// they then have a profile.
 bool PlayerEnabled(uint32_t user) {
-  return user == 0 || !REXCVAR_GET(renut_disable_extra_controllers);
+  return user == 0 || !REXCVAR_GET(renut_disable_extra_controllers) ||
+         rexglue_guide::SignedIn(int(user));
 }
 
 // The host slot of 'user''s controller, or kNoPad.
@@ -306,14 +311,31 @@ uint32_t KeystrokePlayer(const uint8_t *keystroke, uint32_t pad) {
   return player;
 }
 
+void GetState(PPCContext &ctx, uint8_t *base);
+
 } // namespace
 
-uint16_t renut::controllers::Player1Buttons() {
-  return g_player1_buttons.load(std::memory_order_relaxed);
+// DWORD XInputGetState(DWORD user, XINPUT_STATE *state)
+// While the Guide (RexLiveless) is open its pad is the Guide's: the game's
+// controllers stay connected, with nothing pressed. The Guide button is the
+// Guide's always (the runtime passes it through, guide_button, so the Guide
+// can read it); the game never sees it, as on a console.
+REX_HOOK_RAW(rex_XInputGetState) {
+  const uint32_t state = ctx.r4.u32;
+  GetState(ctx, base);
+  if (ctx.r3.u32 != kErrorSuccess || !state)
+    return;
+  if (rexglue_guide::IsOpen()) {
+    std::memset(base + state + kStateButtonsOffset, 0, kStateSize - kStateButtonsOffset);
+    return;
+  }
+  uint8_t *buttons = base + state + kStateButtonsOffset;
+  Store16(buttons, Load16(buttons) & ~kGuideButton);
 }
 
-// DWORD XInputGetState(DWORD user, XINPUT_STATE *state)
-REX_HOOK_RAW(rex_XInputGetState) {
+namespace {
+
+void GetState(PPCContext &ctx, uint8_t *base) {
   const uint32_t user = ctx.r3.u32;
   const uint32_t state = ctx.r4.u32;
   if (user >= kUserCount || !state) {
@@ -344,12 +366,10 @@ REX_HOOK_RAW(rex_XInputGetState) {
     for (uint32_t player = 0; player < kUserCount; ++player)
       LogPlayer(player);
     if (g_player_pad[0] == kNoPad) {
-      g_player1_buttons = 0;
       ctx.r3.u64 = kErrorDeviceNotConnected;
       return;
     }
     LogPress(states[g_player_pad[0]], g_player_pad[0]);
-    g_player1_buttons = Load16(states[g_player_pad[0]] + kStateButtonsOffset);
     std::memcpy(base + state, states[g_player_pad[0]], kStateSize);
     ctx.r3.u64 = kErrorSuccess;
     return;
@@ -363,8 +383,36 @@ REX_HOOK_RAW(rex_XInputGetState) {
   __imp__rex_XInputGetState(ctx, base);
 }
 
+void GetKeystroke(PPCContext &ctx, uint8_t *base);
+
+}  // namespace
+
 // DWORD XInputGetKeystroke(DWORD user, DWORD flags, XINPUT_KEYSTROKE *keystroke)
+// While the Guide is open the keystrokes are drained, not the game's: none of
+// them (the press that closes it included) reaches a menu afterwards.
 REX_HOOK_RAW(rex_XInputGetKeystroke) {
+  if (!rexglue_guide::IsOpen()) {
+    GetKeystroke(ctx, base);
+    return;
+  }
+  const uint32_t user = ctx.r3.u32, flags = ctx.r4.u32, keystroke = ctx.r5.u32;
+  constexpr int kMaxDrained = 64;
+  for (int i = 0; i < kMaxDrained; ++i) {
+    ctx.r3.u64 = user;
+    ctx.r4.u64 = flags;
+    ctx.r5.u64 = keystroke;
+    GetKeystroke(ctx, base);
+    if (ctx.r3.u32 != kErrorSuccess)
+      break;
+  }
+  if (keystroke)
+    std::memset(base + keystroke, 0, kKeystrokeSize);
+  ctx.r3.u64 = kErrorEmpty;
+}
+
+namespace {
+
+void GetKeystroke(PPCContext &ctx, uint8_t *base) {
   const uint32_t user = ctx.r3.u32;
   const uint32_t flags = ctx.r4.u32;
   const uint32_t keystroke = ctx.r5.u32;
@@ -426,6 +474,8 @@ REX_HOOK_RAW(rex_XInputGetKeystroke) {
     base[keystroke + kKeystrokeUserIndexOffset] = uint8_t(user);
 }
 
+}  // namespace
+
 // DWORD XInputSetState(DWORD user, XINPUT_VIBRATION *vibration)
 REX_HOOK_RAW(rex_XInputSetState) {
   const uint32_t user = ctx.r3.u32;
@@ -440,6 +490,14 @@ REX_HOOK_RAW(rex_XInputSetState) {
   }
   ctx.r3.u64 = uint32_t(pad);
   __imp__rex_XInputSetState(ctx, base);
+}
+
+int renut::game::ControllerPlayer(int pad) {
+  for (uint32_t user = 0; user < kUserCount; ++user) {
+    if (g_player_pad[user] == pad)
+      return int(user);
+  }
+  return -1;
 }
 
 // The game's player for a user (r3), made when its profile signs in, and made

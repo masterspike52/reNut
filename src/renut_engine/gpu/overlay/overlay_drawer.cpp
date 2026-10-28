@@ -10,6 +10,7 @@
 #include <plume_render_interface.h>
 
 #include "renut_engine/gpu/backend/backend.h"
+#include "renut_engine/gpu/overlay/app_integration.h"
 #include "renut_engine/gpu/log.h"
 #include "renut_engine/gpu/backend/video.h"
 
@@ -187,11 +188,20 @@ void ReleaseTexturesLocked() {
   }
 }
 
+// The frame just scanned out (SetGameFrameLocked), for GameFrameTexture.
+std::mutex g_game_frame_mutex;
+uint32_t g_game_frame_slot = kInvalidDescriptor;
+float g_game_frame_uv[4] = {};
+
 // The host texture of 'data', made from its pixels the first time; the
 // white texel's slot when there is none.
 uint32_t TextureSlotLocked(OverlayTextureData *data) {
   if (!data)
     return GetResources().white_slot;
+  if (data->game_frame) {
+    std::lock_guard lock(g_game_frame_mutex);
+    return g_game_frame_slot != kInvalidDescriptor ? g_game_frame_slot : GetResources().white_slot;
+  }
   if (!data->texture && !data->failed) {
     data->failed = !CreateUploadedTexture(data->width, data->height, data->rgba.data(),
                                           data->texture, data->view, data->slot);
@@ -217,6 +227,27 @@ OverlayTextureData::~OverlayTextureData() {
 
 OverlayTexture::OverlayTexture(std::shared_ptr<OverlayTextureData> data)
     : rex::ui::ImmediateTexture(data->width, data->height), data_(std::move(data)) {}
+
+void SetGameFrameLocked(uint32_t slot, const float uv[4]) {
+  std::lock_guard lock(g_game_frame_mutex);
+  g_game_frame_slot = slot;
+  if (uv)
+    std::copy(uv, uv + 4, g_game_frame_uv);
+}
+
+rex::ui::ImmediateTexture *GameFrameTexture(float uv[4]) {
+  static const uint8_t kTexel[4] = {};
+  static OverlayTexture texture([] {
+    auto data = std::make_shared<OverlayTextureData>(1, 1, kLinearClampSamplerSlot, kTexel);
+    data->game_frame = true;
+    return data;
+  }());
+  std::lock_guard lock(g_game_frame_mutex);
+  if (g_game_frame_slot == kInvalidDescriptor)
+    return nullptr;
+  std::copy(g_game_frame_uv, g_game_frame_uv + 4, uv);
+  return &texture;
+}
 
 OverlayDrawer::OverlayDrawer() = default;
 
@@ -388,6 +419,7 @@ void OverlayDrawer::DrawLatestLocked(plume::RenderCommandList *cmd,
     push.translate[1] = frame->translate[1];
     push.texture_index = TextureSlotLocked(call.texture.get());
     push.sampler_index = call.texture ? call.texture->sampler_slot : kLinearClampSamplerSlot;
+    push.param0 = call.texture && call.texture->game_frame ? 1.0f : 0.0f;
     cmd->setGraphicsPushConstants(0, &push, 0, sizeof(push));
     if (indexed)
       cmd->drawIndexedInstanced(call.count, 1, call.index_offset, call.base_vertex, 0);

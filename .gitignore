@@ -38,6 +38,8 @@ cmake/eos_credentials.cmake
 # Build output and binaries
 # ---------------------------------------------------------------------------
 /out/
+/tools/renut_modtool/bin/
+/tools/renut_modtool/obj/
 *.exe
 *.dll
 *.pdb

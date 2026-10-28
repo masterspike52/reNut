@@ -26,6 +26,7 @@
 #include "renut_engine/gpu/backend/render_profile.h"
 #include "renut_engine/gpu/guest/command_buffers.h"
 #include "renut_engine/gpu/d3d/d3d.h"
+#include "renut_engine/gpu/render/ambient_occlusion.h"
 #include "renut_engine/gpu/render/format.h"
 #include "renut_engine/gpu/render/graphics_options.h"
 #include "renut_engine/gpu/render/parallel.h"
@@ -1348,6 +1349,70 @@ TextureFetch DeviceTextureFetch(const d3d::Device &dev, u32 r) {
   return TextureFetch::FromGuest(dev.m_Constants.TextureFetch[r]);
 }
 
+// renut_shadow_softness's filter for a shadow map on its own (kShadowFilterShift
+// codes): Soft a bilinear compare, Softer four half a texel out, Softest four
+// a texel and a half out.
+u32 DefaultShadowFilterCode(u32 level) {
+  return level == kShadowFilterWidest ? 4u : level == kShadowFilterWide ? 2u : level ? kShadowFilterCodeBilinear : 0u;
+}
+
+// N&B's shadowed materials (all 2104 shaders with its tap kernel) take the
+// sun's three cascades from fetch constants 13, 14 and 15, projected by c57 /
+// c58, c61 / c62 and c65 / c66 (uv = dot(position, row) * (0.5, -0.5) + 0.5).
+// Each cascade covers several times the world of the one before (s14 about
+// 2.8 times s13's, s15 about 14 times s14's in the docks), so a filter of the
+// same texels on each blurs the far ones many times wider, and where the view
+// passes from one cascade to the next the shadow's softness jumps: a line that
+// sweeps along the ground as the camera moves. Here every cascade gets the
+// same world radius: Softer and Softest's texels of the sharpest cascade,
+// fewer of a coarser one (down to a bilinear compare).
+constexpr u32 kSunCascadeFetch[3] = {13, 14, 15};
+constexpr u32 kSunCascadeRows[3] = {57, 61, 65};
+
+void MatchSunCascades(const d3d::Device &dev, const FloatConstants &ps_constants, const u32 ps_used[8],
+                      SharedConstants &sc) {
+  const u32 level = ShadowFilter();
+  if (level < kShadowFilterWide)
+    return;  // a bilinear compare is a texel wide on any cascade
+  float texels_per_unit[3];
+  float finest = 0.0f;
+  for (u32 i = 0; i < 3; ++i) {
+    const u32 index = sc.texture_indices[0][kSunCascadeFetch[i]];
+    const u32 row = kSunCascadeRows[i];
+    const bool used = (ps_used[row / 32] >> (row % 32)) & (ps_used[(row + 1) / 32] >> ((row + 1) % 32)) & 1;
+    if (!(index >> kShadowFilterShift) || !used)
+      return;  // not a cascade draw: the maps keep their own filters
+    // uv per world unit along the map's two axes, times its size in texels.
+    float scale = 0.0f;
+    for (u32 axis = 0; axis < 2; ++axis) {
+      const auto *v = reinterpret_cast<const be_f32 *>(ps_constants.Register(row + axis));
+      const float x = float(v[0]), y = float(v[1]), z = float(v[2]);
+      scale += 0.25f * std::sqrt(x * x + y * y + z * z);
+    }
+    u32 width = 0, height = 0, depth = 0;
+    DeviceTextureFetch(dev, kSunCascadeFetch[i]).Size(width, height, depth);
+    texels_per_unit[i] = scale * float(width);
+    if (!(texels_per_unit[i] > 0.0f))
+      return;
+    finest = std::max(finest, texels_per_unit[i]);
+  }
+  const float radius = level == kShadowFilterWidest ? 2.0f : 1.0f;  // texels of the finest cascade
+  for (u32 i = 0; i < 3; ++i) {
+    const float spread = radius * texels_per_unit[i] / finest;
+    // The nearest spread there is; under a quarter texel, the bilinear compare.
+    u32 code = kShadowFilterCodeBilinear;
+    if (spread >= 0.25f) {
+      code = 2;
+      for (u32 c = 3; c < 8; ++c) {
+        if (std::abs(kShadowSpreadTexels[c] - spread) < std::abs(kShadowSpreadTexels[code] - spread))
+          code = c;
+      }
+    }
+    u32 &index = sc.texture_indices[0][kSunCascadeFetch[i]];
+    index = (index & ~(7u << kShadowFilterShift)) | code << kShadowFilterShift;
+  }
+}
+
 void FillTextures(const GuestDevice &device, u32 fetch_mask, SharedConstants &sc) {
   for (u32 r = 0; r < 32; ++r) {
     sc.texture_indices[0][r] = kNullTextureSlot;
@@ -1369,6 +1434,11 @@ void FillTextures(const GuestDevice &device, u32 fetch_mask, SharedConstants &sc
     // shader_common.h), with the fetch constant's filter between layers and
     // its Z address mode.
     u32 index = binding.slot | binding.scale.code << kResolutionScaleShift;
+    // A shadow map's compares are filtered (renutShadowCompare in
+    // shader_common.h), as renut_shadow_softness asks; the sun's cascades
+    // are matched to each other after (MatchSunCascades).
+    if (binding.shadow_map && dim == 0)
+      index |= DefaultShadowFilterCode(ShadowFilter()) << kShadowFilterShift;
     if (binding.stacked) {
       index |= kStackedTextureBit;
       if (fetch.VolumeMagFilter() != TextureFilter::Point ||
@@ -2130,6 +2200,12 @@ void SetDepthBias(const d3d::Device &dev, const HostSurface &depth, PipelineKey 
     key.depth_bias = offset > 0.0f ? (1 << 30) : -(1 << 30);
     key.depth_bias_clamp = offset;
   }
+}
+
+// Whether RB_BLENDCONTROL blends color (Xenos has no enable bit: ONE, ZERO,
+// ADD is no blending).
+bool BlendsColor(u32 control) {
+  return !((control & 0x1F) == 1 && ((control >> 8) & 0x1F) == 0 && ((control >> 5) & 7) == 0);
 }
 
 PipelineKey MakeKey(const GuestDevice &device, const ShaderRecord *vs, const ShaderRecord *ps,
@@ -3227,6 +3303,8 @@ bool DrawStateLocked(const u8 *device_state, const DrawCall &call, const ReplayC
   const u32 texture_mask =
       (vs->entry ? vs->entry->textureFetchMask : 0) | (ps && ps->entry ? ps->entry->textureFetchMask : 0);
   FillTextures(device, texture_mask, sc);
+  if (ps && ps->entry)
+    MatchSunCascades(device.dev(), ps_constants, ps->entry->floatConstants, sc);
 
   stages.Enter(render_profile::Stage::kConstants);
   const d3d::Device &dev = device.dev();
@@ -3235,6 +3313,14 @@ bool DrawStateLocked(const u8 *device_state, const DrawCall &call, const ReplayC
   const u32 color_control = dev.m_ControlPacket.ColorControl;
   sc.alpha_test_func = (color_control & 8) ? (color_control & 7) : 7;
   sc.alpha_threshold = dev.m_ValuesPacket.AlphaRef;
+  // renut_alpha_to_coverage: a GREATER or GEQUAL alpha test into a
+  // multisampled target that does not blend (the game's cut-outs: leaves,
+  // grass, fences) becomes coverage.
+  const bool alpha_to_coverage = AlphaToCoverage() && (sc.alpha_test_func == 4 || sc.alpha_test_func == 6) &&
+                                 targets.color_count && targets.colors[0]->samples != plume::RenderSampleCount::COUNT_1 &&
+                                 !BlendsColor(dev.m_ControlPacket.BlendControl0);
+  if (alpha_to_coverage)
+    sc.alpha_test_func |= kAlphaTestToCoverage;
   const ViewportState viewport = ComputeViewport(device, targets);
   sc.screen_space = viewport.screen_space ? 1 : 0;
   std::memcpy(sc.screen_scale, viewport.screen_scale, sizeof(sc.screen_scale));
@@ -3306,8 +3392,9 @@ bool DrawStateLocked(const u8 *device_state, const DrawCall &call, const ReplayC
     return false;
 
   stages.Enter(render_profile::Stage::kPipeline);
-  const PipelineKey key =
-      MakeKey(device, vs, ps, declaration, targets, call.primitive, geometry.per_instance);
+  PipelineKey key = MakeKey(device, vs, ps, declaration, targets, call.primitive, geometry.per_instance);
+  if (alpha_to_coverage)
+    key.alpha_to_coverage = 1;
   plume::RenderPipeline *pipeline =
       GetPipelineLocked(key, {host_vs, host_ps, &declaration->layout});
   if (!pipeline)
@@ -3712,16 +3799,27 @@ void ResolveStateLocked(const u8 *device_state, u32 flags, const ClearRect *sour
               ? GetDepthResolveTextureLocked(dest_texture_va, surface->scale, dest_format)
               : nullptr;
       ClearRect src;
+      if (dest)
+        dest->shadow_map = surface->shadow_map;
       if (!dest) {
         if (LogLimited(depth_logged, 2)) {
           RGPU_WARN("Depth resolve into {:08X} (level {}, slice {}) not done", dest_texture_va,
                     dest_level, dest_slice);
         }
-      } else if (fit(dest, src)) {
-        ResolveDepth(surface, dest, src, dest_x, dest_y);
+      } else if (fit(dest, src) && ResolveDepth(surface, dest, src, dest_x, dest_y)) {
+        // renut_ssao: the scene's depth is in; its occlusion goes over the
+        // color target the scene was drawn into.
+        HostSurface *color = FindHostSurfaceLocked(device.U32(d3d::kDeviceOffsetRenderTargets));
+        if (ApplyAmbientOcclusionLocked(surface, dest, dest_y + (src.y2 - src.y1), color)) {
+          g_bound.framebuffer = nullptr;
+          g_bound.pipeline = nullptr;
+          g_bound.layout = false;
+          g_bound.viewport_set = false;
+        }
       }
     } else if (HostTexture *dest = GetResolveTextureLocked(dest_texture_va, surface->format,
                                                            surface->scale, dest_format)) {
+      dest->shadow_map = surface->shadow_map;
       ClearRect src;
       // A volume's slices are depth; stacked textures and cubes have layers.
       const bool volume = dest->dimension == TextureDimension::Tex3D && !dest->stacked;

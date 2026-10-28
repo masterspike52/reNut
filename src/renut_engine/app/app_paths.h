@@ -1,5 +1,5 @@
 #pragma once
-// Where reNut writes its own files (renut.toml, logs, pipeline_list.bin, the
+// Where reNut writes its own files (renut.toml, logs, pipeline captures, the
 // path setup, shader captures). Next to the executable, as the SDK assumes;
 // an AppImage runs from a read-only mount, so there it is the user data
 // folder the SDK keeps saves in ($XDG_DATA_HOME/renut, or

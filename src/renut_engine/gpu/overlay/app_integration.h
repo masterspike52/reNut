@@ -13,6 +13,7 @@ struct RuntimeConfig;
 namespace ui {
 class ImGuiDrawer;
 class ImmediateDrawer;
+class ImmediateTexture;
 class WindowedAppContext;
 } // namespace ui
 } // namespace rex
@@ -34,6 +35,11 @@ bool StartRenderer(rex::ui::WindowedAppContext &app_context,
 
 // OnWindowPixelSizeChanged.
 void OnWindowResized();
+
+// Any thread: the game's frame as last shown, as a texture of the overlay
+// drawer's, and its shown part (u0, v0, u1, v1); nullptr before there's one.
+// For UI drawn over the game that samples it (the Guide's blur).
+rex::ui::ImmediateTexture *GameFrameTexture(float uv[4]);
 
 // OnShutdown.
 void ShutdownRenderer();

@@ -31,6 +31,9 @@
  * (as XInput's), the movement keys as the left stick's directions;
  * controllers.cpp hands them out before the controllers' own.
  *
+ * The Guide (RexLiveless) gets the same keys as player 1's pad
+ * (rexglue_guide::SetKeyboardPad), plus renut_key_guide as its Guide button.
+ *
  * Keys come from the SDK's window (rex::ui::Window listeners, on the UI thread,
  * Windows and Linux alike); the binds are key names (rex::ui::ParseVirtualKey:
  * "Space", "LMB", "Shift", ...) in Nuts&Bolts/Keyboard cvars, read on the UI
@@ -61,7 +64,10 @@
 #include <string>
 #include <utility>
 
+#include <rexglue_guide/guide.h>
+
 #include "renut_engine/game/mouse_camera.h"
+#include "renut_engine/game/vehicle_drivers.h"
 #include "renut_engine/gpu/overlay/overlay_ui.h"
 
 REXCVAR_DEFINE_BOOL(renut_keyboard, false, "Nuts&Bolts/Keyboard",
@@ -92,6 +98,8 @@ REXCVAR_DEFINE_STRING(renut_key_dpad_up, "Up", "Nuts&Bolts/Keyboard", "D-pad up.
 REXCVAR_DEFINE_STRING(renut_key_dpad_down, "Down", "Nuts&Bolts/Keyboard", "D-pad down.");
 REXCVAR_DEFINE_STRING(renut_key_dpad_left, "Left", "Nuts&Bolts/Keyboard", "D-pad left.");
 REXCVAR_DEFINE_STRING(renut_key_dpad_right, "Right", "Nuts&Bolts/Keyboard", "D-pad right.");
+REXCVAR_DEFINE_STRING(renut_key_guide, "G", "Nuts&Bolts/Keyboard",
+                      "Controller Guide button: opens the Guide (RexLiveless) for player 1.");
 
 REX_EXTERN(__imp__sub_821CB628);  // padStatePush
 
@@ -269,6 +277,24 @@ private:
     }
     g_buttons.store(buttons, std::memory_order_relaxed);
     g_move.store(move, std::memory_order_relaxed);
+    UpdateGuide(buttons, move);
+  }
+
+  // The keys are player 1's pad in the Guide too: the Guide key opens it, and
+  // the bound buttons and movement keys drive it. Its button is the Guide's
+  // alone; the game never gets it.
+  void UpdateGuide(uint32_t buttons, uint32_t move) {
+    if (!REXCVAR_GET(renut_keyboard) || renut::gpu::overlay::WantsCursor()) {
+      rexglue_guide::ClearKeyboardPad();
+      return;
+    }
+    constexpr uint16_t kGuideButton = 0x0400;  // XINPUT_GAMEPAD_GUIDE
+    const std::string &guide_key = REXCVAR_GET(renut_key_guide);
+    const size_t guide = guide_key.empty() ? 0 : size_t(rex::ui::ParseVirtualKey(guide_key));
+    const bool guide_held = guide && guide < held_.size() && held_[guide];
+    const float x = float(!!(move & kMoveRight)) - float(!!(move & kMoveLeft));
+    const float y = float(!!(move & kMoveForward)) - float(!!(move & kMoveBack));
+    rexglue_guide::SetKeyboardPad(0, uint16_t(buttons & 0xFFFF) | (guide_held ? kGuideButton : 0), x, y);
   }
 
   rex::ui::Window *window_ = nullptr;
@@ -305,10 +331,11 @@ uint32_t PortOfRecord(const uint8_t *base, uint32_t record) {
 // their edges.
 uint32_t g_previous[kPorts] = {};
 
-// Whether the keys play now: renut_keyboard on and no overlay window taking
-// them.
+// Whether the keys play now: renut_keyboard on, and no overlay window nor the
+// Guide (RexLiveless) taking them.
 bool KeysActive() {
-  return REXCVAR_GET(renut_keyboard) && !renut::gpu::overlay::WantsCursor();
+  return REXCVAR_GET(renut_keyboard) && !renut::gpu::overlay::WantsCursor() &&
+         !rexglue_guide::IsOpen();
 }
 
 // --- Keystrokes (XUI menus) -------------------------------------------------
@@ -407,6 +434,10 @@ bool NextKeystroke(uint16_t &virtual_key, uint16_t &flags) {
 
 // BOOL padStatePush(record, entry): makes 'entry' the record's current one.
 REX_HOOK_RAW(sub_821CB628) {
+  // A vehicle the Remote Control drives takes the player's
+  // (vehicle_drivers.cpp).
+  if (renut::game::VehicleDriversPadPush(ctx, base))
+    return;
   const uint32_t record = ctx.r3.u32;
   const uint32_t entry = ctx.r4.u32;
   // Nothing held (keyboard off, or an overlay window taking the keys) still

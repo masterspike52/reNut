@@ -17,7 +17,7 @@
 #include <string>
 #include <thread>
 
-#include "renut_engine/online/coop.h"
+#include "renut_engine/game/stereo.h"
 
 // Typed import of the original generated implementation at sub_823BBE58.
 REX_IMPORT(__imp__rex_setParamInterval, setParamInterval, void(int));
@@ -42,6 +42,19 @@ void klungoDestruct_hook() // Called at 8244b744 (End of the function)
 	g_klungoArcade.store(false, std::memory_order_relaxed);
 }
 
+// Klungo's arcade 2 (the DLC) is its own game object (sub_823C47E0 builds it,
+// sub_823C68A8 tears it down, dword_82E19AD8 points at it meanwhile), held at
+// 30 fps the same way.
+void klungoDlcConstruct_hook() // Called at 823c519c (End of the function)
+{
+	klungoConstruct_hook();
+}
+
+void klungoDlcDestruct_hook() // Called at 823c6b80 (End of the function)
+{
+	klungoDestruct_hook();
+}
+
 // The Saucer of Peril Returns (Terrarium of Terror, act 2 game 3) never ends
 // above 30 fps: the saucer ride keeps going. While it runs the frame limiter
 // holds the game at 30 fps, as for Klungo's arcade. The challenge manager
@@ -49,33 +62,36 @@ void klungoDestruct_hook() // Called at 8244b744 (End of the function)
 // +12, and challengeManSetState (sub_824FEDD8) clears it at state 0 (idle).
 static constexpr uint32_t kSaucerOfPerilChallenge = 0x3DDFA82A;  // aid_challenge_banjox_terrorium_act2_game3
 static constexpr uint32_t kChallengeIdOffset = 12;
+// challengeMan + 20: its state (challengeManSetState). The tick treats 6 to
+// 17 as the challenge in play (it updates the players' runs then); before are
+// talking to its giver, the objective and the intro, after the results.
+static constexpr uint32_t kChallengeStateOffset = 20;
+static constexpr int32_t kChallengePlayFirst = 6;
+static constexpr int32_t kChallengePlayEnd = 18;
 static std::atomic<bool> g_saucerOfPeril{ false };
 
 REX_EXTERN(__imp__sub_821BD590);
 REX_EXTERN(__imp__sub_824FF2F0);
 
-// void challengeManTick(challengeMan*), once a frame from sub_82207320. In a
-// co-op session it runs as single player (online/coop.h).
+// void challengeManTick(challengeMan*), once a frame from sub_82207320. The
+// running challenge also picks reNut's challenge songs (stereo.h).
 REX_HOOK_RAW(sub_821BD590)
 {
 	const uint32_t man = ctx.r3.u32;
-	{
-		renut::online::coop::OfflineChallenge offline(base);
-		__imp__sub_821BD590(ctx, base);
-	}
+	__imp__sub_821BD590(ctx, base);
 	const uint32_t id = rex::byte_swap(*reinterpret_cast<const uint32_t*>(base + man + kChallengeIdOffset));
 	g_saucerOfPeril.store(id == kSaucerOfPerilChallenge, std::memory_order_relaxed);
+	const int32_t state = int32_t(rex::byte_swap(*reinterpret_cast<const uint32_t*>(base + man + kChallengeStateOffset)));
+	renut::game::ChallengeMusicTick(ctx, base, id, state >= kChallengePlayFirst && state < kChallengePlayEnd);
 }
 
 // void challengeManTeardown(challengeMan*, bool). The tick may stop with the
-// id still set (leaving the world), so the hold ends here too.
+// id still set (leaving the world), so the hold and the song end here too.
 REX_HOOK_RAW(sub_824FF2F0)
 {
-	{
-		renut::online::coop::OfflineChallenge offline(base);
-		__imp__sub_824FF2F0(ctx, base);
-	}
+	__imp__sub_824FF2F0(ctx, base);
 	g_saucerOfPeril.store(false, std::memory_order_relaxed);
+	renut::game::ChallengeMusicTick(ctx, base, 0, false);
 }
 
 // Havok steps N&B's physics in fixed 1/60 s steps on its own thread

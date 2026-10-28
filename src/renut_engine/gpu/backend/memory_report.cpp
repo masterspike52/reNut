@@ -122,7 +122,7 @@ void MaybeReportMemory() {
             Mb(streams.cached_bytes), Mb(streams.pool_bytes), streams.streams, streams.index_ranges);
   RGPU_INFO("Memory: host: upload rings {:.0f} MB, memexport readback {:.0f} MB, command buffers "
             "{:.0f} MB in {} ({} live) + {:.0f} MB in {} spare, shader cache {:.0f} MB, "
-            "pipelines {} built + {} prebuilt unused (of {} listed, {} waiting for their shaders)",
+            "pipelines {} built + {} prebuilt unused (of {} built in, {} waiting for their shaders)",
             Mb(uploads), Mb(readback), Mb(commands.recorded_bytes), commands.recorded,
             commands.live, Mb(commands.spare_bytes), commands.spare, Mb(ShaderCacheHostBytes()),
             pipelines.built, pipelines.prebuilt_unused, pipelines.listed, pipelines.waiting);

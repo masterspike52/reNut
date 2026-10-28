@@ -39,6 +39,28 @@
  *   sample 0 of a multisampled view. A count the GPU can't do for the
  *   target's format and the depth format steps down to one it can, so a
  *   draw's color and depth targets always agree.
+ * - renut_reflection_resolution: the water reflection's targets (320x180,
+ *   4x multisampled, made by sub_8237BF58) render at the scene's scale, or 2x
+ *   that (half the screen). Its resolve destination takes the source's scale,
+ *   which the water's fetches divide out (kResolutionScaleShift).
+ * - renut_shadow_softness: N&B shadows a pixel with binary depth compares:
+ *   its materials take 8 taps of a rotated Poisson disk per sun cascade
+ *   (sub_8237C6B8 fills the 32x32 rotation noise), its deferred passes one,
+ *   each `depth >= reference` (Sge) or `>` (Sgt) on the fetched depth. The
+ *   recompiler keeps each depth-like fetch's coordinate, texture and sampler
+ *   for the register lanes it lands in (renutTapLanes in
+ *   shader_recompiler.cpp) and re-emits a compare of several such lanes as
+ *   renutShadowCompare (shader_common.h), which for a texture flagged here
+ *   (kShadowFilterShift on the descriptor index of a resolve from a shadow
+ *   map) filters the compare over the texels around the tap, and gives the
+ *   binary compare otherwise. The deferred passes' lone compares, which the
+ *   game takes as yes or no, stay binary.
+ * - renut_alpha_to_coverage: an alpha-tested draw (RB_COLORCONTROL alpha test
+ *   GREATER or GEQUAL) into a multisampled target without blending turns its
+ *   test into coverage: the shader writes alpha sharpened around the reference
+ *   (kAlphaTestToCoverage on the alpha test function, alphaTest in
+ *   shader_common.h) instead of discarding, and the pipeline has alpha to
+ *   coverage on.
  * - renut_anti_aliasing: post-process anti-aliasing of the finished frame,
  *   in the present pass (present_ps.hlsl) as it scans the game's front
  *   buffer out to the window: FXAA in the frame's own texels, or SMAA 1x in
@@ -86,5 +108,34 @@ float DepthOfFieldStrength();
 // How strong the bloom (glow) is, as a share of the game's (1 = the game's
 // own, 0 = off).
 float BloomStrength();
+
+// Whether 'desc' is one of the shadow maps (whose resolves take the shadow
+// filter, see renut_shadow_softness).
+bool IsShadowMapSurface(const d3d::SurfaceDesc &desc);
+
+// renut_shadow_softness, as a level: off (the game's binary compares), Soft,
+// Softer, Softest.
+constexpr uint32_t kShadowFilterOff = 0;
+constexpr uint32_t kShadowFilterBilinear = 1;
+constexpr uint32_t kShadowFilterWide = 2;
+constexpr uint32_t kShadowFilterWidest = 3;
+uint32_t ShadowFilter();
+
+// The filter a shadow map's compares get, in bits 29-31 of its 2D descriptor
+// index (RENUT_SHADOW_FILTER_SHIFT in shader_common.h): 0 none, 1 a bilinear
+// compare, 2 to 7 four of them kShadowSpreadTexels[code] guest texels out.
+constexpr uint32_t kShadowFilterShift = 29;
+constexpr uint32_t kShadowFilterCodeBilinear = 1;
+constexpr float kShadowSpreadTexels[8] = {0.0f, 0.0f, 0.5f, 1.0f, 1.5f, 2.0f, 3.0f, 4.0f};
+
+// renut_alpha_to_coverage.
+bool AlphaToCoverage();
+
+// renut_ssao (ambient_occlusion.h): 0 off, 1 low, 2 medium, 3 high.
+uint32_t AmbientOcclusionQuality();
+
+// On SharedConstants::alpha_test_func (alphaTest in shader_common.h): the
+// test becomes coverage (RENUT_ALPHA_TO_COVERAGE).
+constexpr uint32_t kAlphaTestToCoverage = 0x10;
 
 } // namespace renut::gpu

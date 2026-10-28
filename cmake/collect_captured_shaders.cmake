@@ -9,6 +9,10 @@ foreach(source IN LISTS captured)
     get_filename_component(name "${source}" NAME)
     if(NOT EXISTS "${DUMP_DIR}/${name}")
         file(COPY "${source}" DESTINATION "${DUMP_DIR}")
+        # Dated now, not with the capture's time: a capture brought from
+        # another machine can be dated ahead of this clock, and the build then
+        # recompiles every time until that time passes.
+        file(TOUCH "${DUMP_DIR}/${name}")
         message(STATUS "Added captured shader ${name} to ${DUMP_DIR}")
     endif()
 endforeach()
