@@ -44,6 +44,9 @@
 #include <cstring>
 #include <mutex>
 
+#include <rexglue_guide/guide.h>
+
+#include "renut_engine/game/vehicle_drivers.h"
 #include "renut_engine/gpu/overlay/overlay_ui.h"
 
 REXCVAR_DEFINE_BOOL(renut_mouse_camera, false, "Nuts&Bolts/Input",
@@ -122,7 +125,7 @@ public:
   void OnMouseDown(rex::ui::MouseEvent &e) override {
     if (!g_captured.load(std::memory_order_relaxed) && REXCVAR_GET(renut_mouse_camera) &&
         e.button() == rex::ui::MouseEvent::Button::kLeft && window_->HasFocus() &&
-        !renut::gpu::overlay::WantsCursor()) {
+        !renut::gpu::overlay::WantsCursor() && !rexglue_guide::IsOpen()) {
       Capture();
     }
   }
@@ -130,7 +133,9 @@ public:
   void OnMouseMove(rex::ui::MouseEvent &e) override {
     if (!g_captured.load(std::memory_order_relaxed))
       return;
-    if (!REXCVAR_GET(renut_mouse_camera) || renut::gpu::overlay::WantsCursor()) {
+    // The Guide takes the mouse too: the cursor comes back for it.
+    if (!REXCVAR_GET(renut_mouse_camera) || renut::gpu::overlay::WantsCursor() ||
+        rexglue_guide::IsOpen()) {
       Release();
       return;
     }
@@ -237,6 +242,8 @@ REX_HOOK_RAW(sub_822C0448) {
     g_motion_x = g_motion_y = 0.0f;
   }
   t_frame = frame;
+  // The Remote Control: player 1's camera follows the vehicle it drives.
+  renut::game::VehicleDriversCamera(ctx, base);
   __imp__sub_822C0448(ctx, base);
   t_frame = {};
 }

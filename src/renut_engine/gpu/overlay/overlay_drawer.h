@@ -46,7 +46,12 @@ struct OverlayTextureData {
   std::unique_ptr<plume::RenderTextureView> view;
   uint32_t slot;
   bool failed = false;
+  bool game_frame = false;  // stands for the frame just scanned out (GameFrameTexture)
 };
+
+// Presenting thread: the frame just scanned out, its slot (kInvalidDescriptor:
+// none) and shown part (u0, v0, u1, v1), for GameFrameTexture.
+void SetGameFrameLocked(uint32_t slot, const float uv[4]);
 
 class OverlayTexture final : public rex::ui::ImmediateTexture {
 public:

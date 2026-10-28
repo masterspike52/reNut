@@ -4,19 +4,22 @@
 #include "renut_engine/app/renut_logging.h"
 #include "renut_engine/ui/renut_logging_overlay.h"
 #include "renut_engine/ui/path_setup_wizard.h"
-#include "renut_engine/ui/online_dialog.h"
-#include "renut_engine/ui/friends_dialog.h"
+#include <rexglue_guide/guide.h>
 #include "renut_engine/ui/settings_dialog.h"
 #include "renut_engine/gpu/overlay/app_integration.h"
 #include "renut_engine/app/crash_dump.h"
 #include "renut_engine/app/app_paths.h"
 #include "renut_engine/app/dlc_install.h"
+#include "renut_engine/app/save_headers.h"
 #include "renut_engine/mods/mod_loader.h"
 #include "renut_engine/game/mouse_camera.h"
+#include "renut_engine/game/controllers.h"
 #include "renut_engine/game/keyboard_input.h"
 #include "renut_engine/game/graphics_menu.h"
 #include <rex/ui/window.h>
+#include <rex/ui/overlay/achievement_notification.h>
 //#include <rex/discord_rpc.h>
+#include <atomic>
 #include <functional>
 #include <string>
 
@@ -30,17 +33,18 @@ public:
     }
 
     // renut.toml and the logs go where reNut can write: next to the
-    // executable, or the user data folder when running as an AppImage.
+    // executable, or the user data folder when running as an AppImage. The
+    // SDK puts the logs next to the executable unless log_file is set; it
+    // loads renut.toml after this, so a log_file set there still wins.
     void OnConfigurePaths(rex::PathConfig& paths) override {
-        if (renut::paths::IsAppImage())
+        if (renut::paths::IsAppImage()) {
             paths.config_path = renut::paths::WritableFolder() / (app_name_ + ".toml");
+            if (REXCVAR_GET(log_file).empty())
+                rex::cvar::SetFlagByName(
+                    "log_file", (renut::paths::WritableFolder() / "logs" / (app_name_ + ".log")).string());
+        }
         config_path_ = paths.config_path;
         renut::graphics_menu::SetConfigPath(config_path_);
-    }
-
-    void OnConfigureLogging(rex::LogConfig& config) override {
-        if (renut::paths::IsAppImage())
-            config.log_dir = renut::paths::WritableFolder() / "logs";
     }
 
     static std::unique_ptr<rex::ui::WindowedApp> Create(
@@ -60,7 +64,7 @@ public:
     //     //rex::discord_rpc::Start(Application ID, Settings);
     //     rex::discord_rpc::Start("1520303728047951892", rpc);
 
-    //     rex::cvar::LoadConfig("renut.toml"); 
+    //     rex::cvar::LoadConfig("renut.toml");
     // }
 
     // The game folder is mounted and the XEX loaded; the game has not
@@ -71,10 +75,13 @@ public:
         renut::mods::LoadMods(runtime());
     }
 
+    void OnConfigureFonts(ImFontAtlas* atlas) override {
+        rexglue_guide::ConfigureFonts(atlas);
+    }
+
     // reNut's dialogs live in its own overlay (gpu/overlay_ui.h); the SDK's
-    // drawer keeps only its own menus.
+    // drawer keeps its own menus and the Rexglue Guide (RexLiveless).
     void OnCreateDialogs(rex::ui::ImGuiDrawer* drawer) override {
-        (void)drawer;
         // F4 opens reNut's settings (RenutSettingsDialog); the SDK's, registered
         // just before this as bind_settings on F4, moves to F8. Binds go by
         // registration order, so the SDK's would take F4 first.
@@ -85,16 +92,42 @@ public:
         fps_overlay_ = std::make_unique<FpsOverlay>();
         log_overlay_ = std::make_unique<RenuLogOverlayDialog>();
         path_wizard_ = std::make_unique<PathSetupWizard>();
-        online_dialog_ = std::make_unique<OnlineDialog>();
-        friends_dialog_ = std::make_unique<FriendsDialog>();
         renut::gpu::overlay::AddDialog(fps_overlay_.get());
         renut::gpu::overlay::AddDialog(log_overlay_.get());
         renut::gpu::overlay::AddDialog(path_wizard_.get());
-        renut::gpu::overlay::AddDialog(online_dialog_.get());
-        renut::gpu::overlay::AddDialog(friends_dialog_.get());
+        // The pad's Guide / PS button opens the Guide, which reads it through the
+        // runtime's input system; the runtime drops it unless guide_button is on.
+        // The game never sees it (controllers.cpp masks it out).
+        rex::cvar::SetFlagByName("guide_button", "true");
+        // The Guide's sign-in screen waits for the path wizard: until the game's
+        // paths are set (OnFinalizePaths) the game is not starting yet. The game
+        // reads controllers by host slot (controllers.cpp), so the Guide asks
+        // which player a slot's controller is; a player 2-4 who signs in there
+        // joins the game.
+        rexglue_guide::AddCredit("MadLadMikael", "reNut Lead Programmer");
+        rexglue_guide::AddCredit("EtoneDemid", "Nutstaller");
+        rexglue_guide::AddCredit("ValcomDrifty", "reNut Title Logo");
+        rexglue_guide::AddCredit("SolarCookies", "Various Small Things");
+        rexglue_guide::AddCredit("You, The Player", "Playing the game.");
+        rexglue_guide::Install(this, drawer,
+                               {.title_name = "Banjo-Kazooie: Nuts & Bolts",
+                                .on_quit = [this] {
+                                    if (auto* w = window()) w->RequestClose();
+                                },
+                                .ready_for_sign_in = [this] { return paths_ready_.load(); },
+                                .immediate_drawer = immediate_drawer(),
+                                .player_for_controller = [](int pad) {
+                                    return renut::game::ControllerPlayer(pad);
+                                },
+                                .game_frame = renut::gpu::GameFrameTexture});
     }
 
+    // The Guide shows achievement toasts itself.
+    std::unique_ptr<rex::ui::AchievementNotificationDialog>
+    CreateAchievementNotificationDialog() override { return nullptr; }
+
     void OnShutdown() override {
+        rexglue_guide::Shutdown();
         renut::game::DetachKeyboard();
         renut::game::DetachMouseCamera();
         renut::gpu::ShutdownRenderer();
@@ -102,8 +135,6 @@ public:
         renut::gpu::overlay::RemoveDialog(fps_overlay_.get());
         renut::gpu::overlay::RemoveDialog(log_overlay_.get());
         renut::gpu::overlay::RemoveDialog(path_wizard_.get());
-        renut::gpu::overlay::RemoveDialog(online_dialog_.get());
-        renut::gpu::overlay::RemoveDialog(friends_dialog_.get());
     }
 
     // Native renderer: the SDK runs without its GPU backend and the overlay is
@@ -136,9 +167,11 @@ public:
         renut::game::AttachMouseCamera(window());
         renut::game::AttachKeyboard(window());
 
-        path_wizard_->Init(app_name_, defaults, [resume](rex::PathConfig resolved) {
+        path_wizard_->Init(app_name_, defaults, [this, resume](rex::PathConfig resolved) {
             renut::dlc::SetUserDataRoot(resolved.user_data_root);
+            renut::saves::FixPackageHeaders(resolved.user_data_root);
             resume(resolved);
+            paths_ready_ = true;
             });
         return std::nullopt;
     }
@@ -148,8 +181,9 @@ private:
     std::filesystem::path config_path_;
     std::unique_ptr<RenutSettingsDialog> settings_dialog_;
     std::unique_ptr<PathSetupWizard> path_wizard_;
+    // The path wizard is done and the game is starting: the Guide may show
+    // its sign-in screen.
+    std::atomic<bool> paths_ready_{false};
     std::unique_ptr<FpsOverlay> fps_overlay_;
     std::unique_ptr<RenuLogOverlayDialog> log_overlay_;
-    std::unique_ptr<OnlineDialog> online_dialog_;
-    std::unique_ptr<FriendsDialog> friends_dialog_;
 };

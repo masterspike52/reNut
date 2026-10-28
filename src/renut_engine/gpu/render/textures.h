@@ -77,6 +77,9 @@ struct HostTexture {
   std::vector<SwizzleView> swizzle_views;
 
   bool gpu_written = false;     // content comes from a Resolve, not guest memory
+  // Resolved from a shadow map (HostSurface::shadow_map): its descriptor index
+  // takes the shadow filter (kShadowFilterShift).
+  bool shadow_map = false;
   bool uploaded = false;
   uint64_t content_hash = 0;
   uint64_t checked_frame = 0;
@@ -117,6 +120,7 @@ struct TextureBinding {
   // The scale its host levels reach (HostTexture::extra_levels), 1x without
   // them; the sampler takes it (SamplerSlotLocked).
   RenderScale lod_scale;
+  bool shadow_map = false;  // HostTexture::shadow_map
 };
 
 // Flags on a stacked texture's 3D descriptor index (RENUT_STACKED_TEXTURE,

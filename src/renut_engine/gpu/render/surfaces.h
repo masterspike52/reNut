@@ -38,6 +38,9 @@ struct HostSurface {
   uint32_t height = 0;
   RenderScale scale;
   bool depth = false;
+  // One of the shadow maps (IsShadowMapSurface): what is resolved from it is
+  // a shadow map too, whose compares renut_shadow_softness filters.
+  bool shadow_map = false;
   plume::RenderFormat format = plume::RenderFormat::UNKNOWN;
   plume::RenderSampleCounts samples = plume::RenderSampleCount::COUNT_1;
 

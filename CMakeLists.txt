@@ -20,8 +20,6 @@ set(RENUT_SOURCES
 	src/renut_engine/perf/frame_stats.cpp
 	src/renut_engine/game/frontend_debug_menu.cpp
 	src/renut_engine/game/graphics_menu.cpp
-	src/renut_engine/game/coop_menu.cpp
-	src/renut_engine/game/env_map_pool.cpp
 	src/renut_engine/game/level_pools.cpp
 	src/renut_engine/game/controllers.cpp
 	src/renut_engine/game/thread_slots.cpp
@@ -38,17 +36,15 @@ set(RENUT_SOURCES
 	src/renut_engine/game/vehicle_limits.cpp
 	src/renut_engine/game/status_dials.cpp
 	src/renut_engine/game/notes.cpp
-	src/renut_engine/online/identity.cpp
-	src/renut_engine/online/coop.cpp
+	src/renut_engine/game/stereo.cpp
+	src/renut_engine/game/restored_parts.cpp
+	src/renut_engine/game/banner.cpp
+	src/renut_engine/game/vehicle_drivers.cpp
 	src/renut_engine/online/trace.cpp
-	src/renut_engine/online/eos.cpp
-	src/renut_engine/online/friends.cpp
-	src/renut_engine/online/sessions.cpp
-	src/renut_engine/online/session_cheats.cpp
-	src/renut_engine/online/qos.cpp
-	src/renut_engine/online/transport.cpp
+	src/renut_engine/online/rexliveless.cpp
 	src/renut_engine/app/crash_dump.cpp
 	src/renut_engine/app/dlc_install.cpp
+	src/renut_engine/app/save_headers.cpp
 	src/renut_engine/mods/custom_parts.cpp
 	src/renut_engine/mods/json.cpp
 	src/renut_engine/mods/mod_device.cpp
@@ -59,6 +55,12 @@ set(RENUT_SOURCES
 	src/renut_engine/mods/zip_reader.cpp
 	src/hooks.cpp
 )
+
+# Linux only: the SDK's audio worker can run XAudio's render callback after
+# the client is unregistered, which freezes Linux after the Microsoft logo.
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    list(APPEND RENUT_SOURCES src/renut_engine/game/audio_client_guard.cpp)
+endif()
 
 if(WIN32)
 list(APPEND RENUT_SOURCES icon/app.rc)
@@ -85,48 +87,27 @@ else()
 endif()
 target_link_libraries(renut PRIVATE renut_lua)
 
-# Online play runs on Epic Online Services (src/renut_engine/online/eos.cpp):
-# sign-in by Device ID and peer-to-peer traffic. The EOS SDK comes from the Epic
-# Developer Portal; without it renut builds without online play. The product's
-# IDs (Developer Portal: Product Settings) come from cmake/eos_credentials.cmake
-# when it is there (kept out of version control: it holds the client secret),
-# else from -D, and are built in.
-include("${CMAKE_SOURCE_DIR}/cmake/eos_credentials.cmake" OPTIONAL)
-set(RENUT_EOS_DIR "${CMAKE_SOURCE_DIR}/thirdparty/EOS-SDK-58105819-Release-v1.19.2.1/SDK" CACHE PATH
-    "The EOS SDK's SDK folder (Include/eos_sdk.h inside)")
-set(RENUT_EOS_PRODUCT_ID "" CACHE STRING "EOS product ID")
-set(RENUT_EOS_SANDBOX_ID "" CACHE STRING "EOS sandbox ID")
-set(RENUT_EOS_DEPLOYMENT_ID "" CACHE STRING "EOS deployment ID")
-set(RENUT_EOS_CLIENT_ID "" CACHE STRING "EOS client ID (a client policy allowing Connect and P2P)")
-set(RENUT_EOS_CLIENT_SECRET "" CACHE STRING "EOS client secret")
-if(EXISTS "${RENUT_EOS_DIR}/Include/eos_sdk.h")
-    if(WIN32)
-        set(renut_eos_lib "${RENUT_EOS_DIR}/Lib/EOSSDK-Win64-Shipping.lib")
-        set(renut_eos_runtime "${RENUT_EOS_DIR}/Bin/EOSSDK-Win64-Shipping.dll")
-    else()
-        set(renut_eos_lib "${RENUT_EOS_DIR}/Bin/libEOSSDK-Linux-Shipping.so")
-        set(renut_eos_runtime "${renut_eos_lib}")
-    endif()
-    target_include_directories(renut SYSTEM PRIVATE "${RENUT_EOS_DIR}/Include")
-    target_link_libraries(renut PRIVATE "${renut_eos_lib}")
-    target_compile_definitions(renut PRIVATE
-        RENUT_EOS=1
-        "RENUT_EOS_PRODUCT_ID=\"${RENUT_EOS_PRODUCT_ID}\""
-        "RENUT_EOS_SANDBOX_ID=\"${RENUT_EOS_SANDBOX_ID}\""
-        "RENUT_EOS_DEPLOYMENT_ID=\"${RENUT_EOS_DEPLOYMENT_ID}\""
-        "RENUT_EOS_CLIENT_ID=\"${RENUT_EOS_CLIENT_ID}\""
-        "RENUT_EOS_CLIENT_SECRET=\"${RENUT_EOS_CLIENT_SECRET}\"")
-    add_custom_command(TARGET renut POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different "${renut_eos_runtime}" "$<TARGET_FILE_DIR:renut>"
-        VERBATIM)
-    if(RENUT_EOS_PRODUCT_ID STREQUAL "")
-        message(STATUS "renut: EOS SDK found, but no RENUT_EOS_* product IDs: online play reports it")
-    else()
-        message(STATUS "renut: online play on EOS (${RENUT_EOS_DIR})")
-    endif()
+# miniaudio 0.11.21 (thirdparty/miniaudio, github.com/mackron/miniaudio,
+# public domain / MIT-0) with stb_vorbis: the Stereo's music from the player's
+# own files (src/renut_engine/game/stereo.cpp), on a sound device of its own.
+enable_language(C)
+add_library(renut_miniaudio STATIC "${CMAKE_SOURCE_DIR}/thirdparty/miniaudio/miniaudio_impl.c")
+target_include_directories(renut_miniaudio PUBLIC "${CMAKE_SOURCE_DIR}/thirdparty/miniaudio")
+if(MSVC)
+    target_compile_options(renut_miniaudio PRIVATE /W0)
 else()
-    message(STATUS "renut: no EOS SDK at ${RENUT_EOS_DIR}: building without online play")
+    target_compile_options(renut_miniaudio PRIVATE -w)
 endif()
+if(UNIX)
+    target_link_libraries(renut_miniaudio PRIVATE ${CMAKE_DL_LIBS} pthread m)
+endif()
+target_link_libraries(renut PRIVATE renut_miniaudio)
+
+# Online play runs on RexLiveless through the Rexglue Guide
+# (thirdparty/rexglue_guide): it answers the title's Xam / NetDll imports
+# itself, so reNut's own EOS hooks (online/eos.cpp and friends) are left out.
+include(thirdparty/rexglue_guide/CMakeLists.txt)
+rexglue_guide_attach(renut)
 
 # Native renderer (plume D3D12 + Vulkan, XenosRecomp RENUT_RECOMP shader cache).
 include(src/renut_engine/gpu/gpu.cmake)

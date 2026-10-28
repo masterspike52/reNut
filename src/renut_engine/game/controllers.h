@@ -1,15 +1,15 @@
 /**
  * @file    game/controllers.h
- * @brief   Player 1's controller (controllers.cpp).
+ * @brief   Which player each controller is (controllers.cpp).
  */
 #pragma once
 
-#include <cstdint>
+namespace renut::game {
 
-namespace renut::controllers {
+// Any thread: the player (0-3) the controller in host slot 'pad' is, as of the
+// last probe, whether or not that player is given to the game; -1 for none.
+// The Guide opens for that player when the controller presses its Guide
+// button.
+int ControllerPlayer(int pad);
 
-// Player 1's buttons (XINPUT_GAMEPAD wButtons) from the game's last read of its
-// state; 0 without a controller.
-uint16_t Player1Buttons();
-
-}  // namespace renut::controllers
+} // namespace renut::game

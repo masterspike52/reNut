@@ -4,6 +4,8 @@
 #ifdef RENUT_RECOMP
 // Stands in the vertex shader's parameter list for the kill output (hasVertexKill).
 static constexpr std::string_view KILL_OUTPUT_PLACEHOLDER = "/*renut kill output*/";
+// Stands in a pixel shader's locals for what its depth-like fetches keep (renutTapLanes).
+static constexpr std::string_view TAP_UV_PLACEHOLDER = "/*renut tap coordinates*/";
 #endif
 
 static constexpr char SWIZZLES[] = 
@@ -581,6 +583,27 @@ void ShaderRecompiler::recompile(const TextureFetchInstruction& instr, bool bicu
     }
 #endif
 
+#ifdef RENUT_RECOMP
+    // A depth-like fetch (renutShadowCompare): a pixel shader's 2D fetch at a normalized
+    // coordinate, without an offset or a register LOD, whose X lands in some lane. Its coordinate
+    // is kept before the fetch, whose destination may be the coordinate's register.
+    bool renutTap = false;
+    if (isPixelShader && instr.opcode == FetchOpcode::TextureFetch &&
+        instr.dimension == TextureDimension::Texture2D && !instr.texCoordDenorm && !instr.useRegLod &&
+        instr.offsetX == 0 && instr.offsetY == 0)
+    {
+        for (uint32_t i = 0; i < 4; i++)
+            renutTap = renutTap || getDestSwizzle(instr.dstSwizzle, i) == FetchDestinationSwizzle::X;
+    }
+    if (renutTap)
+    {
+        indent();
+        out += "renutTapCoord = ";
+        printSrcRegister(2);
+        out += ";\n";
+    }
+#endif
+
     indent();
     print("r{}.", instr.dstRegister);
     printDstSwizzle(instr.dstSwizzle, false);
@@ -707,6 +730,26 @@ void ShaderRecompiler::recompile(const TextureFetchInstruction& instr, bool bicu
     out += ";\n";
 
     printDstSwizzle01(instr.dstRegister, instr.dstSwizzle);
+
+#ifdef RENUT_RECOMP
+    for (uint32_t i = 0; i < 4; i++)
+    {
+        const FetchDestinationSwizzle swizzle = getDestSwizzle(instr.dstSwizzle, i);
+        const uint32_t lane = instr.dstRegister * 4 + i;
+        if (swizzle == FetchDestinationSwizzle::X && renutTap)
+        {
+            renutTapLanes.insert(lane);
+            renutTapDeclared.insert(lane);
+            indent();
+            println("renutTapUV_{0}_{1} = renutTapCoord; renutTapTexture_{0}_{1} = {2}_Texture2DDescriptorIndex; "
+                "renutTapSampler_{0}_{1} = {2}_SamplerDescriptorIndex;", instr.dstRegister, i, constNamePtr);
+        }
+        else if (swizzle <= FetchDestinationSwizzle::One)
+        {
+            renutTapLanes.erase(lane);
+        }
+    }
+#endif
 
 #ifdef REBLUE_RECOMP
     if (hasShadowTexture)
@@ -1205,6 +1248,80 @@ void ShaderRecompiler::recompile(const AluInstruction& instr)
     }
 
     if (vectorWriteMask != 0 && !shadowCmpRewritten)
+#elif defined(RENUT_RECOMP)
+    // A Sgt / Sge with a depth-like fetch's result as one side in every lane it writes (N&B's
+    // shadow taps: `taps >= reference`, or `reference > tap` in its deferred passes) re-emits each
+    // lane as renutShadowCompare, from the fetch's kept coordinate. Its result is the same compare
+    // unless the host flags the texture as a shadow map to filter.
+    // Only compares of several taps at once, as N&B's filter kernels make: the result of a lone
+    // one (its deferred passes) is taken as a yes or no (cndgt), where a filtered one would only
+    // grow the shadow.
+    bool renutCompareRewritten = false;
+    const uint32_t writtenLanes = (vectorWriteMask & 1u) + ((vectorWriteMask >> 1) & 1u) +
+        ((vectorWriteMask >> 2) & 1u) + ((vectorWriteMask >> 3) & 1u);
+    if (isPixelShader && writtenLanes >= 2 && !instr.exportData &&
+        !instr.vectorDestRelative && !renutTapLanes.empty() &&
+        (instr.vectorOpcode == AluVectorOpcode::Sgt || instr.vectorOpcode == AluVectorOpcode::Sge))
+    {
+        // The tap lane each written lane reads, if that source is a plain register holding one.
+        auto tapLane = [&](bool select, uint32_t reg, bool negate, uint32_t swizzle, uint32_t lane) -> int
+            {
+                if (!select || negate || (reg & 0x80) != 0)
+                    return -1;
+                const uint32_t key = (reg & 0x3F) * 4 + (((swizzle >> (lane * 2)) + lane) & 0x3);
+                return renutTapLanes.count(key) != 0 ? int(key) : -1;
+            };
+        for (uint32_t side = 0; side < 2 && !renutCompareRewritten; side++)
+        {
+            const bool tapFirst = side == 0;
+            int taps[4] = { -1, -1, -1, -1 };
+            bool allTaps = true;
+            for (uint32_t i = 0; i < 4 && allTaps; i++)
+            {
+                if (((vectorWriteMask >> i) & 0x1) == 0)
+                    continue;
+                taps[i] = tapFirst
+                    ? tapLane(instr.src1Select, instr.src1Register, instr.src1Negate, instr.src1Swizzle, i)
+                    : tapLane(instr.src2Select, instr.src2Register, instr.src2Negate, instr.src2Swizzle, i);
+                allTaps = taps[i] >= 0;
+            }
+            if (!allTaps)
+                continue;
+
+            // Bit 0: the tap is the first operand; bit 1: the compare includes equality.
+            const uint32_t mode = (tapFirst ? 1u : 0u) | (instr.vectorOpcode == AluVectorOpcode::Sge ? 2u : 0u);
+            // One call for the instruction's lanes; the lanes it does not write get zeros.
+            std::string textures, samplers, uvs, tapValues, references, lanes;
+            uint32_t laneMask = 0;
+            for (uint32_t i = 0; i < 4; i++)
+            {
+                const char* separator = i ? ", " : "";
+                if (taps[i] < 0)
+                {
+                    textures += fmt::format("{}0u", separator);
+                    samplers += fmt::format("{}0u", separator);
+                    uvs += ", 0.0";
+                    tapValues += fmt::format("{}0.0", separator);
+                    references += fmt::format("{}0.0", separator);
+                    continue;
+                }
+                const uint32_t reg = uint32_t(taps[i]) / 4, component = uint32_t(taps[i]) % 4;
+                textures += fmt::format("{}renutTapTexture_{}_{}", separator, reg, component);
+                samplers += fmt::format("{}renutTapSampler_{}_{}", separator, reg, component);
+                uvs += fmt::format(", renutTapUV_{}_{}", reg, component);
+                tapValues += fmt::format("{}{}", separator, op(tapFirst ? VECTOR_0 : VECTOR_1, 1u << i));
+                references += fmt::format("{}{}", separator, op(tapFirst ? VECTOR_1 : VECTOR_0, 1u << i));
+                lanes += SWIZZLES[i];
+                laneMask |= 1u << i;
+            }
+            indent();
+            println("r{0}.{1} = renutShadowCompareLanes(uint4({2}), uint4({3}){4}, float4({5}), float4({6}), {7}u, {8}u).{1};",
+                instr.vectorDest, lanes, textures, samplers, uvs, tapValues, references, mode, laneMask);
+            renutCompareRewritten = true;
+        }
+    }
+
+    if (vectorWriteMask != 0 && !renutCompareRewritten)
 #else
     if (vectorWriteMask != 0)
 #endif
@@ -1372,6 +1489,19 @@ void ShaderRecompiler::recompile(const AluInstruction& instr)
         }
     }
 #endif
+#ifdef RENUT_RECOMP
+    // The lanes written no longer hold a fetch's result (a relative write may reach any).
+    if (vectorWriteMask != 0 && exportRegister.empty())
+    {
+        if (instr.vectorDestRelative)
+            renutTapLanes.clear();
+        for (uint32_t i = 0; i < 4; i++)
+        {
+            if ((vectorWriteMask >> i) & 0x1)
+                renutTapLanes.erase(uint32_t(instr.vectorDest * 4 + i));
+        }
+    }
+#endif
 
 #ifdef RENUT_RECOMP
     const size_t scalarBlockStart = out.size();
@@ -1490,7 +1620,11 @@ void ShaderRecompiler::recompile(const AluInstruction& instr)
 
         case AluScalarOpcode::Logc:
         case AluScalarOpcode::Log:
+    #ifdef RENUT_RECOMP
+            print("logClamped({})", op(SCALAR_0));
+    #else
             print("clamp(log2({}), FLT_MIN, FLT_MAX)", op(SCALAR_0));
+    #endif
             break;
 
     #ifdef RENUT_RECOMP
@@ -1501,23 +1635,31 @@ void ShaderRecompiler::recompile(const AluInstruction& instr)
         case AluScalarOpcode::Rsqf:
             print("rsqf({})", op(SCALAR_0));
             break;
-    #endif
 
+        // The clamps as operand tests (rcpClamped in shader_common.h): a driver may drop a clamp
+        // of an infinity.
         case AluScalarOpcode::Rcpc:
-    #ifndef RENUT_RECOMP
+        case AluScalarOpcode::Rcp:
+            print("rcpClamped({})", op(SCALAR_0));
+            break;
+
+        case AluScalarOpcode::Rsqc:
+        case AluScalarOpcode::Rsq:
+            print("rsqClamped({})", op(SCALAR_0));
+            break;
+    #else
+        case AluScalarOpcode::Rcpc:
         case AluScalarOpcode::Rcpf:
-    #endif
         case AluScalarOpcode::Rcp:
             print("clamp(rcp({}), FLT_MIN, FLT_MAX)", op(SCALAR_0));
             break;
 
         case AluScalarOpcode::Rsqc:
-    #ifndef RENUT_RECOMP
         case AluScalarOpcode::Rsqf:
-    #endif
         case AluScalarOpcode::Rsq:
             print("clamp(rsqrt({}), FLT_MIN, FLT_MAX)", op(SCALAR_0));
             break;
+    #endif
 
         case AluScalarOpcode::Subs:
             print("{} - {}", op(SCALAR_0), op(SCALAR_1));
@@ -1681,6 +1823,18 @@ void ShaderRecompiler::recompile(const AluInstruction& instr)
         {
             if ((scalarWriteMask >> i) & 0x1)
                 shadowTapSlots.erase(uint32_t(instr.scalarDest * 4 + i));
+        }
+    }
+#endif
+#ifdef RENUT_RECOMP
+    if (scalarWriteMask != 0 && exportRegister.empty())
+    {
+        if (instr.scalarDestRelative)
+            renutTapLanes.clear();
+        for (uint32_t i = 0; i < 4; i++)
+        {
+            if ((scalarWriteMask >> i) & 0x1)
+                renutTapLanes.erase(uint32_t(instr.scalarDest * 4 + i));
         }
     }
 #endif
@@ -2628,6 +2782,9 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
         if (hasShadowTexture)
             out += "\tfloat2 shadowTapUV[8] = (float2[8])0;\n";
 #endif
+#ifdef RENUT_RECOMP
+        out += TAP_UV_PLACEHOLDER;
+#endif
     }
 
     const be<uint32_t>* code = reinterpret_cast<const be<uint32_t>*>(shaderData + shaderContainer->virtualSize + shader->physicalOffset);
@@ -3237,10 +3394,11 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
                 // The Xenos alpha test (RB_COLORCONTROL function + reference) is
                 // read from SharedConstants at runtime rather than baked in as a
                 // spec constant, so DXIL pixel shaders need no runtime linking.
+                // As coverage (RENUT_ALPHA_TO_COVERAGE) it rewrites the alpha.
                 if (isPixelShader)
                 {
                     indent();
-                    out += "alphaTest(oC0.w, g_AlphaTestFunc, g_AlphaThreshold);\n";
+                    out += "oC0.w = alphaTest(oC0.w, g_AlphaTestFunc, g_AlphaThreshold);\n";
                 }
                 else
             #else
@@ -3381,6 +3539,21 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
     {
         out.replace(at, KILL_OUTPUT_PLACEHOLDER.size(),
             hasVertexKill ? "\n#ifndef __spirv__\n\t, out float oKill : SV_CullDistance0\n#endif\n" : "");
+    }
+    if (size_t at = out.find(TAP_UV_PLACEHOLDER); at != std::string::npos)
+    {
+        // Texture 0 has no filter flags: a compare whose fetch never ran stays the game's.
+        std::vector<uint32_t> lanes(renutTapDeclared.begin(), renutTapDeclared.end());
+        std::sort(lanes.begin(), lanes.end());
+        std::string declarations;
+        if (!lanes.empty())
+            declarations += "\tfloat2 renutTapCoord = 0.0;\n";
+        for (uint32_t lane : lanes)
+        {
+            declarations += fmt::format("\tfloat2 renutTapUV_{0}_{1} = 0.0;\n\tuint renutTapTexture_{0}_{1} = 0u;\n"
+                "\tuint renutTapSampler_{0}_{1} = 0u;\n", lane / 4, lane % 4);
+        }
+        out.replace(at, TAP_UV_PLACEHOLDER.size(), declarations);
     }
 #endif
 

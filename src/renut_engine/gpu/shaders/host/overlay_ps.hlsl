@@ -9,5 +9,9 @@ struct PSInput
 
 float4 main(PSInput input) : SV_Target0
 {
-    return input.color * SampleBindless(g_Push.textureIndex, g_Push.samplerIndex, input.uv);
+    float4 texel = SampleBindless(g_Push.textureIndex, g_Push.samplerIndex, input.uv);
+    // param0 = 1: the game's frame (GameFrameTexture), opaque whatever its alpha.
+    if (g_Push.param0 > 0.5)
+        texel.a = 1.0;
+    return input.color * texel;
 }

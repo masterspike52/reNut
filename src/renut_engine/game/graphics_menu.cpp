@@ -29,8 +29,8 @@
  * A list's rows are 3024-byte records (+ 8: column 0's text, wchar_t[128],
  * then + 268 = 0, + 272 its length), filled when shown while + 3016 is 0.
  *
- * Here the big font row is hidden (it has its init's hide arg) and Display
- * Settings gets a row under contrast, GRAPHICS: a button made at
+ * Here Display Settings gets a row under its last (the big font row when the
+ * game shows it, else contrast), GRAPHICS: a button made at
  * init with Game Information's menu item visual (list_pause_menu_item, its
  * text set by XM_SET_TEXT 0x7E0), linked into the navigation, the rows
  * respaced to fit the box. A on it opens Game Information the way the host
@@ -205,13 +205,16 @@ constexpr Option kOptions[] = {
     {"renut_resolution", "Resolution"},
     {"renut_field_of_view", "Field of View"},
     {"renut_shadow_resolution", "Shadow Resolution"},
+    {"renut_shadow_softness", "Shadow Softness"},
     {"renut_anisotropic_filtering", "Anisotropic Filtering"},
-    {"renut_ambient_occlusion", "Ambient Occlusion"},
+    {"renut_ssao", "Ambient Occlusion"},
+    {"renut_reflection_resolution", "Reflections"},
     {"renut_lod_distance", "Detail Distance"},
     {"renut_grass_distance", "Grass Distance"},
     {"renut_depth_of_field", "Depth of Field"},
     {"renut_bloom", "Bloom"},
     {"renut_msaa", "MSAA"},
+    {"renut_alpha_to_coverage", "Smooth Cut-Outs"},
     {"renut_anti_aliasing", "Anti-Aliasing"},
     {"renut_vsync", "V-Sync"},
     {"frame_cap", "Frame Cap"},
@@ -702,20 +705,10 @@ void SetConfigPath(const std::filesystem::path &path) { g_config_path = path; }
 
 }  // namespace renut::graphics_menu
 
-// The init's args (r4: three words, kept at + 224, + 228, + 232): the third
-// set hides the big font row (LARGE DIALOGUE TEXT), as the game does when it
-// asks: the init then hides its button, tick and tick box and leaves them
-// unset. The game's args are left alone; the init reads a copy.
+// Display Settings' init, then GRAPHICS under its last row (the big font row,
+// LARGE DIALOGUE TEXT, when the game shows it).
 REX_HOOK_RAW(sub_82560958) {
   const uint32_t page = ctx.r3.u32;
-  static uint32_t args = 0;
-  if (!args)
-    args = REX_KERNEL_MEMORY()->SystemHeapAlloc(12);
-  if (args && ctx.r4.u32) {
-    std::memcpy(base + args, base + ctx.r4.u32, 8);
-    Store32(base, args + 8, 1);
-    ctx.r4.u64 = args;
-  }
   __imp__sub_82560958(ctx, base);
   AddGraphicsRow(ctx, base, page);
 }

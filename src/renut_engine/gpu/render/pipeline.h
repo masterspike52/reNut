@@ -75,17 +75,19 @@ struct PipelineInputs {
   const HostVertexLayout *layout = nullptr;  // the declaration's (key.layout_hash)
 };
 
-// Built pipeline for the key, compiling it on first use unless the pipeline
-// list (below) built it ahead. nullptr on failure (logged once per key).
+// Built pipeline for the key, compiling it on first use unless the built-in
+// pipeline list (below) built it ahead. nullptr on failure (logged once per
+// key).
 plume::RenderPipeline *GetPipelineLocked(const PipelineKey &key, const PipelineInputs &inputs);
 
-// The pipeline list: every pipeline a draw needed is written to a file
-// (renut_pipeline_list), and at the next start worker threads build the ones
-// listed there before the game draws with them, so a scene the game has
-// shown before costs no compile on the render thread. A listed pipeline is
-// built once the game has made its shaders (PipelineShaderLoaded), so only
-// what the levels played this session use is built. Start once the draw
-// layout and host shaders exist; Stop at shutdown.
+// The built-in pipeline list (pipeline_cache_data.inc, from
+// tools/pipeline_cache.py): worker threads build the listed pipelines before
+// the game draws with them, so a scene costs no compile on the render thread.
+// A listed pipeline is built once the game has made its shaders
+// (PipelineShaderLoaded), so only what the levels played this session use is
+// built. The pipelines draws build themselves can be captured for the list
+// (renut_pipeline_capture). Start once the draw layout and host shaders exist;
+// Stop at shutdown.
 void StartPipelinePrebuild();
 void StopPipelinePrebuild();
 
@@ -93,8 +95,9 @@ void StopPipelinePrebuild();
 void PipelineShaderLoaded(const ShaderCacheEntry *entry);
 
 // For the memory report: pipelines the draws use, pipelines built ahead from
-// the list that no draw has asked for yet (all of them stay built), and listed
-// pipelines whose shaders the game has not made.
+// the list that no draw has asked for yet (all of them stay built), listed
+// pipelines whose shaders the game has not made, and the listed pipelines of
+// shaders this build has.
 struct PipelineCounts {
   size_t built = 0;
   size_t prebuilt_unused = 0;

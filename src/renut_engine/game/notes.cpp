@@ -21,7 +21,7 @@
 
 REXCVAR_DEFINE_STRING(notes_amount, "", "Nuts&Bolts/Cheats",
                       "How many notes Set Notes gives player 1 (0 to 2147483647). Off in online "
-                      "multiplayer and co-op unless the host allows cheats.");
+                      "multiplayer unless the host allows cheats.");
 
 namespace {
 

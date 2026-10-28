@@ -18,6 +18,7 @@
 #include "renut_engine/gpu/render/draw.h"
 #include "renut_engine/gpu/render/graphics_options.h"
 #include "renut_engine/gpu/log.h"
+#include "renut_engine/gpu/overlay/overlay_drawer.h"
 #include "renut_engine/gpu/overlay/overlay_ui.h"
 #include "renut_engine/gpu/backend/render_thread.h"
 #include "renut_engine/gpu/backend/video.h"
@@ -127,6 +128,10 @@ void RecordScanOut(VideoState &s, const PresentImage &image, uint32_t out_w, uin
   push.param1 = PostAntiAliasing() == kPostAntiAliasingFxaa ? 1.0f : 0.0f;
   cmd->setGraphicsPushConstants(0, &push, 0, sizeof(push));
   cmd->drawInstanced(3, 1, 0, 0);
+  // UI drawn over it may sample it (GameFrameTexture).
+  const float uv[4] = {push.translate[0], push.translate[1], push.translate[0] + push.scale[0],
+                       push.translate[1] + push.scale[1]};
+  SetGameFrameLocked(image.descriptor, uv);
 }
 
 // plume gives up on a present wait after 100 ms. Presents that never report
@@ -217,6 +222,8 @@ void PresentLocked(VideoState &s, const PresentImage *image) {
 
   if (has_image)
     RecordScanOut(s, scan, out_w, out_h);
+  else
+    SetGameFrameLocked(kInvalidDescriptor, nullptr);
 
   cmd->setViewports(plume::RenderViewport(0.0f, 0.0f, float(out_w), float(out_h)));
   cmd->setScissors(plume::RenderRect(0, 0, int32_t(out_w), int32_t(out_h)));

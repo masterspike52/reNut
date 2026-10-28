@@ -17,8 +17,8 @@ set(RENUT_SHADER_DUMP_DIR "${CMAKE_SOURCE_DIR}/shaders" CACHE PATH
 set(RENUT_ASSETS_DIR "${CMAKE_SOURCE_DIR}/assets" CACHE PATH
     "Game assets the shaders are dumped from (default.xex and Bundle/)")
 set(RENUT_SHADER_CAPTURE_DIR "${CMAKE_BINARY_DIR}/shader_capture" CACHE PATH
-    "Where reNut, run from the build directory, captures shaders its cache lacks "
-    "(renut_shader_capture_dir); the build adds them to RENUT_SHADER_DUMP_DIR")
+    "Where reNut, run from the build directory, captures shaders its cache lacks
+    (renut_shader_capture_dir); the build adds them to RENUT_SHADER_DUMP_DIR")
 
 # tools/dump_shaders.py, which runs when there are no dumped shaders yet
 # (renut_xenos_shader_cache), needs Python 3 with the xxhash module.
@@ -240,6 +240,7 @@ function(renut_gpu_setup TARGET)
         ${RENUT_GPU_DIR}/overlay/overlay_drawer.cpp
         ${RENUT_GPU_DIR}/overlay/overlay_ui.cpp
         # Draws, targets, textures, shaders and formats.
+        ${RENUT_GPU_DIR}/render/ambient_occlusion.cpp
         ${RENUT_GPU_DIR}/render/draw.cpp
         ${RENUT_GPU_DIR}/render/format.cpp
         ${RENUT_GPU_DIR}/render/graphics_options.cpp
@@ -269,6 +270,10 @@ function(renut_gpu_setup TARGET)
     renut_host_shader(${TARGET} smaa_edge_ps ps_6_0)
     renut_host_shader(${TARGET} smaa_weight_ps ps_6_0)
     renut_host_shader(${TARGET} smaa_blend_ps ps_6_0)
+    # renut_ssao (render/ambient_occlusion.cpp).
+    renut_host_shader(${TARGET} ambient_occlusion_ps ps_6_0)
+    renut_host_shader(${TARGET} ambient_occlusion_blur_ps ps_6_0)
+    renut_host_shader(${TARGET} ambient_occlusion_composite_ps ps_6_0)
 
     renut_xenos_shader_cache(${TARGET})
 

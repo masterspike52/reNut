@@ -15,6 +15,7 @@
 #include "renut_engine/gpu/backend/video.h"
 #include "renut_engine/gpu/guest/widescreen.h"
 #include "renut_engine/gpu/log.h"
+#include "renut_engine/gpu/render/ambient_occlusion.h"
 #include "renut_engine/gpu/render/format.h"
 #include "renut_engine/gpu/render/menu_colour.h"
 
@@ -27,6 +28,25 @@ REXCVAR_DEFINE_STRING(renut_ambient_occlusion, "Half", "Nuts&Bolts/Graphics",
                       "Ambient occlusion (SSAO) resolution: Half the screen's, as on the console, "
                       "or Full.")
     .allowed({"Half", "Full"});
+
+REXCVAR_DEFINE_STRING(renut_reflection_resolution, "Game", "Nuts&Bolts/Graphics",
+                      "Resolution of the water reflections: the game's (a quarter of the screen "
+                      "on each axis, at the render resolution's scale) or 2x (half the screen: "
+                      "sharper reflections, four times the pixels to draw).")
+    .allowed({"Game", "2x"});
+
+REXCVAR_DEFINE_STRING(renut_shadow_softness, "Game", "Nuts&Bolts/Graphics",
+                      "Shadow edges: the game's (each of its shadow taps either lit or not: hard, "
+                      "stepped edges), Soft (each tap filtered over the shadow map's texels), "
+                      "Softer or Softest (each over a wider area, the same size in the world near "
+                      "and far: softer edges, more GPU time).")
+    .allowed({"Game", "Soft", "Softer", "Softest"});
+
+REXCVAR_DEFINE_STRING(renut_ssao, "Off", "Nuts&Bolts/Graphics",
+                      "Ambient occlusion: soft shading where surfaces meet, in corners and creases, "
+                      "worked out from the scene's depth (N&B's own SSAO is never drawn). Off, Low, "
+                      "Medium (more samples) or High (more still, at the full resolution).")
+    .allowed({"Off", "Low", "Medium", "High"});
 
 REXCVAR_DEFINE_STRING(renut_anisotropic_filtering, "Game", "Nuts&Bolts/Graphics",
                       "Anisotropic texture filtering: the game's own, or at least 2x, 4x, 8x or "
@@ -62,6 +82,10 @@ REXCVAR_DEFINE_STRING(renut_anti_aliasing, "Off", "Nuts&Bolts/Graphics",
                       "little more GPU time).")
     .allowed({"Off", "FXAA", "SMAA"});
 
+REXCVAR_DEFINE_BOOL(renut_alpha_to_coverage, false, "Nuts&Bolts/Graphics",
+                    "Smooth the cut-out edges of leaves, grass, fences and other alpha-tested "
+                    "surfaces with the scene's multisampling (needs MSAA on: Game, 2x, 4x or 8x).");
+
 namespace renut::gpu {
 
 namespace {
@@ -82,6 +106,13 @@ bool IsShadowMap(const d3d::SurfaceDesc &desc, u32 width, u32 height) {
   // The local lights' depth, converted for their atlas.
   return !d3d::IsDepthFormat(desc.Format) && width == 512 &&
          GpuColorFormat((u32(desc.ColorInfo) >> 16) & 0xF) == GpuColorFormat::Fmt16_16_Float;
+}
+
+// The water reflection: the shadow and lighting manager (sub_8237BF58) makes
+// its color and depth targets 320x180, 4x multisampled (the only multisampled
+// targets of a quarter of the screen or less; the scene's are the screen's).
+bool IsReflection(u32 width, u32 height) {
+  return width * 4 <= GuestScreenWidth() && height * 4 <= kGuestScreenHeight;
 }
 
 bool IsAmbientOcclusion(const d3d::SurfaceDesc &desc, u32 width, u32 height) {
@@ -121,6 +152,10 @@ struct Latched {
   float depth_of_field = 1.0f;
   float bloom = 1.0f;
   uint32_t msaa = 0;  // 0: the game's; else the sample count (1 = off)
+  bool reflection_2x = false;
+  uint32_t shadow_filter = 0;  // kShadowFilter*
+  bool alpha_to_coverage = false;
+  uint32_t ambient_occlusion = 0;  // 0 off, 1 low, 2 medium, 3 high
 };
 Latched g_latched;
 // renut_anti_aliasing as the present pass reads it (another thread).
@@ -180,6 +215,16 @@ void LatchGraphicsOptionsLocked() {
       RGPU_INFO("MSAA: {}x on the targets the game multisamples", samples);
   }
   g_latched.msaa = samples;
+  g_latched.reflection_2x = REXCVAR_GET(renut_reflection_resolution) == "2x";
+  const std::string &softness = REXCVAR_GET(renut_shadow_softness);
+  g_latched.shadow_filter = softness == "Softest" ? kShadowFilterWidest
+                            : softness == "Softer" ? kShadowFilterWide
+                            : softness == "Soft"   ? kShadowFilterBilinear
+                                                   : kShadowFilterOff;
+  g_latched.alpha_to_coverage = REXCVAR_GET(renut_alpha_to_coverage);
+  const std::string &ssao = REXCVAR_GET(renut_ssao);
+  g_latched.ambient_occlusion = ssao == "High" ? 3u : ssao == "Medium" ? 2u : ssao == "Low" ? 1u : 0u;
+  AmbientOcclusionNewFrameLocked();
   const std::string &anti_aliasing = REXCVAR_GET(renut_anti_aliasing);
   g_post_anti_aliasing.store(anti_aliasing == "FXAA"   ? kPostAntiAliasingFxaa
                              : anti_aliasing == "SMAA" ? kPostAntiAliasingSmaa
@@ -192,11 +237,20 @@ uint32_t PostAntiAliasing() {
   return g_post_anti_aliasing.load(std::memory_order_relaxed);
 }
 
+bool IsShadowMapSurface(const d3d::SurfaceDesc &desc) {
+  return !((u32(desc.SurfaceInfo) >> 16) & 3) &&
+         IsShadowMap(desc, d3d::SurfaceWidth(desc.Size), d3d::SurfaceHeight(desc.Size));
+}
+
 RenderScale SurfaceRenderScale(const d3d::SurfaceDesc &desc, RenderScale resolution) {
-  if ((u32(desc.SurfaceInfo) >> 16) & 3)
-    return resolution;  // multisampled: the scene's
   const u32 width = d3d::SurfaceWidth(desc.Size);
   const u32 height = d3d::SurfaceHeight(desc.Size);
+  if ((u32(desc.SurfaceInfo) >> 16) & 3) {
+    // Multisampled: the scene's, or twice it for the reflection.
+    if (g_latched.reflection_2x && IsReflection(width, height))
+      return resolution.Times(2);
+    return resolution;
+  }
   if (IsShadowMap(desc, width, height))
     return g_latched.shadow_follows_resolution ? resolution : g_latched.shadow_scale;
   if (g_latched.full_ambient_occlusion && IsAmbientOcclusion(desc, width, height))
@@ -242,6 +296,18 @@ float DepthOfFieldStrength() {
 
 float BloomStrength() {
   return g_latched.bloom;
+}
+
+uint32_t ShadowFilter() {
+  return g_latched.shadow_filter;
+}
+
+bool AlphaToCoverage() {
+  return g_latched.alpha_to_coverage;
+}
+
+uint32_t AmbientOcclusionQuality() {
+  return g_latched.ambient_occlusion;
 }
 
 } // namespace renut::gpu

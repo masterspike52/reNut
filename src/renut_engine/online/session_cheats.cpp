@@ -1,6 +1,6 @@
 /**
  * @file    online/session_cheats.cpp
- * @brief   Cheats in online multiplayer and co-op, when the session's host allows them.
+ * @brief   Cheats in online multiplayer, when the session's host allows them.
  *
  * Cheats are off in a session (hooks.cpp) unless its host allows them: the
  * host's renut_host_cheats. Only the host's counts, and only a host can turn
@@ -30,7 +30,7 @@ bool HostCheatsValueAllowed(std::string_view value);
 }  // namespace
 
 REXCVAR_DEFINE_BOOL(renut_host_cheats, false, "Nuts&Bolts/Cheats",
-                    "Online multiplayer and co-op sessions you host allow cheats for every player. Only the "
+                    "Online multiplayer sessions you host allow cheats for every player. Only the "
                     "host's setting counts; it cannot be turned on in a session someone else hosts.")
     .validator(HostCheatsValueAllowed);
 

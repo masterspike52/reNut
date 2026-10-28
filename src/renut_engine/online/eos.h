@@ -61,12 +61,11 @@ void Remember(std::string_view id);
 std::string IdOf(uint64_t xuid);
 
 // Peer-to-peer messages. Channel 0: the game's traffic (transport.cpp);
-// channel 1: friends (friends.cpp); channel 2: co-op (coop.cpp); channel 3:
-// the session's rules (session_cheats.cpp). At most kMaxMessage bytes each.
+// channel 1: friends (friends.cpp); channel 2: unused; channel 3: the
+// session's rules (session_cheats.cpp). At most kMaxMessage bytes each.
 // Sent unreliably (as the game's own datagrams) or reliably and in order.
 constexpr uint8_t kChannelGame = 0;
 constexpr uint8_t kChannelFriends = 1;
-constexpr uint8_t kChannelCoop = 2;
 constexpr uint8_t kChannelSession = 3;
 constexpr size_t kMaxMessage = 1170;  // EOS_P2P_MAX_PACKET_SIZE
 // Queued for the EOS thread; false when not signed in or too long.
