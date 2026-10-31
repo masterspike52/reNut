@@ -103,35 +103,41 @@ REX_HOOK_RAW(sub_824FF2F0)
 // each frame (Banjo on ledges and ladders, vehicles).
 //
 // Fix: send each frame a whole number of steps, carrying the remainder. Above
-// 60 fps the step is split into n (1/120 s, 1/180 s, ...) so a step is about a
-// frame long and every frame takes one. Split steps cost the same CPU each,
-// and the four-step cap then covers a shorter hitch.
+// 60 fps the step is made as long as a frame (the measured frame interval,
+// smoothed: 1/120 s at 120 fps, 1/144 s at 144), so every frame takes one step
+// at any refresh rate. Whole splits of 1/60 s (1/120, 1/180, ...) did not fit
+// rates between the multiples of 60: at 144 fps a 1/180 s step against a
+// 1/144 s frame took one or two steps a frame by turns (judder), and from 61
+// to 66 fps a 1/60 s step against a shorter frame took none now and then (the
+// fling). Each step costs the same CPU however long it is.
+//
+// sub_82353060 caps a frame at four steps (frameDelta > 4 * step is cut). A
+// frame longer than four short steps (a hitch: 33 ms at 120 fps) takes 1/60 s
+// steps instead, as many as it needs up to the cap, so physics keeps up with
+// the clock as it did at 60 fps instead of losing the time.
 REXCVAR_DEFINE_BOOL(renut_physics_whole_steps, true, "Nuts&Bolts/Performance",
 	"Advance physics by whole steps each frame. Off: the game's own stepping, which "
 	"flings Banjo about on ledges and ladders at 60 fps and above.");
 
 REXCVAR_DEFINE_BOOL(renut_physics_substeps, true, "Nuts&Bolts/Performance",
-	"Above 60 fps, split the physics step to match the frame rate so every frame "
-	"advances physics. Needs renut_physics_whole_steps.");
+	"Above 60 fps, shorten the physics step to a frame's length so every frame "
+	"advances physics by one step. Needs renut_physics_whole_steps.");
 
 static constexpr float kPhysicsStep = 0.016666668f;  // the step sub_8224B3A8 sends
 static constexpr int kMaxPhysicsSteps = 4;            // the physics thread's cap (x step)
-static constexpr int kMaxSubsteps = 8;                // 1/480 s, for up to 480 fps
-// Keeps timer noise near a multiple of 60 fps from changing the split.
-static constexpr double kSubstepSlack = 0.1;
-static constexpr double kSubstepHysteresis = 0.1;
+static constexpr double kMaxSplit = 8.0;              // 1/480 s, for up to 480 fps
 
 REX_EXTERN(__imp__sub_82353060);
 
 // Physics thread state (sub_82353060 runs only there).
 static double g_physicsCarry = 0.0;          // seconds the steps sent are behind
-static std::atomic<int> g_physicsSubsteps{ 1 };  // n: the 1/60 s step split in n
 static double g_physicsFrameAverage = 0.0;   // seconds between frames, smoothed
 static std::chrono::steady_clock::time_point g_physicsLastFrame{};
 
-// n from the measured frame interval (not the game's delta, which slow
+// How many steps the 1/60 s step is cut into (1 at 60 fps and below, 2.4 at
+// 144 fps), from the measured frame interval (not the game's delta, which slow
 // motion scales).
-static int renutPhysicsSubsteps()
+static double renutPhysicsSplit()
 {
 	using clock = std::chrono::steady_clock;
 	const clock::time_point now = clock::now();
@@ -141,7 +147,7 @@ static int renutPhysicsSubsteps()
 
 	if (!REXCVAR_GET(renut_physics_substeps)) {
 		g_physicsFrameAverage = 0.0;
-		return 1;
+		return 1.0;
 	}
 	// Ignore pauses, loading and hitches.
 	if (interval > 0.0 && interval < 0.1)
@@ -149,34 +155,31 @@ static int renutPhysicsSubsteps()
 			? g_physicsFrameAverage + (interval - g_physicsFrameAverage) * 0.1
 			: interval;
 	if (g_physicsFrameAverage <= 0.0)
-		return g_physicsSubsteps.load(std::memory_order_relaxed);
-
-	const double frames = double(kPhysicsStep) / g_physicsFrameAverage;  // frames a 1/60 s step
-	// Fewest splits that make a step no longer than a frame.
-	const int fit = std::max(1, int(std::ceil(frames - kSubstepSlack)));
-	int n = g_physicsSubsteps.load(std::memory_order_relaxed);
-	if (fit > n || frames < n - 1 - kSubstepHysteresis)
-		n = fit;
-	return std::clamp(n, 1, kMaxSubsteps);
+		return 1.0;
+	// Frames per 1/60 s step.
+	return std::clamp(double(kPhysicsStep) / g_physicsFrameAverage, 1.0, kMaxSplit);
 }
 
 // void physicsStep(float frameDelta, float step), physics thread.
 REX_HOOK_RAW(sub_82353060)
 {
-	const int substeps = renutPhysicsSubsteps();
+	const double split = renutPhysicsSplit();
 	if (!REXCVAR_GET(renut_physics_whole_steps) || float(ctx.f2.f64) != kPhysicsStep) {
 		g_physicsCarry = 0.0;
-		g_physicsSubsteps.store(1, std::memory_order_relaxed);
 		__imp__sub_82353060(ctx, base);
 		return;
 	}
-	g_physicsSubsteps.store(substeps, std::memory_order_relaxed);
-	const float step = kPhysicsStep / float(substeps);
-	const double wanted = ctx.f1.f64 + g_physicsCarry;
+	float step = float(double(kPhysicsStep) / split);
+	double wanted = ctx.f1.f64 + g_physicsCarry;
+	// A hitch: 1/60 s steps catch up with it.
+	if (step < kPhysicsStep && wanted > kMaxPhysicsSteps * double(step)) {
+		step = kPhysicsStep;
+		wanted = ctx.f1.f64;
+	}
 	int steps = int(std::floor(wanted / step + 0.5));
-	// With split steps a frame takes at least one step, unless physics is
+	// With short steps a frame takes at least one step, unless physics is
 	// already well ahead.
-	if (substeps > 1 && ctx.f1.f64 >= 0.5 * step && wanted >= 0.25 * step)
+	if (step < kPhysicsStep && ctx.f1.f64 >= 0.5 * step && wanted >= 0.25 * step)
 		steps = std::max(steps, 1);
 	// The physics thread's own cap.
 	steps = std::clamp(steps, 0, kMaxPhysicsSteps);

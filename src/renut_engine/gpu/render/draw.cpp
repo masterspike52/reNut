@@ -3395,8 +3395,10 @@ bool DrawStateLocked(const u8 *device_state, const DrawCall &call, const ReplayC
   PipelineKey key = MakeKey(device, vs, ps, declaration, targets, call.primitive, geometry.per_instance);
   if (alpha_to_coverage)
     key.alpha_to_coverage = 1;
+  // A draw that exports to memory (N&B's water) is never left out: what it
+  // writes is read on.
   plume::RenderPipeline *pipeline =
-      GetPipelineLocked(key, {host_vs, host_ps, &declaration->layout});
+      GetPipelineLocked(key, {host_vs, host_ps, &declaration->layout, export_count == 0});
   if (!pipeline)
     return false;
   stages.Enter(render_profile::Stage::kTargets);

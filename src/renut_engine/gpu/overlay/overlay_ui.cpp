@@ -48,6 +48,7 @@ std::mutex g_dialogs_mutex;
 std::vector<Dialog *> g_dialogs;
 
 ImGuiContext *g_context = nullptr;
+ImFont *g_menu_font = nullptr;  // MenuFont
 
 // Makes the overlay's context current for a scope and puts the previous one
 // back. The overlay's ImGui copy has only this context; the scope keeps it
@@ -378,7 +379,7 @@ void BuildOnUIThread() {
 //
 // The SDK's window is an SDL window; an event watch sees its events as SDL
 // queues them, before the SDK handles them, as the window procedure does on
-// Windows. Without the overlay nothing of reNut's (the first-run path setup
+// Windows. Without the overlay nothing of reNut's (the launcher menu
 // included) could be seen or used.
 
 SDL_Window *g_sdl_window = nullptr;
@@ -634,6 +635,34 @@ std::string InputWindowName() {
   return g_input_window;
 }
 
+uint64_t AddImage(uint32_t width, uint32_t height, std::vector<uint8_t> rgba) {
+  if (!width || !height || rgba.size() != size_t(width) * height * 4)
+    return 0;
+  std::lock_guard lock(g_frame_mutex);
+  TextureRequest request;
+  request.id = g_next_texture++;
+  request.width = width;
+  request.height = height;
+  request.rgba = std::move(rgba);
+  const uint64_t id = request.id;
+  g_texture_requests.push_back(std::move(request));
+  return id;
+}
+
+void RemoveImage(uint64_t id) {
+  if (!id)
+    return;
+  std::lock_guard lock(g_frame_mutex);
+  TextureRequest request;
+  request.id = id;
+  request.destroy = true;
+  g_texture_requests.push_back(std::move(request));
+}
+
+ImFont *MenuFont() {
+  return g_menu_font ? g_menu_font : ImGui::GetFont();
+}
+
 namespace {
 
 // The overlay's ImGui context. CreateContext leaves any context that was
@@ -664,6 +693,16 @@ void CreateOverlayContext() {
   };
 #endif
   ImGui::StyleColorsDark();
+  // The default face stays the first (every window's); the menu face is the
+  // Guide's Selawik Semibold, which its CMake turns into this include.
+  io.Fonts->AddFontDefault();
+  static const unsigned char kMenuTtf[] = {
+#include "fonts/selawik_semibold.ttf.inc"
+  };
+  ImFontConfig config;
+  config.FontDataOwnedByAtlas = false;
+  g_menu_font = io.Fonts->AddFontFromMemoryTTF(const_cast<unsigned char *>(kMenuTtf), int(sizeof(kMenuTtf)),
+                                               32.0f, &config);
 }
 
 // A frame every 16 ms, on the UI thread; one queued at a time.

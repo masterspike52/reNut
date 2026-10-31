@@ -1,4 +1,4 @@
-// Linux only (CMakeLists.txt): the freeze after the Microsoft logo.
+// The crash (Windows) or freeze (Linux) after the Microsoft logo.
 //
 // The logo is a movie. Its audio renderer (CCalAudioRenderer) starts XAudio
 // when it opens and shuts it down in Close (sub_82A69AC0 → XAudioShutDown
@@ -13,9 +13,11 @@
 // the callback (sub_8264EE20, CEngine::Process). One that is running when the
 // movie ends submits its frame after the unregister, to a client slot without a
 // driver, and AudioSystem::SubmitFrame reads the null driver holding the global
-// lock. On Linux the SDK's signal handler returns from the fault unhandled, the
-// instruction faults again for ever, and every guest thread waiting on that lock
-// stops: the game freezes, the window keeps drawing. Windows is unaffected.
+// lock. On Windows that is an access violation in SubmitFrame and the game
+// crashes a few seconds after it starts (crash dumps of 2026-10-31). On Linux
+// the SDK's signal handler returns from the fault unhandled, the instruction
+// faults again for ever, and every guest thread waiting on that lock stops:
+// the game freezes, the window keeps drawing.
 //
 // So the render callback runs under a lock that SetCallback also holds: an
 // unregister waits for a running callback to finish, and a callback the worker

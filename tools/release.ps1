@@ -68,8 +68,12 @@ try {
 
     if (-not $SkipLinux) {
         $rexglue = "/mnt/g/github repos/rexglue-sdk/out/install/linux-amd64/lib/cmake/rexglue"
+        # The launcher music the Windows build just made from the game's
+        # assets: the Linux build embeds the same file, so WSL needs no ffmpeg.
+        $music = "/mnt/f/renut2/out/build/win-amd64-dist/renut_assets/launcher_music.ogg"
         $configure = "cd /mnt/f/renut2 && cmake --preset linux-amd64-dist -DCMAKE_C_COMPILER=/usr/bin/clang-20 " +
-                     "-DCMAKE_CXX_COMPILER=/usr/bin/clang++-20 '-Drexglue_DIR=$rexglue'"
+                     "-DCMAKE_CXX_COMPILER=/usr/bin/clang++-20 '-Drexglue_DIR=$rexglue' " +
+                     "'-DRENUT_LAUNCHER_MUSIC=$music'"
         Invoke-Step "Linux: configure" { wsl -d Ubuntu-24.04 -u root -- bash -c $configure }
         Invoke-Step "Linux: build" { wsl -d Ubuntu-24.04 -u root -- cmake --build /mnt/f/renut2/out/build/linux-amd64-dist }
         if ($UploadSymbols) {

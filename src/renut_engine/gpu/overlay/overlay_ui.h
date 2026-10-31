@@ -17,8 +17,11 @@
 #include <cstdint>
 #include <functional>
 #include <string>
+#include <vector>
 
 #include <plume_render_interface.h>
+
+struct ImFont;
 
 namespace renut::gpu::overlay {
 
@@ -41,6 +44,16 @@ bool WantsCursor();
 
 // The window WantsCursor is for, or empty. On the UI thread.
 std::string InputWindowName();
+
+// Any thread: a picture of reNut's own for the overlay (RGBA, rows top
+// down), uploaded with the next drawn frame. Its id is an ImTextureID for
+// ImDrawList::AddImage. RemoveImage frees it.
+uint64_t AddImage(uint32_t width, uint32_t height, std::vector<uint8_t> rgba);
+void RemoveImage(uint64_t id);
+
+// In a Dialog's Draw: the face for large menu text (Selawik Semibold), or the
+// default font if that could not load. ImGui scales it to any size.
+ImFont *MenuFont();
 
 // Runs a function on the SDK's UI thread, later (WindowedAppContext::
 // CallInUIThreadDeferred).

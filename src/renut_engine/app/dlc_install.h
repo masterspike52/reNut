@@ -9,13 +9,31 @@
 // uninstall it. Installing copies the package's files, so the first start
 // after adding one takes a moment longer.
 
+#include <cstdint>
 #include <filesystem>
+#include <string>
 
 namespace rex {
 class Runtime;
 }
 
 namespace renut::dlc {
+
+// What an Xbox 360 package's header says (big-endian there): its content type
+// (2 DLC, 0x000B0000 a title update), the game's media ID (which disc, so
+// which region) and title ID, and its display name (the ASCII part).
+struct PackageInfo {
+    uint32_t content_type = 0;
+    uint32_t media_id = 0;
+    uint32_t title_id = 0;
+    std::string name;
+};
+
+// False if 'path' is not an Xbox 360 package (LIVE, PIRS or CON).
+bool ReadPackageInfo(const std::filesystem::path &path, PackageInfo &out);
+
+// The DLC folder: renut_dlc_folder, relative to reNut's writable folder.
+std::filesystem::path PackageFolder();
 
 // The user data folder the runtime uses (from the resolved paths), where an
 // installed package's header shows it is installed.

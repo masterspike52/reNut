@@ -1,6 +1,6 @@
 #pragma once
-// Where reNut writes its own files (renut.toml, logs, pipeline captures, the
-// path setup, shader captures). Next to the executable, as the SDK assumes;
+// Where reNut writes its own files (renut.toml, logs, pipeline captures,
+// renut.cfg's paths, shader captures, by default the extracted game). Next to the executable, as the SDK assumes;
 // an AppImage runs from a read-only mount, so there it is the user data
 // folder the SDK keeps saves in ($XDG_DATA_HOME/renut, or
 // ~/.local/share/renut), and the working directory is moved there so the

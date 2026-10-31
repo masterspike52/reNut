@@ -3,7 +3,7 @@
 #include "renut_engine/ui/fps_overlay.h"
 #include "renut_engine/app/renut_logging.h"
 #include "renut_engine/ui/renut_logging_overlay.h"
-#include "renut_engine/ui/path_setup_wizard.h"
+#include "renut_engine/ui/launcher_menu.h"
 #include <rexglue_guide/guide.h>
 #include <sentrywork/sentrywork.h>
 #include "renut_engine/ui/settings_dialog.h"
@@ -104,10 +104,10 @@ public:
         renut::gpu::overlay::AddDialog(flag_editor_.get());
         fps_overlay_ = std::make_unique<FpsOverlay>();
         log_overlay_ = std::make_unique<RenuLogOverlayDialog>();
-        path_wizard_ = std::make_unique<PathSetupWizard>();
+        launcher_ = std::make_unique<LauncherMenu>();
+        renut::gpu::overlay::AddDialog(launcher_.get());
         renut::gpu::overlay::AddDialog(fps_overlay_.get());
         renut::gpu::overlay::AddDialog(log_overlay_.get());
-        renut::gpu::overlay::AddDialog(path_wizard_.get());
         rex::cvar::SetFlagByName("guide_button", "true");
         rexglue_guide::AddCredit("MadLadMikael", "reNut Lead Programmer");
         rexglue_guide::AddCredit("EtoneDemid", "Nutstaller");
@@ -148,7 +148,7 @@ public:
         renut::gpu::overlay::RemoveDialog(flag_editor_.get());
         renut::gpu::overlay::RemoveDialog(fps_overlay_.get());
         renut::gpu::overlay::RemoveDialog(log_overlay_.get());
-        renut::gpu::overlay::RemoveDialog(path_wizard_.get());
+        renut::gpu::overlay::RemoveDialog(launcher_.get());
         sentrywork::Shutdown();
     }
 
@@ -176,17 +176,25 @@ public:
         // anything replaced it.
         renut::crash::InstallCrashDumps();
 
-        // The path wizard is drawn before the game starts, so the renderer
+        // The launcher menu is drawn before the game starts, so the renderer
         // (and its overlay-only presentation) comes up here.
         renut::gpu::StartRenderer(app_context(), [this] { return imgui_drawer(); });
-        renut::game::AttachMouseCamera(window());
         renut::game::AttachKeyboard(window());
 
-        path_wizard_->Init(app_name_, defaults, [this, resume](rex::PathConfig resolved) {
-            renut::dlc::SetUserDataRoot(resolved.user_data_root);
-            renut::saves::FixPackageHeaders(resolved.user_data_root);
-            resume(resolved);
-            paths_ready_ = true;
+        launcher_->Init(
+            app_name_, defaults, config_path_, window(),
+            [this, resume](rex::PathConfig resolved) {
+                // The mouse camera takes the mouse in the game only: on the
+                // launcher a click is a click.
+                renut::game::AttachMouseCamera(window());
+                renut::dlc::SetUserDataRoot(resolved.user_data_root);
+                renut::saves::FixPackageHeaders(resolved.user_data_root);
+                resume(resolved);
+                paths_ready_ = true;
+            },
+            [this] {
+                if (auto *w = window())
+                    w->RequestClose();
             });
         return std::nullopt;
     }
@@ -196,9 +204,9 @@ private:
     std::filesystem::path config_path_;
     std::unique_ptr<RenutSettingsDialog> settings_dialog_;
     std::unique_ptr<FlagEditorDialog> flag_editor_;
-    std::unique_ptr<PathSetupWizard> path_wizard_;
-    // The path wizard is done and the game is starting: the Guide may show
-    // its sign-in screen.
+    std::unique_ptr<LauncherMenu> launcher_;
+    // PLAY was picked and the game is starting: the Guide may show its
+    // sign-in screen.
     std::atomic<bool> paths_ready_{false};
     std::unique_ptr<FpsOverlay> fps_overlay_;
     std::unique_ptr<RenuLogOverlayDialog> log_overlay_;

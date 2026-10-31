@@ -29,7 +29,7 @@ std::unique_ptr<rex::ui::ImmediateDrawer> CreateOverlayDrawer();
 // UI thread, once the window exists: creates the host device, starts reNut's
 // overlay (overlay_ui.h), routes the SDK's menus into Present, and presents
 // overlay-only frames whenever the guest is not presenting (before it starts,
-// e.g. the path wizard, and while it stalls).
+// e.g. the launcher menu, and while it stalls).
 bool StartRenderer(rex::ui::WindowedAppContext &app_context,
                    std::function<rex::ui::ImGuiDrawer *()> imgui_drawer);
 

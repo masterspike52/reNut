@@ -39,16 +39,22 @@ set(RENUT_SOURCES
 	src/renut_engine/game/cheats.cpp
 	src/renut_engine/game/flag_editor.cpp
 	src/renut_engine/game/walk_up_slopes.cpp
+	src/renut_engine/game/challenge_replay.cpp
 	src/renut_engine/game/stereo.cpp
 	src/renut_engine/game/restored_parts.cpp
 	src/renut_engine/game/banner.cpp
 	src/renut_engine/game/vehicle_drivers.cpp
 	src/renut_engine/game/startup_logo.cpp
+	src/renut_engine/game/jiggy_wall_hold.cpp
 	src/renut_engine/online/trace.cpp
 	src/renut_engine/online/rexliveless.cpp
 	src/renut_engine/app/crash_dump.cpp
 	src/renut_engine/app/dlc_install.cpp
+	src/renut_engine/app/game_setup.cpp
 	src/renut_engine/app/save_headers.cpp
+	src/renut_engine/app/updater.cpp
+	src/renut_engine/app/workshop.cpp
+	src/renut_engine/ui/launcher_menu.cpp
 	src/renut_engine/mods/custom_parts.cpp
 	src/renut_engine/mods/json.cpp
 	src/renut_engine/mods/mod_device.cpp
@@ -58,11 +64,8 @@ set(RENUT_SOURCES
 	src/renut_engine/mods/xcompress.cpp
 	src/renut_engine/mods/zip_reader.cpp
 	src/hooks.cpp
+	src/renut_engine/game/audio_client_guard.cpp
 )
-
-if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
-    list(APPEND RENUT_SOURCES src/renut_engine/game/audio_client_guard.cpp)
-endif()
 
 if(WIN32)
 list(APPEND RENUT_SOURCES icon/app.rc)
@@ -96,6 +99,11 @@ else()
 endif()
 message(STATUS "reNut build: ${RENUT_BUILD}")
 target_compile_definitions(renut PRIVATE "RENUT_BUILD=\"${RENUT_BUILD}\"")
+# Only a release build updates itself from GitHub's releases (app/updater.h):
+# a dev build is never replaced by a download.
+if(RENUT_RELEASE)
+    target_compile_definitions(renut PRIVATE RENUT_RELEASE_BUILD)
+endif()
 
 set(RENUT_LUA_DIR "${CMAKE_SOURCE_DIR}/thirdparty/lua-5.4.7/src")
 file(GLOB renut_lua_sources "${RENUT_LUA_DIR}/*.c")
@@ -126,6 +134,23 @@ target_link_libraries(renut PRIVATE renut_miniaudio)
 include(thirdparty/rexglue_guide/CMakeLists.txt)
 rexglue_guide_attach(renut)
 
+# The launcher menu's pictures (ui/launcher_menu.cpp includes each as a byte
+# list): the menu's, and the workshop's (the same without the photos, where
+# the workshop pins its own). Made as the Guide makes its assets' includes;
+# the menu's text uses the Guide's Selawik.
+set(renut_asset_dir "${CMAKE_BINARY_DIR}/renut_assets")
+foreach(picture launcher_background workshop_background)
+    set(source "${CMAKE_SOURCE_DIR}/icon/${picture}.png")
+    set(inc "${renut_asset_dir}/${picture}.png.inc")
+    set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${source}")
+    if(NOT EXISTS "${inc}" OR "${source}" IS_NEWER_THAN "${inc}")
+        file(READ "${source}" hex HEX)
+        string(REGEX REPLACE "([0-9a-f][0-9a-f])" "0x\\1," hex "${hex}")
+        file(WRITE "${inc}" "${hex}\n")
+    endif()
+endforeach()
+target_include_directories(renut PRIVATE "${renut_asset_dir}")
+
 
 include(thirdparty/sentrywork/CMakeLists.txt)
 sentrywork_attach(renut
@@ -136,6 +161,56 @@ sentrywork_attach(renut
 
 include(src/renut_engine/gpu/gpu.cmake)
 renut_gpu_setup(renut)
+
+# The launcher menu's music, Mumbo's Mountain, is the game's own, so it is
+# never kept in the repository: the build takes it from the game's assets
+# (RENUT_ASSETS_DIR, as the shader dump does) with tools/make_launcher_music.py
+# and ffmpeg, into the build directory, and compiles it in
+# (cmake/embed_string.cmake; ui/launcher_menu.cpp includes it). Or it takes
+# one already made (RENUT_LAUNCHER_MUSIC: tools/release.ps1 gives the Linux
+# build the Windows build's, so WSL needs no ffmpeg).
+set(RENUT_LAUNCHER_MUSIC "" CACHE FILEPATH
+    "An already-made launcher music (launcher_music.ogg); empty: made from the game's assets with ffmpeg")
+set(renut_music_inc "${renut_asset_dir}/launcher_music.ogg.inc")
+if(RENUT_LAUNCHER_MUSIC)
+    if(NOT EXISTS "${RENUT_LAUNCHER_MUSIC}")
+        message(FATAL_ERROR "RENUT_LAUNCHER_MUSIC: no ${RENUT_LAUNCHER_MUSIC}")
+    endif()
+    add_custom_command(
+        OUTPUT "${renut_music_inc}"
+        COMMAND "${CMAKE_COMMAND}" "-DIN=${RENUT_LAUNCHER_MUSIC}" "-DOUT=${renut_music_inc}"
+                -P "${CMAKE_SOURCE_DIR}/cmake/embed_string.cmake"
+        DEPENDS "${RENUT_LAUNCHER_MUSIC}" "${CMAKE_SOURCE_DIR}/cmake/embed_string.cmake"
+        COMMENT "Embedding the launcher music ${RENUT_LAUNCHER_MUSIC}"
+        VERBATIM)
+else()
+    find_package(Python3 REQUIRED COMPONENTS Interpreter)
+    find_program(RENUT_FFMPEG ffmpeg DOC "ffmpeg, which makes the launcher music from the game's assets")
+    if(NOT RENUT_FFMPEG)
+        message(FATAL_ERROR "The launcher music is made from the game's assets with ffmpeg: install it "
+                            "(winget install ffmpeg, or apt install ffmpeg), set RENUT_FFMPEG to it, or set "
+                            "RENUT_LAUNCHER_MUSIC to a launcher_music.ogg another build made")
+    endif()
+    set(renut_music_bundle "${RENUT_ASSETS_DIR}/Bundle/50/685374")
+    if(NOT EXISTS "${renut_music_bundle}")
+        message(FATAL_ERROR "No ${renut_music_bundle} to make the launcher music from: set "
+                            "RENUT_ASSETS_DIR to the game's assets directory")
+    endif()
+    set(renut_music "${renut_asset_dir}/launcher_music.ogg")
+    add_custom_command(
+        OUTPUT "${renut_music_inc}"
+        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tools/make_launcher_music.py"
+                "${RENUT_ASSETS_DIR}" "${renut_music}" --ffmpeg "${RENUT_FFMPEG}"
+        COMMAND "${CMAKE_COMMAND}" "-DIN=${renut_music}" "-DOUT=${renut_music_inc}"
+                -P "${CMAKE_SOURCE_DIR}/cmake/embed_string.cmake"
+        DEPENDS "${renut_music_bundle}" "${CMAKE_SOURCE_DIR}/tools/make_launcher_music.py"
+                "${CMAKE_SOURCE_DIR}/cmake/embed_string.cmake"
+        COMMENT "Making the launcher music from ${renut_music_bundle}"
+        VERBATIM)
+endif()
+target_sources(renut PRIVATE "${renut_music_inc}")
+set_source_files_properties("${renut_music_inc}" PROPERTIES HEADER_FILE_ONLY ON GENERATED ON)
+set_source_files_properties(src/renut_engine/ui/launcher_menu.cpp PROPERTIES OBJECT_DEPENDS "${renut_music_inc}")
 
 
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
