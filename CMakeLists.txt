@@ -36,10 +36,14 @@ set(RENUT_SOURCES
 	src/renut_engine/game/vehicle_limits.cpp
 	src/renut_engine/game/status_dials.cpp
 	src/renut_engine/game/notes.cpp
+	src/renut_engine/game/cheats.cpp
+	src/renut_engine/game/flag_editor.cpp
+	src/renut_engine/game/walk_up_slopes.cpp
 	src/renut_engine/game/stereo.cpp
 	src/renut_engine/game/restored_parts.cpp
 	src/renut_engine/game/banner.cpp
 	src/renut_engine/game/vehicle_drivers.cpp
+	src/renut_engine/game/startup_logo.cpp
 	src/renut_engine/online/trace.cpp
 	src/renut_engine/online/rexliveless.cpp
 	src/renut_engine/app/crash_dump.cpp
@@ -56,8 +60,6 @@ set(RENUT_SOURCES
 	src/hooks.cpp
 )
 
-# Linux only: the SDK's audio worker can run XAudio's render callback after
-# the client is unregistered, which freezes Linux after the Microsoft logo.
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     list(APPEND RENUT_SOURCES src/renut_engine/game/audio_client_guard.cpp)
 endif()
@@ -71,9 +73,30 @@ endif()
 
 rexglue_setup_target(renut)
 
-# Lua 5.4 (thirdparty/lua-5.4.7, lua.org, MIT) for mods' part scripts
-# (src/renut_engine/game/part_scripts.cpp). Built as C++: script errors unwind
-# with exceptions rather than longjmp across reNut's C++ frames.
+# The build's name on the RexLiveless leaderboards and its Sentry release.
+# Builds are "reNut dev" (renut@dev), which the server takes only from an
+# admin's account; a release build (RENUT_RELEASE: the *-dist presets, which
+# tools/release.ps1 builds after raising version.txt) is
+# "reNut <version.txt>" (renut@<version>), which the server refuses below its
+# minimum, keeping old releases off the leaderboards.
+option(RENUT_RELEASE "A release build: versioned by version.txt (else a dev build)" OFF)
+file(STRINGS "${CMAKE_SOURCE_DIR}/version.txt" RENUT_VERSION LIMIT_COUNT 1 REGEX "^[0-9]+(\\.[0-9]+)*")
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/version.txt")
+if(RENUT_RELEASE)
+    if(NOT RENUT_VERSION)
+        message(FATAL_ERROR "version.txt holds no version (e.g. 1.2.3)")
+    endif()
+    set(RENUT_BUILD "reNut ${RENUT_VERSION}")
+    set(RENUT_SENTRY_RELEASE "renut@${RENUT_VERSION}")
+    set(RENUT_SENTRY_ENVIRONMENT "production")
+else()
+    set(RENUT_BUILD "reNut dev")
+    set(RENUT_SENTRY_RELEASE "renut@dev")
+    set(RENUT_SENTRY_ENVIRONMENT "development")
+endif()
+message(STATUS "reNut build: ${RENUT_BUILD}")
+target_compile_definitions(renut PRIVATE "RENUT_BUILD=\"${RENUT_BUILD}\"")
+
 set(RENUT_LUA_DIR "${CMAKE_SOURCE_DIR}/thirdparty/lua-5.4.7/src")
 file(GLOB renut_lua_sources "${RENUT_LUA_DIR}/*.c")
 list(REMOVE_ITEM renut_lua_sources "${RENUT_LUA_DIR}/lua.c" "${RENUT_LUA_DIR}/luac.c")
@@ -87,9 +110,6 @@ else()
 endif()
 target_link_libraries(renut PRIVATE renut_lua)
 
-# miniaudio 0.11.21 (thirdparty/miniaudio, github.com/mackron/miniaudio,
-# public domain / MIT-0) with stb_vorbis: the Stereo's music from the player's
-# own files (src/renut_engine/game/stereo.cpp), on a sound device of its own.
 enable_language(C)
 add_library(renut_miniaudio STATIC "${CMAKE_SOURCE_DIR}/thirdparty/miniaudio/miniaudio_impl.c")
 target_include_directories(renut_miniaudio PUBLIC "${CMAKE_SOURCE_DIR}/thirdparty/miniaudio")
@@ -103,17 +123,21 @@ if(UNIX)
 endif()
 target_link_libraries(renut PRIVATE renut_miniaudio)
 
-# Online play runs on RexLiveless through the Rexglue Guide
-# (thirdparty/rexglue_guide): it answers the title's Xam / NetDll imports
-# itself, so reNut's own EOS hooks (online/eos.cpp and friends) are left out.
 include(thirdparty/rexglue_guide/CMakeLists.txt)
 rexglue_guide_attach(renut)
 
-# Native renderer (plume D3D12 + Vulkan, XenosRecomp RENUT_RECOMP shader cache).
+
+include(thirdparty/sentrywork/CMakeLists.txt)
+sentrywork_attach(renut
+    DSN "https://953e4dacb8e759c2f49cc6dd5ba22a57@o4512343007952896.ingest.us.sentry.io/4512343096360960"
+    RELEASE "${RENUT_SENTRY_RELEASE}" ENVIRONMENT "${RENUT_SENTRY_ENVIRONMENT}"
+    ORG madlad-inc PROJECT renut)
+
+
 include(src/renut_engine/gpu/gpu.cmake)
 renut_gpu_setup(renut)
 
-# Linux builds also pack renut into an AppImage (cmake/appimage.cmake).
+
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     include(cmake/appimage.cmake)
 endif()

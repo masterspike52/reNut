@@ -26,6 +26,7 @@
 #include "guest.h"
 #include "live.h"
 #include "live_sessions.h"
+#include "live_storage.h"
 #include "xlivebase_app.h"
 
 #if defined(_WIN32)
@@ -39,7 +40,6 @@
 #include <psapi.h>
 #else
 #include <dlfcn.h>
-#include <link.h>
 #endif
 
 namespace rexglue_guide::live {
@@ -402,6 +402,9 @@ extern "C" REX_FUNC(__imp__XMsgInProcessCall) {
       case 0x00058020:  // XFriendsCreateEnumerator
         GUIDE_TRACE("XFriendsCreateEnumerator");
         return SetResult(ctx, CreateFriendsEnumerator(ctx.r6.u32));
+      case 0x00058035:  // XStorageBuildServerPath(ByXuid)
+        GUIDE_TRACE("XStorageBuildServerPath");
+        return SetResult(ctx, rexglue_guide::storage::BuildServerPath(ctx.r5.u32));
       default:
         break;
     }

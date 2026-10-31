@@ -5,6 +5,8 @@
 #include <cstdint>
 #include <string_view>
 
+#include <rexglue_guide/guide.h>
+
 #include "renut_engine/online/online.h"
 
 // Cheats are off in online multiplayer unless the session's host
@@ -43,6 +45,9 @@ REXCVAR_DEFINE_STRING(banjo_skin, "default", "Nuts&Bolts/Skins", "Banjo skin ove
 .allowed({ "default", "robot", "tuxedo" });
 // Name = "No Out of Bounds Reset"
 REXCVAR_DEFINE_BOOL(no_out_of_bounds_reset, false, "Nuts&Bolts/Cheats", "Going past the edge of the world no longer resets Banjo with a jiggy wall. Off in online multiplayer unless the host allows cheats.")
+.validator(CheatValueAllowed);
+// Name = "Unlock All Parts"
+REXCVAR_DEFINE_BOOL(unlock_all_parts, false, "Nuts&Bolts/Cheats", "Every vehicle part crate is unlocked in the garage, whether or not you've earned it. Takes effect on the next level load. Off in online multiplayer unless the host allows cheats.")
 .validator(CheatValueAllowed);
 // Name = "Max Acquired Parts Access"
 REXCVAR_DEFINE_BOOL(max_acquired_parts_access, false, "Nuts&Bolts/Cheats", "Allows max acquired vehicle parts. Off in online multiplayer unless the host allows cheats.")
@@ -123,6 +128,56 @@ bool keep_escaped_vehicle(PPCRegister& r30, PPCRegister& r31) {
     (void)r31;
     return REXCVAR_GET(no_out_of_bounds_reset) && CheatsAllowed();
 }
+
+// The title server's connections are cached by server address (the map at
+// 0x82DE693C, filled by sub_82C08EC0). A connection keeps its address at +0x10
+// (sub_82C08D40, with +0x14 set), but its last release (sub_82C08D98) looks
+// the cache entry up by +0x0C, which nothing sets: the entry outlives the
+// connection, and the next lookup for that server, after signing in, hands
+// out freed memory. Once that memory is reused the game crashes (seen on
+// Linux). After the load at 0x82C08DB4 (r11 the connection, r10 the key) the
+// key is the connection's own address, or 0 (no entry) without one.
+static constexpr uint32_t kConnectionAddress = 0x10;
+static constexpr uint32_t kConnectionHasAddress = 0x14;
+
+void title_server_cache_key(PPCRegister& r10, PPCRegister& r11) {
+    const uint32_t connection = r11.u32;
+    const bool has_address =
+        *REX_KERNEL_MEMORY()->TranslateVirtual<const uint8_t*>(connection + kConnectionHasAddress) != 0;
+    r10.u32 = has_address ? GuestLoad32(connection + kConnectionAddress) : 0;
+}
+// The game's XStorage calls (rex_XStorageUploadFromMemory and co., XDK code
+// compiled into it) hand XAM their requests in LIVE's own wire format, which
+// the runtime doesn't answer: a challenge's replay never reached the
+// leaderboard. At each one's entry, its arguments in r3-r9, they go to
+// RexLiveless through the Guide instead; true returns at once with r3 the
+// result. Without a RexLiveless account the game's own code runs, as offline.
+bool storage_upload(PPCRegister& r3, PPCRegister& r4, PPCRegister& r5, PPCRegister& r6, PPCRegister& r7) {
+    uint32_t result = 0;
+    if (!rexglue_guide::StorageUploadFromMemory(r3.u32, r4.u32, r5.u32, r6.u32, r7.u32, &result))
+        return false;
+    r3.u64 = result;
+    return true;
+}
+
+bool storage_download(PPCRegister& r3, PPCRegister& r4, PPCRegister& r5, PPCRegister& r6, PPCRegister& r7,
+                      PPCRegister& r8, PPCRegister& r9) {
+    uint32_t result = 0;
+    if (!rexglue_guide::StorageDownloadToMemory(r3.u32, r4.u32, r5.u32, r6.u32, r7.u32, r8.u32, r9.u32, &result))
+        return false;
+    r3.u64 = result;
+    return true;
+}
+
+bool storage_enumerate(PPCRegister& r3, PPCRegister& r4, PPCRegister& r5, PPCRegister& r6, PPCRegister& r7,
+                       PPCRegister& r8, PPCRegister& r9) {
+    uint32_t result = 0;
+    if (!rexglue_guide::StorageEnumerate(r3.u32, r4.u32, r5.u32, r6.u32, r7.u32, r8.u32, r9.u32, &result))
+        return false;
+    r3.u64 = result;
+    return true;
+}
+
 bool no_notes_spent() {
     if (REXCVAR_GET(no_notes_spent) && CheatsAllowed()) {
         return true;
@@ -164,6 +219,15 @@ bool BanjoActorOverride(PPCRegister& r3, PPCRegister& r5) {
 
     // "default" — let the original function run
     return true;
+}
+
+// The garage's part list is rebuilt from "unlockable_blocksets" on a level
+// load (sub_824FA3D8 → sub_824FB5D8): each blockset (a part crate) adds its
+// parts only if its game flag is set (sub_824FB740). At 0x824FB648 true takes
+// the unlocked branch for every blockset. Nothing is written to the save, so
+// turning the cheat off brings back the earned list on the next load.
+bool unlock_all_parts() {
+    return REXCVAR_GET(unlock_all_parts) && CheatsAllowed();
 }
 
 void Max_Acquired_Parts_Access_hook_1(PPCRegister& r11) {

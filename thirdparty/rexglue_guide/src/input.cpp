@@ -28,7 +28,7 @@ constexpr float kStick = 0.5f;
 // The last XINPUT_GAMEPAD the game read for each user.
 struct GameRead {
   uint16_t buttons = 0;
-  uint8_t lt = 0;
+  uint8_t lt = 0, rt = 0;
   int16_t lx = 0, ly = 0;
   std::chrono::steady_clock::time_point read_at;
 };
@@ -106,6 +106,32 @@ SDL_Gamepad* ActivePad() {
   return active;
 }
 
+// What kind of pad it is: its family, and the labels on its face buttons
+// (positional, so a Switch's bottom button says B).
+PadStyle StyleOf(SDL_Gamepad* pad) {
+  PadStyle style;
+  const SDL_GamepadType type = SDL_GetGamepadType(pad);
+  style.type = int(type);
+  switch (type) {
+    case SDL_GAMEPAD_TYPE_PS3:
+    case SDL_GAMEPAD_TYPE_PS4:
+    case SDL_GAMEPAD_TYPE_PS5: style.family = PadFamily::kPlayStation; break;
+    case SDL_GAMEPAD_TYPE_NINTENDO_SWITCH_PRO:
+    case SDL_GAMEPAD_TYPE_NINTENDO_SWITCH_JOYCON_LEFT:
+    case SDL_GAMEPAD_TYPE_NINTENDO_SWITCH_JOYCON_RIGHT:
+    case SDL_GAMEPAD_TYPE_NINTENDO_SWITCH_JOYCON_PAIR: style.family = PadFamily::kSwitch; break;
+    default: style.family = PadFamily::kXbox; break;
+  }
+  // Steam Deck controls, or Steam's virtual pad on one.
+  if (SDL_GetGamepadVendor(pad) == 0x28DE && (SDL_GetGamepadProduct(pad) == 0x1205 || SDL_getenv("SteamDeck"))) {
+    style.family = PadFamily::kSteamDeck;
+  }
+  const SDL_GamepadButton faces[4] = {SDL_GAMEPAD_BUTTON_SOUTH, SDL_GAMEPAD_BUTTON_EAST, SDL_GAMEPAD_BUTTON_WEST,
+                                      SDL_GAMEPAD_BUTTON_NORTH};
+  for (int i = 0; i < 4; ++i) style.face_labels[i] = int(SDL_GetGamepadButtonLabelForType(type, faces[i]));
+  return style;
+}
+
 }  // namespace
 
 Input::Pad Input::Sample() {
@@ -118,6 +144,8 @@ Input::Pad Input::Sample() {
   p.lx = SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_LEFTX) / 32767.0f;
   p.ly = SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_LEFTY) / 32767.0f;
   p.lt = SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_LEFT_TRIGGER) / 32767.0f;
+  p.rt = SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_RIGHT_TRIGGER) / 32767.0f;
+  p.style = StyleOf(pad);
   return p;
 }
 
@@ -160,6 +188,7 @@ Input::Pad Input::GamePad(int controller, bool* fresh) {
     if (std::abs(lx) > std::abs(p.lx)) p.lx = lx;
     if (std::abs(ly) > std::abs(p.ly)) p.ly = ly;
     p.lt = std::max(p.lt, g.lt / 255.0f);
+    p.rt = std::max(p.rt, g.rt / 255.0f);
   }
   return p;
 }
@@ -187,6 +216,7 @@ Input::Pad Input::Merge(const Pad& a, const Pad& b) {
   if (std::abs(b.lx) > std::abs(p.lx)) p.lx = b.lx;
   if (std::abs(b.ly) > std::abs(p.ly)) p.ly = b.ly;
   p.lt = std::max(p.lt, b.lt);
+  p.rt = std::max(p.rt, b.rt);
   return p;
 }
 
@@ -309,7 +339,13 @@ NavInput Input::Poll(float dt, bool text_entry, int controller) {
   in.pad_used = pad_used_;
   // Held keys keep the game's input held too, so a key that closed the Guide
   // doesn't reach the game.
-  in.pad_held = pad_any || keys_any || lt > 0.3f;
+  in.pad_held = pad_any || keys_any || lt > 0.3f || pad.rt > 0.3f;
+  std::copy(now, now + 32, std::begin(in.pad.buttons));
+  in.pad.lx = lx;
+  in.pad.ly = ly;
+  in.pad.lt = lt;
+  in.pad.rt = pad.rt;
+  in.pad_style = sdl.style;
 
   std::copy(now, now + 32, std::begin(prev_));
   prev_lt_ = lt;
@@ -343,6 +379,7 @@ extern "C" REX_FUNC(__imp__XamInputGetState) {
   auto& pad = g_game_pads[user];
   pad.buttons = Load16(state + 4);
   pad.lt = state[6];
+  pad.rt = state[7];
   pad.lx = int16_t(Load16(state + 8));
   pad.ly = int16_t(Load16(state + 10));
   pad.read_at = std::chrono::steady_clock::now();

@@ -3807,10 +3807,11 @@ void ResolveStateLocked(const u8 *device_state, u32 flags, const ClearRect *sour
                     dest_level, dest_slice);
         }
       } else if (fit(dest, src) && ResolveDepth(surface, dest, src, dest_x, dest_y)) {
-        // renut_ssao: the scene's depth is in; its occlusion goes over the
+        // renut_ssao: the scene's depth is in; its occlusion goes into the
         // color target the scene was drawn into.
         HostSurface *color = FindHostSurfaceLocked(device.U32(d3d::kDeviceOffsetRenderTargets));
-        if (ApplyAmbientOcclusionLocked(surface, dest, dest_y + (src.y2 - src.y1), color)) {
+        const int32_t bottom = dest_y + (src.y2 - src.y1);
+        if (ApplyAmbientOcclusionLocked(surface, dest, bottom, color)) {
           g_bound.framebuffer = nullptr;
           g_bound.pipeline = nullptr;
           g_bound.layout = false;

@@ -1,0 +1,129 @@
+#ifndef SENTRY_BATCHER_H_INCLUDED
+#define SENTRY_BATCHER_H_INCLUDED
+
+#include "sentry_boot.h"
+#include "sentry_client_report.h"
+#include "sentry_database.h"
+#include "sentry_envelope.h"
+#include "sentry_sync.h"
+#include "sentry_transport.h"
+
+#ifdef SENTRY_UNITTEST
+#    define SENTRY_BATCHER_QUEUE_LENGTH 5
+#else
+#    define SENTRY_BATCHER_QUEUE_LENGTH 100
+#endif
+#ifndef SENTRY_BATCHER_BUFFER_COUNT
+#    define SENTRY_BATCHER_BUFFER_COUNT 3
+#endif
+
+/**
+ * Thread lifecycle states for the batching thread.
+ */
+typedef enum {
+    /** Thread is not running (initial state or after shutdown) */
+    SENTRY_BATCHER_THREAD_STOPPED = 0,
+    /** Configured and ready to start on the first enqueue */
+    SENTRY_BATCHER_THREAD_IDLE = 1,
+    /** Thread creation is in progress; the handle is not yet published */
+    SENTRY_BATCHER_THREAD_SPAWNING = 2,
+    /** Thread is starting up but not yet ready */
+    SENTRY_BATCHER_THREAD_STARTING = 3,
+    /** Thread is running and processing items */
+    SENTRY_BATCHER_THREAD_RUNNING = 4,
+    /** Thread has been asked to stop and still needs to be joined */
+    SENTRY_BATCHER_THREAD_STOPPING = 5,
+} sentry_batcher_thread_state_t;
+
+typedef struct {
+    sentry_value_t items[SENTRY_BATCHER_QUEUE_LENGTH];
+    long index; // (atomic) index for producer threads to get a unique slot
+    long adding; // (atomic) count of in-flight writers on this buffer
+    long sealed; // (atomic) 0=writeable, 1=sealed (meaning we drop)
+} sentry_batcher_buffer_t;
+
+typedef sentry_envelope_item_t *(*sentry_batch_func_t)(
+    sentry_envelope_t *envelope, sentry_value_t items);
+
+struct sentry_batch_task_s;
+
+typedef struct {
+    long refcount; // (atomic) reference count
+    sentry_batcher_buffer_t buffers[SENTRY_BATCHER_BUFFER_COUNT];
+    long active_idx; // (atomic) index to the active buffer
+    long drain_idx; // (atomic) index to the oldest buffer to drain
+    long flushing; // (atomic) reentrancy guard to the flusher
+    long crash_flush; // (atomic) write completed batch work to disk
+    long task_lock; // (atomic) protects in-flight batch tasks
+    struct sentry_batch_task_s *tasks; // in-flight batch tasks
+    sentry_mutex_t task_wait_mutex; // mutex for task completion waiters
+    sentry_cond_t task_wait_cond; // signals changes to in-flight tasks
+    long thread_state; // (atomic) sentry_batcher_thread_state_t
+    sentry_waitable_flag_t request_flush; // level-triggered flush flag
+    sentry_threadid_t batching_thread; // the batching thread
+    sentry_threadpool_t *threadpool; // thread pool for batch work
+    sentry_batch_func_t batch_func; // function to add items to envelope
+    sentry_data_category_t data_category; // for client report discard tracking
+    char *thread_name;
+    sentry_dsn_t *dsn;
+    sentry_transport_t *transport;
+    sentry_run_t *run;
+} sentry_batcher_t;
+
+typedef struct {
+    sentry_batcher_t *ptr;
+    long lock; // (atomic) spinlock
+    long pins; // (atomic) active pins
+} sentry_batcher_ref_t;
+
+#define SENTRY_BATCHER_REF_INIT { NULL, 0, 0 }
+
+sentry_batcher_t *sentry__batcher_new(
+    sentry_batch_func_t batch_func, sentry_threadpool_t *threadpool);
+void sentry__batcher_set_category(sentry_batcher_t *batcher,
+    sentry_data_category_t data_category, const char *thread_name);
+
+/**
+ * Acquires a reference to the batcher behind `ref`, atomically incrementing
+ * its refcount under the spinlock. Returns NULL if the ref is empty.
+ */
+sentry_batcher_t *sentry__batcher_acquire(sentry_batcher_ref_t *ref);
+
+/**
+ * Lock-free, signal-safe access to `ref->ptr`. Keeps the returned pointer alive
+ * until the caller passes `ref` to `sentry__batcher_unpin`.
+ */
+sentry_batcher_t *sentry__batcher_pin(sentry_batcher_ref_t *ref);
+
+/**
+ * Ends a successful pin. Must be called once for every non-NULL pointer
+ * returned by `sentry__batcher_pin`.
+ */
+void sentry__batcher_unpin(sentry_batcher_ref_t *ref);
+
+/**
+ * Decrements the batcher's refcount and frees it when it reaches zero.
+ */
+void sentry__batcher_release(sentry_batcher_t *batcher);
+
+/**
+ * Atomically swaps the batcher pointer in `ref`, returning the old one.
+ * The caller is responsible for shutting down and releasing the old batcher.
+ */
+sentry_batcher_t *sentry__batcher_swap(
+    sentry_batcher_ref_t *ref, sentry_batcher_t *batcher);
+
+bool sentry__batcher_flush(sentry_batcher_t *batcher, bool crash_safe);
+bool sentry__batcher_enqueue(sentry_batcher_t *batcher, sentry_value_t item);
+void sentry__batcher_startup(
+    sentry_batcher_t *batcher, const sentry_options_t *options);
+void sentry__batcher_shutdown(sentry_batcher_t *batcher, uint64_t timeout);
+void sentry__batcher_flush_crash_safe(sentry_batcher_t *batcher);
+void sentry__batcher_force_flush_begin(sentry_batcher_t *batcher);
+void sentry__batcher_force_flush_wait(sentry_batcher_t *batcher);
+
+#ifdef SENTRY_UNITTEST
+void sentry__batcher_wait_for_thread_startup(sentry_batcher_t *batcher);
+#endif
+
+#endif

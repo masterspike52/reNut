@@ -27,17 +27,24 @@ State g_state;
 bool EnsureReady() {
   if (g_state.tried) return g_state.ready;
   g_state.tried = true;
-  if (!SDL_WasInit(SDL_INIT_AUDIO)) {
-    if (!SDL_InitSubSystem(SDL_INIT_AUDIO)) return false;
-    g_state.owns_subsystem = true;
-  }
+  // Built without sounds (assets.h): nothing to play, so no audio device.
+  bool any = false;
+  for (size_t i = 0; i < g_state.clips.size(); ++i) any = any || !assets::SoundWav(assets::Sound(i)).empty();
+  if (!any) return false;
+  // A reference of our own even when audio is already up: on Linux the runtime
+  // shares this SDL, and its audio driver quits the subsystem when the title
+  // shuts XAudio down (after the logo movie, for one). Without ours, that quit
+  // would be the last one and SDL would destroy these streams with it.
+  if (!SDL_InitSubSystem(SDL_INIT_AUDIO)) return false;
+  g_state.owns_subsystem = true;
   SDL_AudioSpec spec{};
   for (size_t i = 0; i < g_state.clips.size(); ++i) {
     const auto wav = assets::SoundWav(assets::Sound(i));
+    if (wav.empty()) continue;  // this one plays nothing
     SDL_IOStream* io = SDL_IOFromConstMem(wav.data(), wav.size());
     SDL_LoadWAV_IO(io, true, &spec, &g_state.clips[i].data, &g_state.clips[i].size);
   }
-  // Every clip is 48 kHz s16 stereo (tools/prepare_assets.py).
+  // Every clip is 48 kHz s16 stereo (assets.cpp).
   g_state.ui = SDL_OpenAudioDeviceStream(SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK, &spec, nullptr, nullptr);
   g_state.notify =
       SDL_OpenAudioDeviceStream(SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK, &spec, nullptr, nullptr);

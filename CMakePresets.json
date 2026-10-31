@@ -57,6 +57,18 @@
             "cacheVariables": { "CMAKE_BUILD_TYPE": "Release" }
         },
         {
+            "name": "win-amd64-dist",
+            "displayName": "Windows AMD64 Release (versioned, for players)",
+            "inherits": "windows-base",
+            "cacheVariables": { "CMAKE_BUILD_TYPE": "Release", "RENUT_RELEASE": "ON" }
+        },
+        {
+            "name": "linux-amd64-dist",
+            "displayName": "Linux AMD64 Release (versioned, for players)",
+            "inherits": "linux-base",
+            "cacheVariables": { "CMAKE_BUILD_TYPE": "Release", "RENUT_RELEASE": "ON" }
+        },
+        {
             "name": "win-amd64-relwithdebinfo",
             "displayName": "Windows AMD64 RelWithDebInfo",
             "inherits": "windows-base",
@@ -75,6 +87,8 @@
         { "name": "win-amd64-relwithdebinfo", "configurePreset": "win-amd64-relwithdebinfo" },
         { "name": "linux-amd64-debug", "configurePreset": "linux-amd64-debug" },
         { "name": "linux-amd64-release", "configurePreset": "linux-amd64-release" },
-        { "name": "linux-amd64-relwithdebinfo", "configurePreset": "linux-amd64-relwithdebinfo" }
+        { "name": "linux-amd64-relwithdebinfo", "configurePreset": "linux-amd64-relwithdebinfo" },
+        { "name": "win-amd64-dist", "configurePreset": "win-amd64-dist" },
+        { "name": "linux-amd64-dist", "configurePreset": "linux-amd64-dist" }
     ]
 }

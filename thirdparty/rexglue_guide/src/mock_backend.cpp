@@ -10,7 +10,31 @@
 #include "assets.h"
 #include "backend.h"
 
+#if defined(__APPLE__)
+#include <TargetConditionals.h>
+#endif
+
 namespace rexglue_guide {
+
+const char* ThisPlatform() {
+#if defined(__SWITCH__)
+  return "switch";
+#elif defined(__ORBIS__) || defined(__PROSPERO__)  // PS4, PS5
+  return "playstation";
+#elif defined(__ANDROID__)
+  return "android";
+#elif defined(__APPLE__) && TARGET_OS_IPHONE
+  return "ios";
+#elif defined(__APPLE__)
+  return "macos";
+#elif defined(_WIN32)
+  return "windows";
+#elif defined(__linux__)
+  return "linux";
+#else
+  return "";
+#endif
+}
 
 std::string ValidateGamertag(const std::string& gamertag) {
   if (gamertag.empty()) return "Enter a gamertag.";
@@ -207,8 +231,45 @@ class MockBackend final : public Backend {
   void DeleteTheme(int, Callback done) override { done({false, "Themes need a RexLiveless server."}); }
   std::string ThemeImage(int, int64_t) override { return {}; }
 
+  const std::vector<GamerpicGame>* gamerpic_games(std::string* error) override {
+    if (error) *error = "The Gamerpic Database needs a RexLiveless server.";
+    return nullptr;
+  }
+  void GameGamerpics(const std::string&, std::function<void(const Result&, std::vector<std::string>)> done) override {
+    done({false, "The Gamerpic Database needs a RexLiveless server."}, {});
+  }
+  std::string GameGamerpicImage(const std::string&, const std::string&, bool* missing, bool) override {
+    if (missing) *missing = true;
+    return {};
+  }
+  void SetGameGamerpic(const std::string&, const std::string&, Callback done) override {
+    done({false, "The Gamerpic Database needs a RexLiveless server."});
+  }
+
+  bool is_admin() const override { return false; }
+  void AchievementIconIds(const std::string&, std::function<void(const Result&, std::vector<uint32_t>)> done) override {
+    done({false, "Achievement icons need a RexLiveless server."}, {});
+  }
+  void UploadAchievementIcon(const std::string&, uint32_t, std::string, Callback done) override {
+    done({false, "Achievement icons need a RexLiveless server."});
+  }
+  std::string AchievementIconImage(const std::string&, uint32_t, int64_t) override { return {}; }
+
+  const TitleInfo* title(const std::string&) const override { return nullptr; }
+  std::string TitleIcon(const std::string&, int64_t) override { return {}; }
+  void ReportTitleInfo(const std::string&, const std::string&, uint32_t, uint32_t,
+                       const std::map<uint32_t, std::string>&) override {}
+  void PlayerGames(const std::string&, std::function<void(const Result&, std::vector<PlayedGame>)> done) override {
+    done({false, "Profiles' games need a RexLiveless server."}, {});
+  }
+  void PlayerGame(const std::string&, const std::string&,
+                  std::function<void(const Result&, PlayedGameDetail)> done) override {
+    done({false, "Profiles' games need a RexLiveless server."}, {});
+  }
+
   bool connected() const override { return signed_in_; }
   std::string server_name() const override { return "Mock server (offline preview)"; }
+  std::string unofficial_server() const override { return "mock server"; }
 
  private:
   struct Pending {

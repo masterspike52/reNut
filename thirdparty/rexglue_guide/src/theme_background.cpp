@@ -3,7 +3,7 @@
 #include <algorithm>
 #include <cmath>
 
-#include <rex/ui/image_decode.h>
+#include "image.h"
 
 namespace rexglue_guide {
 namespace {
@@ -73,7 +73,7 @@ ImTextureID ThemeThumbnails::Get(ui::Textures& textures, const std::string& key,
   }
   if (image.empty()) return 0;
   int w = 0, h = 0;
-  std::vector<uint8_t> rgba = rex::ui::DecodeImageRGBA(reinterpret_cast<const uint8_t*>(image.data()), image.size(), w, h);
+  std::vector<uint8_t> rgba = rexglue_guide::image::Decode(image.data(), image.size(), &w, &h);
   Thumb& thumb = thumbs_[key];  // made once, even if it won't decode
   if (rgba.empty()) return 0;
   while (w > kThumbWidth) rgba = Half(rgba, w, h, &w, &h);
@@ -92,7 +92,7 @@ ImTextureID ThemeBackground::Get(ui::Textures& textures, const std::string& id, 
   if (id != id_) {
     id_ = id;
     width_ = height_ = 0;
-    rgba_ = rex::ui::DecodeImageRGBA(reinterpret_cast<const uint8_t*>(image.data()), image.size(), width_, height_);
+    rgba_ = rexglue_guide::image::Decode(image.data(), image.size(), &width_, &height_);
     blur_ = -1.0f;
   }
   if (rgba_.empty()) return 0;

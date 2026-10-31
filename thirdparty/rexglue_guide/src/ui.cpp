@@ -1,12 +1,14 @@
 #include "ui.h"
 
+#include "image.h"
+#include "key_icons.h"
+
 #include <algorithm>
 #include <array>
 #include <cctype>
 #include <cfloat>
 #include <cmath>
 
-#include <rex/ui/image_decode.h>
 #include <rex/ui/immediate_drawer.h>
 
 namespace rexglue_guide::ui {
@@ -46,7 +48,9 @@ ImFont* Pick(ImFont* font, float size) {
 }  // namespace
 
 void ConfigureFonts(ImFontAtlas* atlas) {
-  static const ImWchar kRanges[] = {0x0020, 0x00FF, 0x2013, 0x2026, 0};
+  // Latin-1, the on-screen keyboard's Œœ Šš Ÿ and €, and dashes and ellipses.
+  static const ImWchar kRanges[] = {0x0020, 0x00FF, 0x0152, 0x0153, 0x0160, 0x0161, 0x0178, 0x0178,
+                                    0x2013, 0x2026, 0x20AC, 0x20AC, 0};
   for (size_t i = 0; i < size_t(assets::Font::kCount); ++i) {
     const auto ttf = assets::FontTtf(assets::Font(i));
     for (float size : {kSmallBake, kLargeBake}) {
@@ -280,6 +284,46 @@ void Spinner(ImDrawList* dl, ImVec2 center, float radius, float time, ImU32 col)
   }
 }
 
+// On a 24-unit grid, all white: the systems' logos (assets/icons), Windows'
+// panes drawn, and iOS by name.
+void PlatformBadge(ImDrawList* dl, Textures& textures, std::string_view platform, ImVec2 min, float size,
+                   float alpha) {
+  const float u = size / 24.0f;
+  auto at = [&](float x, float y) { return ImVec2(min.x + x * u, min.y + y * u); };
+  // White marks on a dark see-through tile, readable on any theme.
+  const ImU32 tile = WithAlpha(IM_COL32(0, 0, 0, 110), alpha);
+  const ImU32 white = WithAlpha(IM_COL32(255, 255, 255, 255), alpha);
+  auto background = [&] { dl->AddRectFilled(min, at(24, 24), tile, size * 0.22f); };
+  auto logo = [&](assets::Icon icon) {
+    background();
+    Image(dl, textures.Icon(icon), at(4.5f, 4.5f), at(19.5f, 19.5f), white);
+  };
+  if (platform == "windows") {
+    background();
+    dl->AddRectFilled(at(5, 5), at(11.3f, 11.3f), white);
+    dl->AddRectFilled(at(12.7f, 5), at(19, 11.3f), white);
+    dl->AddRectFilled(at(5, 12.7f), at(11.3f, 19), white);
+    dl->AddRectFilled(at(12.7f, 12.7f), at(19, 19), white);
+  } else if (platform == "linux") {
+    logo(assets::Icon::kLinux);
+  } else if (platform == "macos") {
+    logo(assets::Icon::kApple);
+  } else if (platform == "android") {
+    logo(assets::Icon::kAndroid);
+  } else if (platform == "ios") {
+    // Its name: half the tile tall, narrowed if it would be wider than 20 units.
+    background();
+    float text_size = size * 0.5f;
+    if (const float w = Measure(Semibold(), text_size, "iOS").x; w > 20 * u) text_size *= 20 * u / w;
+    const ImVec2 ts = Measure(Semibold(), text_size, "iOS");
+    Text(dl, Semibold(), text_size, ImVec2(min.x + (size - ts.x) * 0.5f, min.y + (size - ts.y) * 0.5f), white, "iOS");
+  } else if (platform == "switch") {
+    logo(assets::Icon::kSwitch);
+  } else if (platform == "playstation") {
+    logo(assets::Icon::kPlayStation);
+  }
+}
+
 Textures::Textures(rex::ui::ImmediateDrawer* drawer) : drawer_(drawer) {}
 Textures::~Textures() = default;
 
@@ -316,14 +360,51 @@ void ApplyTileStyle(std::vector<uint8_t>& rgba, int w, int h) {
   }
 }
 
+// Averages each output pixel's box of source pixels, weighted by alpha so the
+// transparent pixels' colour doesn't bleed into the edges.
+std::vector<uint8_t> Shrink(const std::vector<uint8_t>& src, int w, int h, int out_w, int out_h) {
+  std::vector<uint8_t> out(size_t(out_w) * out_h * 4);
+  for (int y = 0; y < out_h; ++y) {
+    const int y0 = y * h / out_h, y1 = std::max(y0 + 1, (y + 1) * h / out_h);
+    for (int x = 0; x < out_w; ++x) {
+      const int x0 = x * w / out_w, x1 = std::max(x0 + 1, (x + 1) * w / out_w);
+      float rgb[3] = {}, alpha = 0.0f;
+      for (int sy = y0; sy < y1; ++sy) {
+        for (int sx = x0; sx < x1; ++sx) {
+          const uint8_t* p = &src[(size_t(sy) * w + sx) * 4];
+          for (int c = 0; c < 3; ++c) rgb[c] += p[c] * float(p[3]);
+          alpha += p[3];
+        }
+      }
+      uint8_t* o = &out[(size_t(y) * out_w + x) * 4];
+      for (int c = 0; c < 3; ++c) o[c] = alpha > 0.0f ? uint8_t(std::lround(rgb[c] / alpha)) : 0;
+      o[3] = uint8_t(std::lround(alpha / float((x1 - x0) * (y1 - y0))));
+    }
+  }
+  return out;
+}
+
+// A picture's size in pixels for drawing it at up to `drawn` (unscaled) pixels:
+// near the size it's drawn at, as linear filtering of a much bigger one
+// shimmers. Steps of 32, so a resized window doesn't make one per pixel.
+int FitFor(float drawn) {
+  return std::clamp(int(std::ceil(Px(drawn) / 32.0f)) * 32, 64, 1024);
+}
+
 }  // namespace
 
-ImTextureID Textures::Load(const std::string& key, std::span<const uint8_t> png, bool tile) {
+ImTextureID Textures::Load(const std::string& key, std::span<const uint8_t> png, bool tile, int fit) {
   auto it = textures_.find(key);
   if (it != textures_.end()) return reinterpret_cast<ImTextureID>(it->second.get());
   auto& slot = textures_[key];
   int w = 0, h = 0;
-  auto pixels = rex::ui::DecodeImageRGBA(png.data(), png.size(), w, h);
+  auto pixels = image::Decode(png.data(), png.size(), &w, &h);
+  if (fit > 0 && !pixels.empty() && std::max(w, h) > fit) {
+    const int out_w = std::max(1, w * fit / std::max(w, h)), out_h = std::max(1, h * fit / std::max(w, h));
+    pixels = Shrink(pixels, w, h, out_w, out_h);
+    w = out_w;
+    h = out_h;
+  }
   if (tile && !pixels.empty()) ApplyTileStyle(pixels, w, h);
   if (drawer_ && !pixels.empty()) {
     slot = drawer_->CreateTexture(uint32_t(w), uint32_t(h),
@@ -352,19 +433,27 @@ void Textures::EndFrame() {
   std::erase_if(retired_, [](const auto& r) { return r.first <= 0; });
 }
 
+ImTextureID Textures::KeyIcon(std::string_view name) {
+  return Load("key:" + std::string(name), assets::KeyIconPng(name));
+}
+
+// Icons are drawn at up to 52 px (scaled), gamerpics up to 112 (a gamer card).
 ImTextureID Textures::Icon(assets::Icon icon) {
-  return Load("icon" + std::to_string(int(icon)), assets::IconPng(icon));
+  const int fit = FitFor(56.0f);
+  return Load("icon" + std::to_string(int(icon)) + "_" + std::to_string(fit), assets::IconPng(icon), false, fit);
 }
 
 ImTextureID Textures::Gamerpic(int index) {
+  const int fit = FitFor(112.0f);
   if (index >= assets::kGamerpicCount) {
-    const std::string key = "pic" + std::to_string(index);
+    const std::string key = "pic" + std::to_string(index) + "_" + std::to_string(fit);
     if (textures_.count(key)) return Load(key, {});
     const std::string png = server_gamerpic ? server_gamerpic(index) : std::string();
     if (png.empty()) index = 0;
-    else return Load(key, std::span(reinterpret_cast<const uint8_t*>(png.data()), png.size()), true);
+    else return Load(key, std::span(reinterpret_cast<const uint8_t*>(png.data()), png.size()), true, fit);
   }
-  return Load("pic" + std::to_string(std::max(index, 0)), assets::GamerpicPng(std::max(index, 0)));
+  index = std::max(index, 0);
+  return Load("pic" + std::to_string(index) + "_" + std::to_string(fit), assets::GamerpicPng(index), false, fit);
 }
 
 void Image(ImDrawList* dl, ImTextureID tex, ImVec2 min, ImVec2 max, ImU32 tint, float rounding) {

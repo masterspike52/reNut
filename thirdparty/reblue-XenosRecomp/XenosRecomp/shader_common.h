@@ -105,7 +105,7 @@ struct PushConstants
 // 1344: in guest pixels, the corner of the tile a draw predicated to one tile renders to; the
 // pixel position is relative to it, as the GPU's is to the EDRAM a tile renders in.
 #define g_PixelOrigin              vk::RawBufferLoad<float2>(g_PushConstants.SharedConstants + 1344)
-#define g_AlphaThreshold           vk::RawBufferLoad<float>(g_PushConstants.SharedConstants + 552)
+#define g_AlphaThreshold          vk::RawBufferLoad<float>(g_PushConstants.SharedConstants + 552)
 #define g_AlphaTestFunc            vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + 556)
 // 64-bit loads through a physical pointer need their alignment stated (the default is 4).
 #define g_VertexFetchDataAddress   vk::RawBufferLoad<uint64_t>(g_PushConstants.SharedConstants + 560, 8)

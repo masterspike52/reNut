@@ -65,9 +65,12 @@ void GuideDialog::NotificationsRows(std::vector<Row>& rows, Page&) {
 
 void GuideDialog::GamercardRows(std::vector<Row>& rows, Page& page) {
   const bool mine = page.arg == backend_->me().gamertag;
+  // Their games, achievements and leaderboard places.
+  rows.push_back(NeedSignIn({.label = "Games", .glyph = Glyph::kTrophy, .activate = [this, gt = page.arg] {
+                               Push({PageKind::kPlayerGames, "Games", gt});
+                             }}));
   if (mine) {
-    rows.push_back({.label = "Change Gamerpic", .activate = [this] { Push({PageKind::kGamerpics, "Choose Gamerpic", "settings"}); }});
-    rows.push_back({.label = "Upload Photo", .detail = "256 x 256", .activate = [this] { ChoosePhoto(); }});
+    rows.push_back({.label = "Change Gamerpic", .activate = [this] { Push({PageKind::kChangeGamerpic, "Change Gamerpic"}); }});
     rows.push_back({.label = "Edit Motto", .activate = [this] { EditMotto(); }});
   } else if (!FindFriend(page.arg)) {
     // Someone the title showed (XShowGamerCardUI) who isn't a friend.
@@ -144,8 +147,8 @@ void GuideDialog::ShowTitleGamercard(uint64_t xuid) {
     return;
   }
   OpenGuide();
-  blade_ = kSocialBlade;
-  stacks_[kSocialBlade] = {card};
+  blade_ = BladeOf(kSocialBlade);
+  stacks_[size_t(blade_)] = {card};
   if (!std::exchange(title_ui_, true)) {
     if (auto* kernel = REX_KERNEL_STATE()) kernel->BroadcastNotification(kNotifySystemUi, 1);
   }

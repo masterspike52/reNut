@@ -8,6 +8,8 @@
 
 #ifdef RENUT_RECOMP
 #include <algorithm>
+#include <array>
+#include <bitset>
 #include <functional>
 #include <unordered_set>
 #include <vector>

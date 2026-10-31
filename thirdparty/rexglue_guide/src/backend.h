@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <functional>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -19,10 +20,16 @@ constexpr int kFirstServerGamerpic = 1000;
 struct Profile {
   std::string gamertag;
   uint64_t xuid = 0;
-  int gamerpic = 0;  // 0..7 embedded, kFirstServerGamerpic+ uploaded to the server
+  int gamerpic = 0;  // 0..8 embedded, kFirstServerGamerpic+ uploaded to the server
   uint32_t gamerscore = 0;
   std::string motto;
+  // The systems they've played on, from the first: "windows", "linux",
+  // "macos", "android", "ios", "switch", "playstation".
+  std::vector<std::string> platforms;
 };
+
+// The system this Guide is running on, as Profile::platforms names it.
+const char* ThisPlatform();
 
 struct Friend {
   Profile profile;
@@ -89,6 +96,49 @@ struct AchievementRecord {
   uint32_t gamerscore = 0;
   std::string label;
   int64_t unlocked = 0;  // unix seconds
+  int64_t icon = 0;      // on a profile: its icon's version on the server, 0 if it has none
+};
+
+// A game as the server lists it: what the games report, with what admins set
+// over that (a name, an icon, leaderboard names).
+struct TitleInfo {
+  std::string title_id;  // hex
+  std::string name;
+  int64_t icon = 0;  // the icon's version; 0: none
+  std::map<uint32_t, std::string> boards;  // leaderboards to list, by view id
+  std::vector<uint32_t> hidden_boards;     // ones an admin took off the list
+  uint32_t achievements_total = 0;
+  uint32_t gamerscore_total = 0;
+};
+
+// One game on a player's profile, with what they have of it.
+struct PlayedGame {
+  std::string title_id;
+  std::string name;
+  int64_t icon = 0;
+  int64_t last_played = 0;
+  uint32_t achievements = 0, achievements_total = 0;
+  uint32_t gamerscore = 0, gamerscore_total = 0;
+};
+
+// A player's place on one of a game's leaderboards.
+struct BoardPlace {
+  uint32_t id = 0;
+  std::string name;
+  uint32_t rank = 0, total = 0;
+  double rating = 0.0;
+};
+
+// A game in the gamerpic archive (xboxgamer.pics).
+struct GamerpicGame {
+  std::string title_id;  // lowercase hex, as the archive has it
+  std::string name;
+  int count = 0;
+};
+
+struct PlayedGameDetail {
+  std::vector<AchievementRecord> achievements;  // unlocked, newest first
+  std::vector<BoardPlace> boards;
 };
 
 // Copy of the signed-in state for code running on game threads.
@@ -153,6 +203,21 @@ class Backend {
   // Makes a 256x256 PNG the account's own photo and its gamerpic.
   virtual void UploadPhoto(std::string png, Callback done) = 0;
 
+  // The Gamerpic Database (the xboxgamer.pics archive). Its games, by name: null
+  // while the list loads (asking starts it), with *error set if it couldn't.
+  virtual const std::vector<GamerpicGame>* gamerpic_games(std::string* error) = 0;
+  // One game's gamerpic ids.
+  virtual void GameGamerpics(const std::string& title_id,
+                             std::function<void(const Result&, std::vector<std::string>)> done) = 0;
+  // A game gamerpic's PNG, or empty while it downloads; *missing: the archive
+  // hasn't got it (it isn't coming). Ask every frame it's shown: the newest
+  // asked for download first, and one not asked for lately (scrolled away)
+  // isn't downloaded. fetch false: only one that's here already.
+  virtual std::string GameGamerpicImage(const std::string& title_id, const std::string& id, bool* missing = nullptr,
+                                        bool fetch = true) = 0;
+  // Puts one on the profile (it becomes a server gamerpic number).
+  virtual void SetGameGamerpic(const std::string& title_id, const std::string& id, Callback done) = 0;
+
   // Themes everyone made, newest first; listed without signing in.
   virtual const std::vector<ServerTheme>& themes() const = 0;
   // A list has come from the server (themes() may still be empty).
@@ -177,8 +242,35 @@ class Backend {
   virtual void ReportAchievements(const std::string& title_id,
                                   const std::vector<AchievementRecord>& unlocked) = 0;
 
+  // Games. The server's listing of one, or null if it has none (yet).
+  virtual const TitleInfo* title(const std::string& title_id) const = 0;
+  // A game's icon file (PNG or JPEG) at `version`, or empty while it downloads.
+  virtual std::string TitleIcon(const std::string& title_id, int64_t version) = 0;
+  // What the Guide knows of the game it runs in; sent once a session.
+  virtual void ReportTitleInfo(const std::string& title_id, const std::string& name, uint32_t achievements_total,
+                               uint32_t gamerscore_total, const std::map<uint32_t, std::string>& boards) = 0;
+  // A player's games, most recently played first.
+  virtual void PlayerGames(const std::string& gamertag,
+                           std::function<void(const Result&, std::vector<PlayedGame>)> done) = 0;
+  // A player's achievements and leaderboard places in one game.
+  virtual void PlayerGame(const std::string& gamertag, const std::string& title_id,
+                          std::function<void(const Result&, PlayedGameDetail)> done) = 0;
+
+  // Achievement icons, for profiles: an admin's Guide uploads the running
+  // game's that the server hasn't got. The account is an admin.
+  virtual bool is_admin() const = 0;
+  // The ids of a game's achievements whose icon the server has.
+  virtual void AchievementIconIds(const std::string& title_id,
+                                  std::function<void(const Result&, std::vector<uint32_t>)> done) = 0;
+  virtual void UploadAchievementIcon(const std::string& title_id, uint32_t id, std::string image, Callback done) = 0;
+  // An icon's file at `version` (AchievementRecord::icon), or empty while it downloads.
+  virtual std::string AchievementIconImage(const std::string& title_id, uint32_t id, int64_t version) = 0;
+
   virtual bool connected() const = 0;
   virtual std::string server_name() const = 0;
+  // Empty when talking to the RexLiveless server; otherwise the server it is
+  // talking to instead (a local one, say), which the Guide warns about.
+  virtual std::string unofficial_server() const = 0;
   virtual LiveSnapshot Snapshot() const = 0;
 
   // Raised from Update() for anything that should pop a toast.

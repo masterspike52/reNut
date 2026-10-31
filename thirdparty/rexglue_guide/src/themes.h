@@ -25,6 +25,11 @@ enum Element {
   kSelectedSub,   // the second line of the selected row
   kBackdrop,      // over the game behind the Guide (its alpha darkens it)
   kPopup,         // notification pop-ups
+  kKeyboardHeader,  // the on-screen keyboard's top part (prompt, text field)
+  kKeyboardBody,    // its key area
+  kKey,             // key faces
+  kKeyLabel,        // key labels and icons, and the typed text
+  kKeyboardField,   // the text field
   kElementCount,
 };
 
@@ -49,6 +54,7 @@ struct Theme {
   bool has_image = false;  // a server theme's background picture
   float image_alpha = 0.6f;
   float image_blur = 0.0f;  // 0..1
+  float backdrop_blur = 0.5f;  // the live game behind the Guide, 0..1
   // Server themes: marked NSFW, likes, players using it, whether this player
   // likes it, when it was made.
   bool nsfw = false;

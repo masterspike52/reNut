@@ -29,6 +29,18 @@ void NotifySigninChanged();
 // card, next frame. Any thread.
 void RequestGamercard(uint64_t xuid);
 
+// Why leaderboard scores and replays can't be posted now (Config::
+// leaderboard_block), empty when they can. Any thread.
+std::string LeaderboardBlockReason();
+// The same, telling the player when they can't (once in a while, not for
+// every view written): for a score or replay about to be posted, which then
+// fails.
+std::string LeaderboardBlocked();
+
+// The app's build name (Config::build), "" for none: sent with leaderboard
+// scores and replays. Any thread.
+const std::string& Build();
+
 // Guide side.
 void Attach(int user, Backend* backend);
 void Pump();

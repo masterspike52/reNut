@@ -1,0 +1,192 @@
+#ifndef SENTRY_CORE_H_INCLUDED
+#define SENTRY_CORE_H_INCLUDED
+
+#include "sentry_boot.h"
+#include "sentry_logger.h"
+#include "sentry_sampling_context.h"
+
+#define SENTRY_BREADCRUMBS_MAX 100
+#define SENTRY_SPANS_MAX 1000
+
+#if (defined(__GNUC__) && (__GNUC__ >= 4))                                     \
+    || (defined(_MSC_VER) && defined(__clang__))
+#    define MUST_USE __attribute__((warn_unused_result))
+#elif defined(_MSC_VER) && (_MSC_VER >= 1700)
+#    define MUST_USE _Check_return_
+#else
+#    define MUST_USE
+#endif
+
+#if defined(__GNUC__) || (defined(_MSC_VER) && defined(__clang__))
+#    define EXPLICIT_FALLTHROUGH __attribute__((__fallthrough__))
+#else
+#    define EXPLICIT_FALLTHROUGH
+#endif
+
+#if defined(__GNUC__) || (defined(_MSC_VER) && defined(__clang__))
+#    define UNUSED(x) UNUSED_##x __attribute__((__unused__))
+#elif defined(_MSC_VER)
+#    define UNUSED(x) UNUSED_##x __pragma(warning(suppress : 4100))
+#else
+#    define UNUSED(x) UNUSED_##x
+#endif
+
+/**
+ * This function will check the user consent, and return `true` if uploads
+ * should *not* be sent to the sentry server, and be discarded instead.
+ *
+ * Note: This function acquires the options lock internally. Use
+ * `sentry__run_should_skip_upload` from worker threads that may run while
+ * the options are locked during SDK shutdown.
+ */
+bool sentry__should_skip_upload(void);
+
+/**
+ * Given a well-formed event, returns whether an event is a transaction or not.
+ * Defaults to false, which will also be returned if the event is malformed.
+ */
+bool sentry__event_is_transaction(sentry_value_t event);
+
+/**
+ * Invokes the configured `on_crash` callback, if any.
+ *
+ * Returns the callback result, or `event` unchanged when no callback is
+ * configured.
+ */
+sentry_value_t sentry__invoke_on_crash(const sentry_options_t *options,
+    const sentry_ucontext_t *uctx, sentry_value_t event, sentry_hint_t *hint);
+
+/**
+ * Invokes the configured `before_send` callback, if any.
+ *
+ * Returns the callback result, or `event` unchanged when no callback is
+ * configured. Records a client report when the callback discards the event.
+ */
+sentry_value_t sentry__invoke_before_send(
+    const sentry_options_t *options, sentry_value_t event, sentry_hint_t *hint);
+
+/**
+ * Prepares an event by recording errors on the current session and applying
+ * the local and global scopes.
+ *
+ * Returns `event` without transferring ownership.
+ */
+sentry_value_t sentry__prepare_event(const sentry_options_t *options,
+    sentry_value_t event, sentry_scope_t *local_scope);
+
+/**
+ * Encloses the given event in an envelope. This assumes that the event being
+ * passed in is not a transaction.
+ *
+ * More specifically, it will do the following things:
+ * - add the event to a new envelope,
+ * - add any attachments to the envelope as well
+ *
+ * The function will ensure the event has a UUID and write it into the
+ * `event_id` out-parameter.
+ */
+sentry_envelope_t *sentry__enclose_event(const sentry_options_t *options,
+    sentry_value_t event, sentry_uuid_t *event_id, sentry_value_t attachments);
+
+/**
+ * Sends a sentry event, regardless of its type.
+ */
+sentry_uuid_t sentry__capture_event(
+    sentry_value_t event, sentry_scope_t *local_scope, sentry_hint_t *hint);
+
+/**
+ * Convert the given transaction into an envelope. This assumes that the
+ * event being passed in is a transaction.
+ *
+ * It will do the following things:
+ * - discard the transaction if it is unsampled
+ * - apply the scope to the transaction
+ * - add the transaction to a new envelope
+ * - add any attachments to the envelope
+ *
+ * The function will ensure the transaction has a UUID and write it into the
+ * `event_id` out-parameter. This takes ownership of the transaction, which
+ * means that the caller no longer needs to call `sentry_value_decref` on the
+ * transaction.
+ */
+sentry_envelope_t *sentry__prepare_transaction(const sentry_options_t *options,
+    sentry_value_t transaction, sentry_uuid_t *event_id);
+
+sentry_value_t sentry__transaction_finish_value(
+    sentry_transaction_t *opaque_tx, uint64_t timestamp);
+
+/**
+ * This function will submit the `envelope` to the given `transport`, first
+ * checking for consent.
+ */
+void sentry__submit_envelope(sentry_transport_t *transport,
+    sentry_envelope_t *envelope, const sentry_options_t *options);
+
+/**
+ * Captures the `envelope` on the global scope, recording the last sent event
+ * ID.
+ *
+ * Note: This is not safe to call from crash handlers; use
+ * `sentry__submit_envelope` directly instead.
+ */
+void sentry__capture_envelope(sentry_transport_t *transport,
+    sentry_envelope_t *envelope, const sentry_options_t *options);
+
+/**
+ * Generates a new random UUID for events.
+ */
+sentry_uuid_t sentry__new_event_id(void);
+
+/**
+ * This will ensure that the given `event` has a UUID, generating a new one on
+ * demand. It will return a serialized UUID as `sentry_value_t` and also write
+ * it into the `uuid_out` parameter.
+ */
+sentry_value_t sentry__ensure_event_id(
+    sentry_value_t event, sentry_uuid_t *uuid_out);
+
+/**
+ * This will return an owned reference to the global options.
+ */
+const sentry_options_t *sentry__options_getref(void);
+
+/**
+ * This will acquire a lock on the global options.
+ */
+sentry_options_t *sentry__options_lock(void);
+
+/**
+ * Release the lock on the global options.
+ */
+void sentry__options_unlock(void);
+
+void sentry__set_propagation_context(const char *key, sentry_value_t value);
+
+/*
+ * Populates a telemetry item (a log or metric) with attributes and scope data
+ * from all available sources. Values are applied in precedence order, where the
+ * first write wins: per-call attributes already present in `attributes`, then
+ * the passed `scope`, then the global scope, and finally the options.
+ */
+void sentry__apply_to_telemetry(const sentry_scope_t *scope,
+    const sentry_options_t *options, sentry_value_t telemetry,
+    sentry_value_t attributes);
+
+bool sentry__launch_external_crash_reporter(
+    const sentry_options_t *options, sentry_envelope_t *envelope);
+
+void sentry__enter_crash_handler(void);
+void sentry__exit_crash_handler(void);
+
+#define SENTRY_WITH_OPTIONS(Options)                                           \
+    for (const sentry_options_t *Options = sentry__options_getref(); Options;  \
+        sentry_options_free((sentry_options_t *)Options), Options = NULL)
+
+// these for now are only needed outside of core for tests
+#ifdef SENTRY_UNITTEST
+bool sentry__roll_dice(double probability);
+bool sentry__should_send_transaction(
+    sentry_value_t tx_ctx, sentry_sampling_context_t *sampling_ctx);
+#endif
+
+#endif
