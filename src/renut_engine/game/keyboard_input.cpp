@@ -430,6 +430,10 @@ bool NextKeystroke(uint16_t &virtual_key, uint16_t &flags) {
   return true;
 }
 
+uint32_t KeyboardButtons() {
+  return KeysActive() ? g_buttons.load(std::memory_order_relaxed) & 0xFFFF : 0;
+}
+
 } // namespace renut::game
 
 // BOOL padStatePush(record, entry): makes 'entry' the record's current one.

@@ -16,7 +16,6 @@
 #include <psapi.h>
 #else
 #include <dlfcn.h>
-#include <link.h>
 #endif
 
 namespace rexglue_guide::guest {
@@ -39,19 +38,12 @@ Func Original(const char* name) {
     }
   }
 #else
-  // Shared objects only: the executable's own definition is the override.
-  std::pair<const char*, Func*> lookup{name, &found};
-  dl_iterate_phdr(
-      [](dl_phdr_info* info, size_t, void* data) -> int {
-        auto* args = static_cast<std::pair<const char*, Func*>*>(data);
-        if (!info->dlpi_name || !*info->dlpi_name) return 0;
-        void* handle = dlopen(info->dlpi_name, RTLD_LAZY | RTLD_NOLOAD);
-        if (!handle) return 0;
-        *args->second = reinterpret_cast<Func>(dlsym(handle, args->first));
-        dlclose(handle);
-        return *args->second ? 1 : 0;
-      },
-      &lookup);
+  // The next definition after the executable's own (the override, as the
+  // Guide is compiled into it): the runtime library's. Not by walking the
+  // loaded objects with dl_iterate_phdr and dlopen-ing each: glibc takes its
+  // loader locks in the opposite order there to a dlopen on another thread
+  // (the Vulkan driver, SDL's audio, libcurl), and the two deadlock.
+  found = reinterpret_cast<Func>(dlsym(RTLD_NEXT, name));
 #endif
   cache[name] = found;
   return found;

@@ -66,6 +66,15 @@ using native_t = int;
 constexpr native_t kBadNative = -1;
 #endif
 
+// For TCP sends. On Linux a send on a connection the far end has closed
+// raises SIGPIPE, which ends the process without a word; with MSG_NOSIGNAL it
+// fails with EPIPE instead, as Winsock's does.
+#if defined(_WIN32)
+constexpr int kSendFlags = 0;
+#else
+constexpr int kSendFlags = MSG_NOSIGNAL;
+#endif
+
 using namespace rexglue_guide::guest;
 
 namespace rexglue_guide::net {
@@ -108,6 +117,7 @@ uint32_t NativeError() {
     case ENOTCONN: return kWsaENotConn;
     case ECONNREFUSED: return 10061;
     case ECONNRESET: return 10054;
+    case EPIPE: return 10054;
     case ETIMEDOUT: return 10060;
     case EISCONN: return 10056;
     case EALREADY: return 10037;
@@ -642,7 +652,7 @@ bool ConnectTitleServer(Sock& s, const sockaddr_in& to) {
                   getsockopt(s.fd, SOL_SOCKET, SO_ERROR, reinterpret_cast<char*>(&value), &size) == 0 && value == 0;
     }
   }
-  connected = connected && send(s.fd, reinterpret_cast<const char*>(hello), int(sizeof(hello)), 0) == int(sizeof(hello));
+  connected = connected && send(s.fd, reinterpret_cast<const char*>(hello), int(sizeof(hello)), kSendFlags) == int(sizeof(hello));
   SetNonBlocking(s.fd, s.nonblocking);
   if (!connected) t_last_error = 10061;  // WSAECONNREFUSED
   return connected;
@@ -790,7 +800,7 @@ bool PumpOverlapped(Sock& s) {
   if (s.pending.empty()) return false;
   Overlapped& o = *s.pending.front();
   if (o.send) {
-    const int n = int(send(s.fd, reinterpret_cast<const char*>(o.data.data()), int(o.data.size()), 0));
+    const int n = int(send(s.fd, reinterpret_cast<const char*>(o.data.data()), int(o.data.size()), kSendFlags));
     if (n < 0) {
       const uint32_t e = NativeError();
       if (e == kWsaEWouldBlock) return false;
@@ -1148,7 +1158,9 @@ extern "C" REX_FUNC(__imp__NetDll_connect) {
   }
   if (connect(s->fd, reinterpret_cast<const sockaddr*>(&to), sizeof(to)) != 0) {
     t_last_error = NativeError();
-    if (t_last_error == 10035) t_last_error = kWsaEWouldBlock;  // in progress, nonblocking
+    // In progress, nonblocking: Linux says EINPROGRESS where Winsock, and so
+    // the title, says WSAEWOULDBLOCK.
+    if (t_last_error == kWsaEInProgress) t_last_error = kWsaEWouldBlock;
     return Return(ctx, kSocketError);
   }
   Return(ctx, 0);
@@ -1230,7 +1242,7 @@ extern "C" REX_FUNC(__imp__NetDll_sendto) {
   const uint8_t* buf = At(Arg(ctx, 2));
   const uint32_t len = Arg(ctx, 3);
   if (s->type == 1 || !Arg(ctx, 5)) {
-    const int n = int(send(s->fd, reinterpret_cast<const char*>(buf), int(len), 0));
+    const int n = int(send(s->fd, reinterpret_cast<const char*>(buf), int(len), kSendFlags));
     if (n < 0) t_last_error = NativeError();
     return Return(ctx, uint32_t(n));
   }
@@ -1241,7 +1253,7 @@ extern "C" REX_FUNC(__imp__NetDll_sendto) {
 extern "C" REX_FUNC(__imp__NetDll_send) {
   auto s = SockArg(ctx, 1);
   if (!s) return Return(ctx, kSocketError);
-  const int n = int(send(s->fd, reinterpret_cast<const char*>(At(Arg(ctx, 2))), int(Arg(ctx, 3)), 0));
+  const int n = int(send(s->fd, reinterpret_cast<const char*>(At(Arg(ctx, 2))), int(Arg(ctx, 3)), kSendFlags));
   if (n < 0) t_last_error = NativeError();
   Return(ctx, uint32_t(n));
 }
@@ -1299,7 +1311,7 @@ extern "C" REX_FUNC(__imp__NetDll_WSASend) {
   }
   o->guest = Arg(ctx, 6);
   if (!o->guest) {
-    const int n = int(send(s->fd, reinterpret_cast<const char*>(o->data.data()), int(o->data.size()), 0));
+    const int n = int(send(s->fd, reinterpret_cast<const char*>(o->data.data()), int(o->data.size()), kSendFlags));
     if (n < 0) {
       t_last_error = NativeError();
       return Return(ctx, kSocketError);
@@ -1334,7 +1346,7 @@ extern "C" REX_FUNC(__imp__NetDll_WSASendTo) {
   const uint32_t to = Arg(ctx, 6);
   int n;
   if (s->type == 1 || !to) {
-    n = int(send(s->fd, reinterpret_cast<const char*>(data.data()), int(data.size()), 0));
+    n = int(send(s->fd, reinterpret_cast<const char*>(data.data()), int(data.size()), kSendFlags));
     if (n < 0) t_last_error = NativeError();
   } else {
     n = SendDatagram(*s, data.data(), uint32_t(data.size()), ReadAddr(to));

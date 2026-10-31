@@ -1,0 +1,205 @@
+#include "sentry_metrics.h"
+#include "sentry_batcher.h"
+#include "sentry_core.h"
+#include "sentry_envelope.h"
+#include "sentry_options.h"
+#include "sentry_scope.h"
+#include "sentry_string.h"
+#include "sentry_utils.h"
+#include "sentry_value.h"
+
+static sentry_batcher_ref_t g_batcher = SENTRY_BATCHER_REF_INIT;
+
+static const char *
+metric_type_string(sentry_metric_type_t type)
+{
+    switch (type) {
+    case SENTRY_METRIC_COUNT:
+        return "counter";
+    case SENTRY_METRIC_GAUGE:
+        return "gauge";
+    case SENTRY_METRIC_DISTRIBUTION:
+        return "distribution";
+    default:
+        return "unknown";
+    }
+}
+
+static sentry_value_t
+construct_metric(const sentry_options_t *options, const sentry_scope_t *scope,
+    sentry_metric_type_t type, const char *name, sentry_value_t value,
+    const char *unit, sentry_value_t user_attributes)
+{
+    sentry_value_t metric = sentry_value_new_object();
+
+    uint64_t usec_time = sentry__usec_time();
+    sentry_value_set_by_key(metric, "timestamp",
+        sentry_value_new_double((double)usec_time / 1000000.0));
+    sentry_value_set_by_key(
+        metric, "type", sentry_value_new_string(metric_type_string(type)));
+    sentry_value_set_by_key(metric, "name", sentry_value_new_string(name));
+    sentry_value_set_by_key(metric, "value", value);
+    if (!sentry__string_empty(unit)) {
+        sentry_value_set_by_key(metric, "unit", sentry_value_new_string(unit));
+    }
+
+    sentry_value_t attributes
+        = sentry_value_get_type(user_attributes) == SENTRY_VALUE_TYPE_OBJECT
+        ? sentry__value_clone(user_attributes)
+        : sentry_value_new_object();
+    sentry_value_decref(user_attributes);
+
+    sentry__apply_to_telemetry(scope, options, metric, attributes);
+
+    if (sentry_value_get_length(attributes) > 0) {
+        sentry_value_set_by_key(metric, "attributes", attributes);
+    } else {
+        sentry_value_decref(attributes);
+    }
+
+    return metric;
+}
+
+sentry_metrics_result_t
+sentry_scope_capture_metric(sentry_scope_t *scope, sentry_metric_type_t type,
+    const char *name, sentry_value_t value, const char *unit,
+    sentry_value_t attributes)
+{
+    const sentry_options_t *options = sentry__options_getref();
+    if (!options) {
+        sentry_value_decref(value);
+        sentry_value_decref(attributes);
+        sentry__scope_free_one_shot(scope);
+        return SENTRY_METRICS_RESULT_DISABLED;
+    }
+
+    bool discarded = false;
+    sentry_value_t metric
+        = construct_metric(options, scope, type, name, value, unit, attributes);
+    sentry__scope_free_one_shot(scope);
+    if (options->before_send_metric_func) {
+        metric = options->before_send_metric_func(
+            metric, options->before_send_metric_data);
+        if (sentry_value_is_null(metric)) {
+            SENTRY_DEBUG("metric was discarded by the "
+                         "`before_send_metric` hook");
+            sentry__client_report_discard(SENTRY_DISCARD_REASON_BEFORE_SEND,
+                SENTRY_DATA_CATEGORY_TRACE_METRIC, 1);
+            discarded = true;
+        }
+    }
+
+    sentry_options_free((sentry_options_t *)options);
+    if (discarded) {
+        return SENTRY_METRICS_RESULT_DISCARD;
+    }
+    sentry_batcher_t *batcher = sentry__batcher_acquire(&g_batcher);
+    if (!batcher || !sentry__batcher_enqueue(batcher, metric)) {
+        sentry__batcher_release(batcher);
+        sentry_value_decref(metric);
+        return SENTRY_METRICS_RESULT_FAILED;
+    }
+    sentry__batcher_release(batcher);
+    return SENTRY_METRICS_RESULT_SUCCESS;
+}
+
+sentry_metrics_result_t
+sentry_metrics_count(const char *name, int64_t value, sentry_value_t attributes)
+{
+    return sentry_scope_capture_metric(NULL, SENTRY_METRIC_COUNT, name,
+        sentry_value_new_int64(value), NULL, attributes);
+}
+
+sentry_metrics_result_t
+sentry_metrics_gauge(
+    const char *name, double value, const char *unit, sentry_value_t attributes)
+{
+    return sentry_scope_capture_metric(NULL, SENTRY_METRIC_GAUGE, name,
+        sentry_value_new_double(value), unit, attributes);
+}
+
+sentry_metrics_result_t
+sentry_metrics_distribution(
+    const char *name, double value, const char *unit, sentry_value_t attributes)
+{
+    return sentry_scope_capture_metric(NULL, SENTRY_METRIC_DISTRIBUTION, name,
+        sentry_value_new_double(value), unit, attributes);
+}
+
+void
+sentry__metrics_startup(
+    const sentry_options_t *options, sentry_threadpool_t *threadpool)
+{
+    sentry_batcher_t *batcher
+        = sentry__batcher_new(sentry__envelope_add_metrics, threadpool);
+    if (!batcher) {
+        SENTRY_WARN("failed to allocate metrics batcher");
+        return;
+    }
+
+    sentry__batcher_set_category(
+        batcher, SENTRY_DATA_CATEGORY_TRACE_METRIC, "sentry-metrics");
+    sentry__batcher_startup(batcher, options);
+    sentry_batcher_t *old = sentry__batcher_swap(&g_batcher, batcher);
+
+    if (old) {
+        sentry__batcher_shutdown(old, 0);
+    }
+    sentry__batcher_release(old);
+}
+
+void
+sentry__metrics_shutdown(uint64_t timeout)
+{
+    sentry_batcher_t *batcher = sentry__batcher_swap(&g_batcher, NULL);
+    if (batcher) {
+        sentry__batcher_shutdown(batcher, timeout);
+        sentry__batcher_release(batcher);
+    }
+}
+
+void
+sentry__metrics_flush_crash_safe(void)
+{
+    sentry_batcher_t *batcher = sentry__batcher_pin(&g_batcher);
+    if (batcher) {
+        sentry__batcher_flush_crash_safe(batcher);
+        sentry__batcher_unpin(&g_batcher);
+    }
+}
+
+uintptr_t
+sentry__metrics_force_flush_begin(void)
+{
+    sentry_batcher_t *batcher = sentry__batcher_acquire(&g_batcher);
+    if (batcher) {
+        sentry__batcher_force_flush_begin(batcher);
+    }
+    return (uintptr_t)batcher;
+}
+
+void
+sentry__metrics_force_flush_wait(uintptr_t token)
+{
+    sentry_batcher_t *batcher = (sentry_batcher_t *)token;
+    if (batcher) {
+        sentry__batcher_force_flush_wait(batcher);
+        sentry__batcher_release(batcher);
+    }
+}
+
+#ifdef SENTRY_UNITTEST
+/**
+ * Wait for the metrics batching thread to be ready.
+ * This is a test-only helper to avoid race conditions in tests.
+ */
+void
+sentry__metrics_wait_for_thread_startup(void)
+{
+    sentry_batcher_t *batcher = sentry__batcher_acquire(&g_batcher);
+    if (batcher) {
+        sentry__batcher_wait_for_thread_startup(batcher);
+        sentry__batcher_release(batcher);
+    }
+}
+#endif

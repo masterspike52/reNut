@@ -10,6 +10,21 @@ class WindowedAppContext;
 
 namespace rexglue_guide {
 
+// The kind of controller in use, for its button icons.
+enum class PadFamily { kXbox, kPlayStation, kSwitch, kSteamDeck };
+struct PadStyle {
+  PadFamily family = PadFamily::kXbox;
+  int type = 0;             // SDL_GamepadType
+  int face_labels[4] = {};  // SDL_GamepadButtonLabel of south, east, west, north
+};
+
+// The pads together as one: buttons held (SDL_GamepadButton indices), the
+// left stick (y down) and the triggers (0..1).
+struct PadState {
+  bool buttons[32] = {};
+  float lx = 0.0f, ly = 0.0f, lt = 0.0f, rt = 0.0f;
+};
+
 // One frame of menu input from the pad and the keyboard. Directions repeat
 // while held; everything else fires once per press.
 struct NavInput {
@@ -29,6 +44,9 @@ struct NavInput {
   bool lb_held = false, rb_held = false;
   bool pad_used = false;      // the pad was the last device touched
   bool pad_held = false;      // any pad button or direction is down
+  // As held, for the on-screen keyboard's own presses and repeats.
+  PadState pad;
+  PadStyle pad_style;  // the Guide's own SDL pad's; Xbox when there's none
 };
 
 constexpr int kGuideFromSdl = 4;
@@ -52,7 +70,8 @@ class Input {
  private:
   struct Pad {
     bool buttons[32] = {};
-    float lx = 0.0f, ly = 0.0f, lt = 0.0f;
+    float lx = 0.0f, ly = 0.0f, lt = 0.0f, rt = 0.0f;
+    PadStyle style;  // the SDL pad's
   };
   static Pad Sample();
   // The title's last read of one controller (-1: all of them together);

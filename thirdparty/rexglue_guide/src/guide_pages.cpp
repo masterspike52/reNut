@@ -13,10 +13,10 @@ using assets::Sound;
 
 namespace {
 
-// The Guide's own credits, always listed after the app's: its icons, gamerpics
-// and sounds come from DashX360.
+// The Guide's own credits, always listed after the app's.
 const Credit kGuideCredits[] = {
-    {"ZivvoZ", "DashX360 1.1 icons, gamerpics and Guide sounds"},
+    {"u/EKAJ13", "High-quality default gamerpics (recreations of the 360's)"},
+    {"xboxgamer.pics", "Gamerpic Database"},
 };
 
 }  // namespace
@@ -47,7 +47,16 @@ std::vector<Row> GuideDialog::BuildRows(Page& page) {
     case PageKind::kThemeDesigner: ThemeDesignerRows(rows, page); break;
     case PageKind::kColorEditor: ColorEditorRows(rows, page); break;
     case PageKind::kMyThemes: MyThemesRows(rows, page); break;
+    case PageKind::kConfig: ConfigRows(rows, page); break;
+    case PageKind::kPlayerGames: PlayerGamesRows(rows, page); break;
+    case PageKind::kPlayerGame: PlayerGameRows(rows, page); break;
+    case PageKind::kChangeGamerpic: ChangeGamerpicRows(rows, page); break;
+    case PageKind::kGamerpicGames: GamerpicGamesRows(rows, page); break;
+    case PageKind::kGamerpicGame: break;  // drawn as a grid
     case PageKind::kGamerpics: break;  // drawn as a grid
+    case PageKind::kMenu:
+      MenuRows(rows, page, [this](Page p) { Push(std::move(p)); }, [this] { Pop(); }, false);
+      break;
   }
   return rows;
 }
@@ -126,11 +135,15 @@ void GuideDialog::SocialRows(std::vector<Row>& rows, Page&) {
 void GuideDialog::GamesRows(std::vector<Row>& rows, Page&) {
   rows.push_back({.label = "Achievements",
                   .detail = AchievementSummary(),
+                  .lazy_icon = [this](bool* loading) { return GameIcon(CurrentTitleId(), -1, loading); },
                   .glyph = Glyph::kTrophy,
                   .activate = [this] { Push({PageKind::kAchievements, config_.title_name}); }});
   rows.push_back(NeedSignIn({.label = "Leaderboards",
                              .glyph = Glyph::kPeople,
                              .activate = [this] { Push({PageKind::kLeaderboards, "Leaderboards"}); }}));
+  rows.push_back(NeedSignIn({.label = "Games Played", .glyph = Glyph::kTrophy, .activate = [this] {
+                               Push({PageKind::kPlayerGames, "Games Played", backend_->me().gamertag});
+                             }}));
 }
 
 void GuideDialog::SettingsRows(std::vector<Row>& rows, Page&) {
@@ -163,6 +176,8 @@ void GuideDialog::SystemRows(std::vector<Row>& rows, Page&) {
                   .sub = backend_->server_name(),
                   .detail = backend_->connected() ? "Connected" : "Offline",
                   .icon = textures_.Icon(assets::Icon::kSystem)});
+  rows.push_back({.label = "Config", .icon = textures_.Icon(assets::Icon::kPreferences),
+                  .activate = [this] { Push({PageKind::kConfig, "Config", ""}); }});
   rows.push_back({.label = "Guide Version", .detail = "1.0"});
 }
 

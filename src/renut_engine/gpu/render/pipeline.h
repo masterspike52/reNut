@@ -9,7 +9,8 @@
  *   set 4      the texture table again, as Texture2DArray (stacked textures)
  *   D3D12      b0/b1/b2 space4 root CBVs: VS constants, PS constants,
  *              SharedConstants; t0 space5 root SRV: this draw's vertex fetch
- *              data (ByteAddressBuffer)
+ *              data (ByteAddressBuffer); u0 space6 root UAV: the
+ *              memexport buffer
  *   Vulkan     push constants: the three constant buffers' device addresses;
  *              vertex fetch data is read through its address in
  *              SharedConstants

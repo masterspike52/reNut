@@ -5,13 +5,16 @@
 #include "renut_engine/ui/renut_logging_overlay.h"
 #include "renut_engine/ui/path_setup_wizard.h"
 #include <rexglue_guide/guide.h>
+#include <sentrywork/sentrywork.h>
 #include "renut_engine/ui/settings_dialog.h"
+#include "renut_engine/ui/flag_editor_dialog.h"
 #include "renut_engine/gpu/overlay/app_integration.h"
 #include "renut_engine/app/crash_dump.h"
 #include "renut_engine/app/app_paths.h"
 #include "renut_engine/app/dlc_install.h"
 #include "renut_engine/app/save_headers.h"
 #include "renut_engine/mods/mod_loader.h"
+#include "renut_engine/game/cheats.h"
 #include "renut_engine/game/mouse_camera.h"
 #include "renut_engine/game/controllers.h"
 #include "renut_engine/game/keyboard_input.h"
@@ -67,10 +70,21 @@ public:
     //     rex::cvar::LoadConfig("renut.toml");
     // }
 
+    // Crash reports (thirdparty/sentrywork): renut.toml and the log are
+    // loaded now, and the runtime, whose exception handler has to come after
+    // Sentry's, is not yet built.
+    void OnPostInitLogging() override {
+        sentrywork::Init({.app_name = app_name_,
+                          .database_dir = renut::paths::WritableFolder() / "sentry",
+                          .tags = {{"build", RENUT_BUILD}}});
+    }
+
     // The game folder is mounted and the XEX loaded; the game has not
     // started yet, so .nbpatch mods can still change what GAME: serves, and
     // DLC packages installed now are there when it looks for them.
     void OnPostSetup() override {
+        sentrywork::OnRuntimeReady(runtime());
+        renut::game::WatchCheats();
         renut::dlc::InstallPackages(runtime());
         renut::mods::LoadMods(runtime());
     }
@@ -82,35 +96,28 @@ public:
     // reNut's dialogs live in its own overlay (gpu/overlay_ui.h); the SDK's
     // drawer keeps its own menus and the Rexglue Guide (RexLiveless).
     void OnCreateDialogs(rex::ui::ImGuiDrawer* drawer) override {
-        // F4 opens reNut's settings (RenutSettingsDialog); the SDK's, registered
-        // just before this as bind_settings on F4, moves to F8. Binds go by
-        // registration order, so the SDK's would take F4 first.
         if (rex::cvar::GetFlagByName("bind_settings") == "F4")
             rex::cvar::SetFlagByName("bind_settings", "F8");
         settings_dialog_ = std::make_unique<RenutSettingsDialog>(config_path_);
         renut::gpu::overlay::AddDialog(settings_dialog_.get());
+        flag_editor_ = std::make_unique<FlagEditorDialog>();
+        renut::gpu::overlay::AddDialog(flag_editor_.get());
         fps_overlay_ = std::make_unique<FpsOverlay>();
         log_overlay_ = std::make_unique<RenuLogOverlayDialog>();
         path_wizard_ = std::make_unique<PathSetupWizard>();
         renut::gpu::overlay::AddDialog(fps_overlay_.get());
         renut::gpu::overlay::AddDialog(log_overlay_.get());
         renut::gpu::overlay::AddDialog(path_wizard_.get());
-        // The pad's Guide / PS button opens the Guide, which reads it through the
-        // runtime's input system; the runtime drops it unless guide_button is on.
-        // The game never sees it (controllers.cpp masks it out).
         rex::cvar::SetFlagByName("guide_button", "true");
-        // The Guide's sign-in screen waits for the path wizard: until the game's
-        // paths are set (OnFinalizePaths) the game is not starting yet. The game
-        // reads controllers by host slot (controllers.cpp), so the Guide asks
-        // which player a slot's controller is; a player 2-4 who signs in there
-        // joins the game.
         rexglue_guide::AddCredit("MadLadMikael", "reNut Lead Programmer");
         rexglue_guide::AddCredit("EtoneDemid", "Nutstaller");
         rexglue_guide::AddCredit("ValcomDrifty", "reNut Title Logo");
         rexglue_guide::AddCredit("SolarCookies", "Various Small Things");
+        rexglue_guide::AddCredit("Rayzo", "Making the reNut Settings icon");
         rexglue_guide::AddCredit("You, The Player", "Playing the game.");
         rexglue_guide::Install(this, drawer,
                                {.title_name = "Banjo-Kazooie: Nuts & Bolts",
+                                .data_dir = renut::paths::WritableFolder() / "guide",
                                 .on_quit = [this] {
                                     if (auto* w = window()) w->RequestClose();
                                 },
@@ -119,7 +126,13 @@ public:
                                 .player_for_controller = [](int pad) {
                                     return renut::game::ControllerPlayer(pad);
                                 },
-                                .game_frame = renut::gpu::GameFrameTexture});
+                                .game_frame = renut::gpu::GameFrameTexture,
+                                .leaderboard_block = [] {
+                                    return renut::game::AnyCheatOn()
+                                               ? std::string("cheats were used this session; restart the game to post again")
+                                               : std::string();
+                                },
+                                .build = RENUT_BUILD});
     }
 
     // The Guide shows achievement toasts itself.
@@ -132,9 +145,11 @@ public:
         renut::game::DetachMouseCamera();
         renut::gpu::ShutdownRenderer();
         renut::gpu::overlay::RemoveDialog(settings_dialog_.get());
+        renut::gpu::overlay::RemoveDialog(flag_editor_.get());
         renut::gpu::overlay::RemoveDialog(fps_overlay_.get());
         renut::gpu::overlay::RemoveDialog(log_overlay_.get());
         renut::gpu::overlay::RemoveDialog(path_wizard_.get());
+        sentrywork::Shutdown();
     }
 
     // Native renderer: the SDK runs without its GPU backend and the overlay is
@@ -180,6 +195,7 @@ private:
     std::string      app_name_;
     std::filesystem::path config_path_;
     std::unique_ptr<RenutSettingsDialog> settings_dialog_;
+    std::unique_ptr<FlagEditorDialog> flag_editor_;
     std::unique_ptr<PathSetupWizard> path_wizard_;
     // The path wizard is done and the game is starting: the Guide may show
     // its sign-in screen.

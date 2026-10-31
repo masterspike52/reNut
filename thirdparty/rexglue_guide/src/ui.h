@@ -41,6 +41,11 @@ inline ImU32 kTextDim = IM_COL32(176, 186, 199, 255);
 inline ImU32 kSelectedSub = IM_COL32(235, 245, 228, 255);
 inline ImU32 kBackdrop = IM_COL32(6, 9, 13, 185);
 inline ImU32 kPopup = IM_COL32(26, 31, 38, 240);
+inline ImU32 kKeyboardHeader = IM_COL32(168, 171, 176, 255);
+inline ImU32 kKeyboardBody = IM_COL32(219, 220, 222, 255);
+inline ImU32 kKey = IM_COL32(247, 247, 248, 255);
+inline ImU32 kKeyLabel = IM_COL32(58, 58, 60, 255);
+inline ImU32 kKeyboardField = IM_COL32(236, 236, 237, 255);
 inline ImU32 kGreen = IM_COL32(108, 176, 64, 255);
 inline ImU32 kGreenLight = IM_COL32(132, 196, 84, 255);
 inline ImU32 kBlade = IM_COL32(52, 61, 74, 245);
@@ -78,6 +83,12 @@ void FaceButton(ImDrawList* dl, ImVec2 center, float radius, char letter);
 enum class Glyph { kBell, kPeople, kTrophy, kCrate, kInvite, kAddPerson, kInfo, kCheck };
 void DrawGlyph(ImDrawList* dl, Glyph glyph, ImVec2 center, float size, ImU32 col);
 void Spinner(ImDrawList* dl, ImVec2 center, float radius, float time, ImU32 col);
+class Textures;
+// A system's badge (Profile::platforms): a dark see-through tile `size`
+// across from `min`, with the system's mark in white. Nothing for one it
+// doesn't know.
+void PlatformBadge(ImDrawList* dl, Textures& textures, std::string_view platform, ImVec2 min, float size,
+                   float alpha);
 
 // Textures for the embedded images, created on first use.
 class Textures {
@@ -88,18 +99,26 @@ class Textures {
   // Embedded gamerpics, or a server one through server_gamerpic (the first
   // embedded picture stands in while it downloads).
   ImTextureID Gamerpic(int index);
+  // A button or key icon (key_icons.h), by name; null if it isn't included.
+  ImTextureID KeyIcon(std::string_view name);
   std::function<std::string(int)> server_gamerpic;
   // A texture made from RGBA pixels under `key`, replacing any it had. The one
   // replaced lives on a few frames, for draws already recorded with it.
   ImTextureID Rgba(const std::string& key, const uint8_t* rgba, int width, int height);
+  // A picture file (PNG, JPEG...) under `key`, kept once made; `tile` and
+  // `fit` as for gamerpics (Load). Call it only once the file is there.
+  ImTextureID Picture(const std::string& key, std::span<const uint8_t> file, bool tile = false, int fit = 0) {
+    return Load(key, file, tile, fit);
+  }
   void Drop(const std::string& key);
   // Once a frame: frees replaced textures no frame in flight can still use.
   void EndFrame();
 
  private:
   // tile: give the picture the 360 gamer-tile frame and gloss the built-in
-  // gamerpics have baked in.
-  ImTextureID Load(const std::string& key, std::span<const uint8_t> png, bool tile = false);
+  // gamerpics have baked in. fit: shrink a bigger picture to that many pixels
+  // across (0: as it is).
+  ImTextureID Load(const std::string& key, std::span<const uint8_t> png, bool tile = false, int fit = 0);
   rex::ui::ImmediateDrawer* drawer_;
   std::unordered_map<std::string, std::unique_ptr<rex::ui::ImmediateTexture>> textures_;
   std::vector<std::pair<int, std::unique_ptr<rex::ui::ImmediateTexture>>> retired_;  // frames left, texture

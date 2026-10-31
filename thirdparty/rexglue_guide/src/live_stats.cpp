@@ -13,6 +13,7 @@
 
 #include <algorithm>
 #include <bit>
+#include <cctype>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
@@ -41,6 +42,7 @@ namespace {
 
 constexpr uint32_t kSuccess = 0;
 constexpr uint32_t kNoMoreFiles = 18;
+constexpr uint32_t kFunctionFailed = 1627;
 
 constexpr uint16_t kColumnRank = 0xFFFF;
 constexpr uint16_t kColumnRating = 0xFFFE;
@@ -110,9 +112,15 @@ void LoadSchema() {
     const uint32_t id = Load32(p);
     const uint32_t shared_index = Load16(p + 8);
     if (shared_index < shared.size()) g_schema[id] = shared[shared_index];
-    // Unused views keep the XLAST editor's "<String text>" placeholder.
+    // Unused views keep the XLAST editor's "<String text>" placeholder, and
+    // views a game labels itself can be "..." (most of TiP's): only names with
+    // a letter or digit in them (any non-ASCII counts) are listed. Admins can
+    // name the others on the server.
     std::string name = xdbf.GetStringTableEntry(xdbf.default_language(), Load16(p + 10));
-    if ((id & 0xFFFF0000) != 0xFFFF0000 && !name.empty() && name[0] != '<') g_named.push_back({id, std::move(name)});
+    const bool readable = std::any_of(name.begin(), name.end(), [](char c) {
+      return std::isalnum(static_cast<unsigned char>(c)) || static_cast<unsigned char>(c) >= 0x80;
+    });
+    if ((id & 0xFFFF0000) != 0xFFFF0000 && readable && name[0] != '<') g_named.push_back({id, std::move(name)});
   }
   REXKRNL_INFO("RexLiveless: {} leaderboard view(s) in the title's SPA", g_schema.size());
 }
@@ -128,6 +136,7 @@ const std::vector<Field>* ViewColumns(uint32_t view_id) {
 const char* Aggregation(const Field& f) {
   switch (f.aggregation) {
     case 0x8001: return "last";
+    case 0x8009: return "min";  // lower is better: Lollipop Chainsaw's clear times
     case 0x800B: return "max";
   }
   static std::once_flag logged;
@@ -205,18 +214,23 @@ json PropertyValue(const uint8_t* prop) {
 
 }  // namespace
 
-// XSessionWriteStats: {session, XUID (unaligned at +4), view count,
-// XSESSION_VIEW_PROPERTIES* (view id, property count, XUSER_PROPERTY*)}.
+// XSessionWriteStats: {session, padding, XUID (aligned, at +8), view count,
+// XSESSION_VIEW_PROPERTIES* (view id, property count, XUSER_PROPERTY*)}, 0x18
+// bytes (Nuts & Bolts' XSessionWriteStats, sub_82C52200, std's the XUID at +8).
 uint32_t WriteStats(const uint8_t* buf) {
   const LiveSnapshot s = live::Snapshot();
-  const uint64_t xuid = Load64(buf + 4);
+  const uint64_t xuid = Load64(buf + 8);
   if (xuid != s.me.xuid) {
     // Only the signed-in player's own stats go to the server.
     REXKRNL_INFO("RexLiveless: XSessionWriteStats for {:016X} skipped (not this player)", xuid);
     return kSuccess;
   }
-  const uint32_t num_views = Load32(buf + 12);
-  const uint8_t* views = At(Load32(buf + 16));
+  if (const std::string why = live::LeaderboardBlocked(); !why.empty()) {
+    REXKRNL_INFO("RexLiveless: XSessionWriteStats refused ({})", why);
+    return kFunctionFailed;
+  }
+  const uint32_t num_views = Load32(buf + 16);
+  const uint8_t* views = At(Load32(buf + 20));
   json out = json::array();
   for (uint32_t v = 0; views && v < num_views && v < 64; ++v) {
     const uint8_t* view = views + v * 12;
@@ -244,10 +258,24 @@ uint32_t WriteStats(const uint8_t* buf) {
     if (!list.empty()) out.push_back({{"id", view_id}, {"columns", std::move(list)}});
   }
   if (out.empty()) return kSuccess;
-  json body = {{"title_id", HexId(REX_KERNEL_STATE()->title_id(), 8)}, {"views", std::move(out)}};
+  json body = {{"title_id", HexId(REX_KERNEL_STATE()->title_id(), 8)}, {"build", live::Build()}, {"views", std::move(out)}};
   std::thread([body = std::move(body)] {
     const auto r = Api("/api/leaderboards/write", body);
-    if (r.status != 200) REXKRNL_WARN("RexLiveless: couldn't write stats ({} {})", r.status, r.error);
+    if (r.status == 200) return;
+    // Refused (an old build, too many posts): the title was already told it
+    // worked, so the player hears why from the Guide.
+    std::string why;
+    try {
+      if (r.status) why = json::parse(r.body).value("error", "");
+    } catch (...) {
+    }
+    // r.error is only set when there was no response; a refusal's reason is in the body.
+    REXKRNL_WARN("RexLiveless: couldn't write stats ({} {})", r.status, r.status ? why : r.error);
+    if (!why.empty()) {
+      live::Post([why](Backend& b) {
+        if (b.on_notification) b.on_notification({.text = why});
+      });
+    }
   }).detach();
   return kSuccess;
 }

@@ -6,11 +6,15 @@
 // the remembered profile still signs in, offline, and keeps retrying.
 
 #include <algorithm>
+#include <cctype>
+#include <cerrno>
 #include <cstdlib>
+#include <cstring>
 #include <ctime>
 #include <fstream>
 #include <map>
 #include <set>
+#include <stdexcept>
 
 #include <nlohmann/json.hpp>
 #include <rex/logging.h>
@@ -30,6 +34,7 @@ constexpr double kSyncInterval = 3.0;
 constexpr int kSyncFailuresBeforeLost = 3;
 // Override with REXLIVELESS_SERVER=http(s)://host:port.
 constexpr const char* kDefaultServer = "https://rexliveless.xyz";
+constexpr const char* kDefaultHost = "rexliveless.xyz";
 
 uint64_t ParseXuid(const json& j) {
   if (!j.is_string()) return 0;
@@ -43,7 +48,17 @@ Profile ParseProfile(const json& j) {
   p.gamerpic = j.value("gamerpic", 0);
   p.gamerscore = j.value("gamerscore", 0u);
   p.motto = j.value("motto", "");
+  for (const json& platform : j.value("platforms", json::array())) {
+    if (platform.is_string()) p.platforms.push_back(platform.get<std::string>());
+  }
   return p;
+}
+
+// A gamertag (letters, digits, spaces) as a path segment.
+std::string PathSegment(const std::string& s) {
+  std::string out;
+  for (char c : s) out += c == ' ' ? std::string("%20") : std::string(1, c);
+  return out;
 }
 
 std::string ErrorOf(const http::Response& r) {
@@ -70,7 +85,10 @@ class ServerBackend final : public Backend {
   explicit ServerBackend(std::filesystem::path data_dir)
       : account_path_(data_dir / "account.json"),
         gamerpic_dir_(data_dir / "gamerpics"),
-        theme_dir_(data_dir / "themes") {
+        theme_dir_(data_dir / "themes"),
+        title_dir_(data_dir / "titles"),
+        game_gamerpic_dir_(data_dir / "game_gamerpics"),
+        achievement_icon_dir_(data_dir / "achievement_icons") {
     const char* env = std::getenv("REXLIVELESS_SERVER");
     server_url_ = env && *env ? env : kDefaultServer;
     http::ParseUrl(server_url_, &endpoint_);
@@ -89,8 +107,11 @@ class ServerBackend final : public Backend {
   void Update(double now) override {
     now_ = now;
     worker_.Pump();
+    images_.Pump();
+    PumpGameGamerpics();
     if (!gamerpics_listed_) ListGamerpics();
     if (!themes_listed_) ListThemes();
+    if (!titles_listed_) ListTitles();
     if (signed_in_ && !sync_in_flight_ && now - last_sync_ >= kSyncInterval) Sync();
   }
 
@@ -395,8 +416,233 @@ class ServerBackend final : public Backend {
     return {};
   }
 
+  const TitleInfo* title(const std::string& title_id) const override {
+    auto it = titles_.find(title_id);
+    return it == titles_.end() ? nullptr : &it->second;
+  }
+
+  // Kept in <data dir>/titles/<id>_<version>.img, as theme pictures are.
+  std::string TitleIcon(const std::string& title_id, int64_t version) override {
+    if (!version) return {};
+    const std::string name = title_id + "_" + std::to_string(version);
+    if (auto it = title_icons_.find(name); it != title_icons_.end()) return it->second;
+    const auto path = title_dir_ / (name + ".img");
+    if (std::ifstream file(path, std::ios::binary); file) {
+      std::string image((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
+      if (!image.empty()) return title_icons_[name] = std::move(image);
+    }
+    if (title_icons_requested_.insert(name).second) {
+      const std::string url = "/api/titles/" + title_id + "/icon?v=" + std::to_string(version);
+      worker_.Post(endpoint_, "GET", url, "", "", [this, name, path](const http::Response& r) {
+        if (r.status != 200 || r.body.empty()) return;  // not asked again: the icon is gone
+        std::error_code ec;
+        std::filesystem::create_directories(title_dir_, ec);
+        std::ofstream(path, std::ios::binary | std::ios::trunc) << r.body;
+        title_icons_[name] = r.body;
+      });
+    }
+    return {};
+  }
+
+  void ReportTitleInfo(const std::string& title_id, const std::string& name, uint32_t achievements_total,
+                       uint32_t gamerscore_total, const std::map<uint32_t, std::string>& boards) override {
+    if (!signed_in_ || !connected_ || title_reported_ == title_id || title_report_in_flight_) return;
+    json board_names = json::object();
+    for (const auto& [id, board] : boards) board_names[std::to_string(id)] = board;
+    title_report_in_flight_ = true;
+    Post("POST", "/api/titles/" + title_id + "/report",
+         {{"name", name}, {"achievements_total", achievements_total}, {"gamerscore_total", gamerscore_total},
+          {"boards", board_names}},
+         [this, title_id](const http::Response& r) {
+           title_report_in_flight_ = false;
+           if (r.status != 200) return;
+           title_reported_ = title_id;
+           try {
+             const TitleInfo t = ParseTitle(json::parse(r.body).at("title"));
+             titles_[t.title_id] = t;
+           } catch (...) {
+           }
+         });
+  }
+
+  void PlayerGames(const std::string& gamertag, std::function<void(const Result&, std::vector<PlayedGame>)> done) override {
+    worker_.Post(endpoint_, "GET", "/api/users/" + PathSegment(gamertag) + "/games", "", token_, [done](const http::Response& r) {
+      if (r.status != 200) return done({false, ErrorOf(r)}, {});
+      std::vector<PlayedGame> games;
+      try {
+        for (const json& g : json::parse(r.body).value("games", json::array())) {
+          games.push_back({.title_id = g.value("title_id", ""),
+                           .name = g.value("name", ""),
+                           .icon = g.value("icon", int64_t(0)),
+                           .last_played = g.value("last_played", int64_t(0)),
+                           .achievements = g.value("achievements", 0u),
+                           .achievements_total = g.value("achievements_total", 0u),
+                           .gamerscore = g.value("gamerscore", 0u),
+                           .gamerscore_total = g.value("gamerscore_total", 0u)});
+        }
+      } catch (...) {
+        return done({false, "The server's answer couldn't be read."}, {});
+      }
+      done({}, std::move(games));
+    });
+  }
+
+  void PlayerGame(const std::string& gamertag, const std::string& title_id,
+                  std::function<void(const Result&, PlayedGameDetail)> done) override {
+    const std::string path = "/api/users/" + PathSegment(gamertag) + "/games/" + title_id;
+    worker_.Post(endpoint_, "GET", path, "", token_, [done](const http::Response& r) {
+      if (r.status != 200) return done({false, ErrorOf(r)}, {});
+      PlayedGameDetail detail;
+      try {
+        const json j = json::parse(r.body);
+        for (const json& a : j.value("achievements", json::array())) {
+          detail.achievements.push_back({a.value("id", 0u), a.value("gamerscore", 0u), a.value("label", ""),
+                                         a.value("unlocked", int64_t(0)), a.value("icon", int64_t(0))});
+        }
+        for (const json& b : j.value("boards", json::array())) {
+          detail.boards.push_back({b.value("id", 0u), b.value("name", ""), b.value("rank", 0u), b.value("total", 0u),
+                                   b.value("rating", 0.0)});
+        }
+      } catch (...) {
+        return done({false, "The server's answer couldn't be read."}, {});
+      }
+      done({}, std::move(detail));
+    });
+  }
+
+  const std::vector<GamerpicGame>* gamerpic_games(std::string* error) override {
+    if (error) *error = gamerpic_games_error_;
+    if (gamerpic_games_ready_) return &gamerpic_games_;
+    // Asked again a while after a failure.
+    if (!gamerpic_games_in_flight_ && signed_in_ && now_ - gamerpic_games_failed_at_ >= 15.0) {
+      gamerpic_games_in_flight_ = true;
+      worker_.Post(endpoint_, "GET", "/api/gamerpic-catalog", "", token_, [this](const http::Response& r) {
+        gamerpic_games_in_flight_ = false;
+        try {
+          if (r.status != 200) throw std::runtime_error(ErrorOf(r));
+          std::vector<GamerpicGame> games;
+          for (const json& g : json::parse(r.body).value("titles", json::array())) {
+            games.push_back({g.value("id", ""), g.value("name", ""), g.value("count", 0)});
+          }
+          gamerpic_games_ = std::move(games);
+          gamerpic_games_ready_ = true;
+          gamerpic_games_error_.clear();
+        } catch (const std::exception& e) {
+          gamerpic_games_failed_at_ = now_;
+          gamerpic_games_error_ = e.what();
+        }
+      });
+    }
+    return nullptr;
+  }
+
+  void GameGamerpics(const std::string& title_id,
+                     std::function<void(const Result&, std::vector<std::string>)> done) override {
+    worker_.Post(endpoint_, "GET", "/api/gamerpic-catalog/" + title_id, "", token_, [done](const http::Response& r) {
+      if (r.status != 200) return done({false, ErrorOf(r)}, {});
+      std::vector<std::string> ids;
+      try {
+        for (const json& id : json::parse(r.body).value("ids", json::array())) ids.push_back(id.get<std::string>());
+      } catch (...) {
+        return done({false, "The server's answer couldn't be read."}, {});
+      }
+      done({}, std::move(ids));
+    });
+  }
+
+  // From the archive's CDN, kept in <data dir>/game_gamerpics/<title>_<id>.png
+  // (a picture there never changes).
+  std::string GameGamerpicImage(const std::string& title_id, const std::string& id, bool* missing, bool fetch) override {
+    const std::string name = title_id + "_" + id;
+    if (missing) *missing = game_gamerpic_missing_.count(name) > 0;
+    if (auto it = game_gamerpic_png_.find(name); it != game_gamerpic_png_.end()) return it->second;
+    const auto path = game_gamerpic_dir_ / (name + ".png");
+    if (std::ifstream file(path, std::ios::binary); file) {
+      std::string png((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
+      if (!png.empty()) return game_gamerpic_png_[name] = std::move(png);
+    }
+    if (!fetch || game_gamerpic_missing_.count(name) || game_gamerpic_requested_.count(name)) return {};
+    if (auto it = game_gamerpic_retry_at_.find(name); it != game_gamerpic_retry_at_.end() && now_ < it->second) return {};
+    // Wanted (PumpGameGamerpics sends for it).
+    game_gamerpic_wanted_[name] = {title_id, id, now_};
+    return {};
+  }
+
+  void SetGameGamerpic(const std::string& title_id, const std::string& id, Callback done) override {
+    Post("POST", "/api/profile/game-gamerpic", {{"title_id", title_id}, {"id", id}}, [this, done](const http::Response& r) {
+      if (r.status != 200) return done({false, ErrorOf(r)});
+      try {
+        me_.gamerpic = json::parse(r.body).at("profile").value("gamerpic", me_.gamerpic);
+      } catch (...) {
+      }
+      SaveAccount();
+      PublishSnapshot();
+      done({});
+    });
+  }
+
+  bool is_admin() const override { return signed_in_ && is_admin_; }
+
+  void AchievementIconIds(const std::string& title_id,
+                          std::function<void(const Result&, std::vector<uint32_t>)> done) override {
+    worker_.Post(endpoint_, "GET", "/api/titles/" + title_id + "/achievement-icons", "", "",
+                 [done](const http::Response& r) {
+                   if (r.status != 200) return done({false, ErrorOf(r)}, {});
+                   std::vector<uint32_t> ids;
+                   try {
+                     for (const auto& [id, version] : json::parse(r.body).value("icons", json::object()).items()) {
+                       ids.push_back(uint32_t(std::strtoul(id.c_str(), nullptr, 10)));
+                     }
+                   } catch (...) {
+                     return done({false, "The server's answer couldn't be read."}, {});
+                   }
+                   done({}, std::move(ids));
+                 });
+  }
+
+  void UploadAchievementIcon(const std::string& title_id, uint32_t id, std::string image, Callback done) override {
+    const bool png = image.size() > 4 && image.compare(1, 3, "PNG") == 0;
+    worker_.Post(endpoint_, "PUT", "/api/titles/" + title_id + "/achievements/" + std::to_string(id) + "/icon",
+                 std::move(image), token_,
+                 [done](const http::Response& r) {
+                   if (done) done(r.status == 200 ? Result{} : Result{false, ErrorOf(r)});
+                 },
+                 png ? "image/png" : "image/jpeg");
+  }
+
+  // Kept in <data dir>/achievement_icons/<title>_<id>_<version>.img.
+  std::string AchievementIconImage(const std::string& title_id, uint32_t id, int64_t version) override {
+    if (!version) return {};
+    const std::string name = title_id + "_" + std::to_string(id) + "_" + std::to_string(version);
+    if (auto it = achievement_icons_.find(name); it != achievement_icons_.end()) return it->second;
+    const auto path = achievement_icon_dir_ / (name + ".img");
+    if (std::ifstream file(path, std::ios::binary); file) {
+      std::string image((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
+      if (!image.empty()) return achievement_icons_[name] = std::move(image);
+    }
+    if (achievement_icons_requested_.insert(name).second) {
+      const std::string url = "/api/titles/" + title_id + "/achievements/" + std::to_string(id) + "/icon?v=" +
+                              std::to_string(version);
+      images_.Post(endpoint_, "GET", url, "", "", [this, name, path](const http::Response& r) {
+        if (r.status != 200 || r.body.empty()) return;  // not asked again: the icon is gone
+        std::error_code ec;
+        std::filesystem::create_directories(achievement_icon_dir_, ec);
+        std::ofstream(path, std::ios::binary | std::ios::trunc) << r.body;
+        achievement_icons_[name] = r.body;
+      });
+    }
+    return {};
+  }
+
   bool connected() const override { return connected_; }
   std::string server_name() const override { return "RexLiveless (" + endpoint_.host + ":" + std::to_string(endpoint_.port) + ")"; }
+  std::string unofficial_server() const override {
+    // By host, so REXLIVELESS_SERVER naming the real server another way
+    // (a trailing slash, its port) doesn't count.
+    std::string host = endpoint_.host;
+    std::transform(host.begin(), host.end(), host.begin(), [](unsigned char c) { return char(std::tolower(c)); });
+    return host == kDefaultHost ? "" : endpoint_.host + ":" + std::to_string(endpoint_.port);
+  }
 
   LiveSnapshot Snapshot() const override {
     std::lock_guard lock(snapshot_mutex_);
@@ -409,7 +655,14 @@ class ServerBackend final : public Backend {
     worker_.Post(endpoint_, method, path, body.dump(), token_, std::move(done));
   }
 
-  json SyncBody() const { return {{"presence", presence_}, {"title_id", title_id_}, {"theme_id", theme_in_use_}}; }
+  // SetTitle's presence is the game's name (for now).
+  json SyncBody() const {
+    return {{"presence", presence_},
+            {"title_id", title_id_},
+            {"title_name", presence_},
+            {"theme_id", theme_in_use_},
+            {"platform", ThisPlatform()}};
+  }
 
   void Sync() {
     sync_in_flight_ = true;
@@ -556,7 +809,9 @@ class ServerBackend final : public Backend {
     newest_message_ = newest_message;
     own_photo_ = j.value("photo", 0);
     theme_quota_ = j.value("theme_quota", 0);
+    is_admin_ = j.value("admin", false);
     if (j.value("themes_version", themes_version_) != themes_version_ && !themes_in_flight_) ListThemes();
+    if (j.value("titles_version", titles_version_) != titles_version_ && !titles_in_flight_) ListTitles();
     ApplyGamerpicList(j);
     first_sync_ = false;
     PublishSnapshot();
@@ -581,6 +836,80 @@ class ServerBackend final : public Backend {
       } catch (...) {
       }
     });
+  }
+
+  // Sends for the wanted game gamerpics, newest first, a couple at a time: a
+  // long list scrolled past wants a picture per row for a moment, and only
+  // the ones still on screen are worth the wait.
+  void PumpGameGamerpics() {
+    constexpr int kAtOnce = 2;
+    constexpr double kForgetAfter = 0.5;  // seconds not asked for: off screen
+    std::erase_if(game_gamerpic_wanted_, [this](const auto& w) { return now_ - w.second.asked > kForgetAfter; });
+    while (game_gamerpics_in_flight_ < kAtOnce && !game_gamerpic_wanted_.empty()) {
+      auto newest = std::max_element(game_gamerpic_wanted_.begin(), game_gamerpic_wanted_.end(),
+                                     [](const auto& a, const auto& b) { return a.second.asked < b.second.asked; });
+      const std::string name = newest->first;
+      const WantedGamerpic want = newest->second;
+      game_gamerpic_wanted_.erase(newest);
+      game_gamerpic_requested_.insert(name);
+      ++game_gamerpics_in_flight_;
+      const auto path = game_gamerpic_dir_ / (name + ".png");
+      static const http::Endpoint kCdn{"assets.xboxgamer.pics", 443, true};
+      images_.Post(kCdn, "GET", "/titles/" + want.title_id + "/" + want.id + ".png", "", "",
+                   [this, name, path](const http::Response& r) {
+                     --game_gamerpics_in_flight_;
+                     game_gamerpic_requested_.erase(name);
+                     if (r.status != 200 || r.body.empty()) {
+                       // Not there: never. Otherwise (no connection...) again in a while.
+                       if (r.status == 404) game_gamerpic_missing_.insert(name);
+                       else game_gamerpic_retry_at_[name] = now_ + 15.0;
+                       return;
+                     }
+                     std::error_code ec;
+                     std::filesystem::create_directories(game_gamerpic_dir_, ec);
+                     std::ofstream(path, std::ios::binary | std::ios::trunc) << r.body;
+                     game_gamerpic_png_[name] = r.body;
+                   });
+    }
+  }
+
+  void ListTitles() {
+    titles_listed_ = true;
+    titles_in_flight_ = true;
+    worker_.Post(endpoint_, "GET", "/api/titles", "", "", [this](const http::Response& r) {
+      titles_in_flight_ = false;
+      if (r.status != 200) {
+        titles_listed_ = false;  // again on a later frame
+        return;
+      }
+      try {
+        const json j = json::parse(r.body);
+        std::map<std::string, TitleInfo> titles;
+        for (const json& t : j.value("titles", json::array())) {
+          TitleInfo info = ParseTitle(t);
+          titles[info.title_id] = std::move(info);
+        }
+        titles_ = std::move(titles);
+        titles_version_ = j.value("version", "");
+      } catch (...) {
+      }
+    });
+  }
+
+  static TitleInfo ParseTitle(const json& t) {
+    TitleInfo info;
+    info.title_id = t.value("title_id", "");
+    info.name = t.value("name", "");
+    info.icon = t.value("icon", int64_t(0));
+    for (const auto& [id, name] : t.value("boards", json::object()).items()) {
+      if (name.is_string()) info.boards[uint32_t(std::strtoul(id.c_str(), nullptr, 10))] = name.get<std::string>();
+    }
+    for (const json& id : t.value("hidden_boards", json::array())) {
+      if (id.is_number_unsigned()) info.hidden_boards.push_back(id.get<uint32_t>());
+    }
+    info.achievements_total = t.value("achievements_total", 0u);
+    info.gamerscore_total = t.value("gamerscore_total", 0u);
+    return info;
   }
 
   static ServerTheme ParseTheme(const json& t) {
@@ -651,7 +980,10 @@ class ServerBackend final : public Backend {
 
   void LoadAccount() {
     std::ifstream file(account_path_);
-    if (!file) return;
+    if (!file) {
+      REXKRNL_INFO("RexLiveless: no saved account at {}", account_path_.string());
+      return;
+    }
     try {
       const json j = json::parse(file);
       // A token only means something to the server that issued it.
@@ -660,12 +992,24 @@ class ServerBackend final : public Backend {
       remembered_.xuid = ParseXuid(j.value("xuid", json()));
       remembered_.gamerpic = j.value("gamerpic", 0);
     } catch (...) {
+      REXKRNL_WARN("RexLiveless: {} is not valid JSON", account_path_.string());
+      return;
     }
+    REXKRNL_INFO("RexLiveless: saved account {} at {} ({})", remembered_.gamertag, account_path_.string(),
+                 token_.empty() ? "signed out" : "signed in");
   }
 
+  // Written whole to account.json.tmp, then moved over account.json, so a
+  // failed or cut-short write never leaves half a file. A failure is logged:
+  // without the file the player has to sign in again next time.
   void SaveAccount() {
     std::error_code ec;
     std::filesystem::create_directories(account_path_.parent_path(), ec);
+    if (ec) {
+      REXKRNL_WARN("RexLiveless: can't create {} to save the account: {}", account_path_.parent_path().string(),
+                   ec.message());
+      return;
+    }
     char xuid[17];
     std::snprintf(xuid, sizeof(xuid), "%016llX", static_cast<unsigned long long>(remembered_.xuid));
     const json j = {{"server", server_url_},
@@ -673,7 +1017,29 @@ class ServerBackend final : public Backend {
                     {"gamertag", remembered_.gamertag},
                     {"xuid", xuid},
                     {"gamerpic", remembered_.gamerpic}};
-    std::ofstream(account_path_, std::ios::trunc) << j.dump(2);
+    std::filesystem::path temp = account_path_;
+    temp += ".tmp";
+    {
+      std::ofstream file(temp, std::ios::trunc);
+      if (!file) {
+        REXKRNL_WARN("RexLiveless: can't write {}: {}", temp.string(), std::strerror(errno));
+        return;
+      }
+      file << j.dump(2);
+      file.close();
+      if (!file) {
+        REXKRNL_WARN("RexLiveless: couldn't finish writing {}", temp.string());
+        std::filesystem::remove(temp, ec);
+        return;
+      }
+    }
+    std::filesystem::rename(temp, account_path_, ec);
+    if (ec) {
+      REXKRNL_WARN("RexLiveless: can't save the account to {}: {}", account_path_.string(), ec.message());
+      std::filesystem::remove(temp, ec);
+      return;
+    }
+    REXKRNL_INFO("RexLiveless: saved the account to {}", account_path_.string());
   }
 
   void ForgetToken() {
@@ -721,9 +1087,13 @@ class ServerBackend final : public Backend {
   std::filesystem::path account_path_;
   std::filesystem::path gamerpic_dir_;
   std::filesystem::path theme_dir_;
+  std::filesystem::path title_dir_;
+  std::filesystem::path game_gamerpic_dir_;
+  std::filesystem::path achievement_icon_dir_;
   std::string server_url_;
   http::Endpoint endpoint_;
   http::Worker worker_;
+  http::Worker images_;  // game gamerpics from the archive's CDN, apart from the server's requests
 
   std::string token_;
   Profile remembered_;
@@ -749,9 +1119,35 @@ class ServerBackend final : public Backend {
   bool themes_listed_ = false;
   bool themes_in_flight_ = false;
   int theme_quota_ = 0;
+  bool is_admin_ = false;
+  std::map<std::string, std::string> achievement_icons_;  // "<title>_<id>_<version>" -> file
+  std::set<std::string> achievement_icons_requested_;
   int theme_in_use_ = 0;
   std::map<std::string, std::string> theme_images_;
   std::set<std::string> theme_images_requested_;
+  std::map<std::string, TitleInfo> titles_;
+  std::string titles_version_;
+  bool titles_listed_ = false;
+  bool titles_in_flight_ = false;
+  std::string title_reported_;  // this session's ReportTitleInfo went through
+  bool title_report_in_flight_ = false;
+  std::map<std::string, std::string> title_icons_;
+  std::set<std::string> title_icons_requested_;
+  std::vector<GamerpicGame> gamerpic_games_;
+  bool gamerpic_games_ready_ = false;
+  bool gamerpic_games_in_flight_ = false;
+  double gamerpic_games_failed_at_ = -100.0;
+  std::string gamerpic_games_error_;
+  std::map<std::string, std::string> game_gamerpic_png_;
+  std::set<std::string> game_gamerpic_requested_;
+  std::set<std::string> game_gamerpic_missing_;          // the CDN said 404
+  struct WantedGamerpic {
+    std::string title_id, id;
+    double asked = 0.0;  // now_ when last asked for
+  };
+  std::map<std::string, WantedGamerpic> game_gamerpic_wanted_;
+  int game_gamerpics_in_flight_ = 0;
+  std::map<std::string, double> game_gamerpic_retry_at_;  // after another failure
   std::string title_id_;
   std::string presence_;
   std::string public_ip_;

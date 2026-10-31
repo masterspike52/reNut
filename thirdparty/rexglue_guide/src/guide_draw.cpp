@@ -23,11 +23,10 @@ void GuideDialog::Draw(ImDrawList* dl) {
   slide_ += (0.0f - slide_) * std::min(1.0f, ImGui::GetIO().DeltaTime * 14.0f);
   if (std::abs(slide_) < 0.002f) slide_ = 0.0f;
 
-  rows_ = BuildRows(Current());
+  list_.rows = BuildRows(Current());
   if (screen_ == Screen::kSignIn) DrawSignIn(dl, a);
   else DrawGuide(dl, a);
 
-  if (keyboard_.active()) keyboard_.Draw(dl, textures_, display_, pad_, time_);
   if (message_) DrawMessage(dl);
   if (busy_) DrawBusy(dl);
 }
@@ -38,10 +37,18 @@ bool GuideDialog::DrawBlurredGame(ImDrawList* dl, float a) {
   rex::ui::ImmediateTexture* frame = config_.game_frame(uv);
   if (!frame || display_.x <= 0 || display_.y <= 0) return false;
   const ImTextureID tex = reinterpret_cast<ImTextureID>(frame);
+  // How blurred is the theme's (0.5: the console's look).
+  const float blur = ShownTheme().backdrop_blur;
+  if (blur < 0.01f) {
+    dl->AddImage(tex, ImVec2(0, 0), display_, ImVec2(uv[0], uv[1]), ImVec2(uv[2], uv[3]), WithAlpha(color::kWhite, a));
+    return true;
+  }
 
-  constexpr int kHalf = 4;  // 9 x 9 copies
-  const float sigma = Px(10);
-  const float step = sigma * 0.55f;  // close enough that linear filtering fills between them
+  // 0.5 is a sigma of 10 (at 1080p), 1.0 about 14. Wider blurs take more
+  // copies, so they stay close enough for linear filtering to fill between.
+  const float sigma = Px(10) * std::sqrt(2.0f * blur);
+  const int kHalf = sigma > Px(10.5f) ? 5 : 4;  // 11 x 11 or 9 x 9 copies
+  const float step = 2.2f * sigma / float(kHalf);
   struct Tap {
     float x, y, w;
   };
@@ -114,7 +121,6 @@ void GuideDialog::DrawGuide(ImDrawList* dl, float a) {
   const float round = Px(12);
   blade_hits_.clear();
 
-  static constexpr const char* kLabels[kBladeCount] = {"Social", "Games & Apps", "", "Settings"};
   auto side = [&](int b, int level, bool left) {
     const float inset = Px(9) * float(level);
     const float x_out = left ? p0.x - strip * float(level) : p1.x + strip * float(level);
@@ -129,12 +135,12 @@ void GuideDialog::DrawGuide(ImDrawList* dl, float a) {
                                              : ImDrawFlags_RoundCornersRight;
     dl->AddRectFilled(b0, b1, WithAlpha(level == 1 ? color::kSideBlade : color::kSideBladeFar, a), Px(10), corners);
     const float lx = left ? x_out + strip * 0.5f : x_out - strip * 0.5f;
-    const std::string label = b == kHomeBlade ? HomeLabel() : kLabels[b];
+    const std::string label = BladeLabel(b);
     TextVertical(dl, Regular(), Px(26), ImVec2(lx, (b0.y + b1.y) * 0.5f), WithAlpha(color::kSideText, a), label);
     blade_hits_.push_back({b, {ImVec2(left ? x_out : x_out - strip, b0.y), ImVec2(left ? x_out + strip : x_out, b1.y)}});
   };
   for (int b = 0; b < blade_; ++b) side(b, blade_ - b, true);
-  for (int b = kBladeCount - 1; b > blade_; --b) side(b, b - blade_, false);
+  for (int b = int(blades_.size()) - 1; b > blade_; --b) side(b, b - blade_, false);
 
   // Open blade.
   BladeShadow(dl, p0, p1, round, Px(28), a);
@@ -144,7 +150,7 @@ void GuideDialog::DrawGuide(ImDrawList* dl, float a) {
   dl->AddRectFilled(s0, s1, WithAlpha(color::kBladeStrip, a * StripSeeThrough()), Px(8));
   const ImVec2 icon_c((s0.x + s1.x) * 0.5f, s0.y + Px(38));
   DrawBladeIcon(dl, blade_, icon_c, a);
-  const std::string label = blade_ == kHomeBlade ? HomeLabel() : kLabels[blade_];
+  const std::string label = BladeLabel(blade_);
   TextVertical(dl, Regular(), Px(30), ImVec2(icon_c.x, (icon_c.y + Px(40) + s1.y) * 0.5f),
                WithAlpha(color::kText, a), label);
 
@@ -153,15 +159,27 @@ void GuideDialog::DrawGuide(ImDrawList* dl, float a) {
 
   DrawHeader(dl, p0, p1, a);
   DrawLegend(dl, ImVec2(p0.x + Px(20), p1.y + Px(34)), a);
+  DrawDisclaimer(dl, p0, p1, a);
 }
 
 std::string GuideDialog::HomeLabel() const {
   return backend_->signed_in() ? backend_->me().gamertag : "Not signed in";
 }
 
+std::string GuideDialog::BladeLabel(int blade) const {
+  const BladeSlot& slot = blades_[size_t(blade)];
+  if (!slot.menu.empty()) {
+    const auto menu = FindAppMenu(slot.menu);
+    return menu ? menu->title : "";
+  }
+  static constexpr const char* kLabels[kBladeCount] = {"Social", "Games & Apps", "", "Settings"};
+  return slot.builtin == kHomeBlade ? HomeLabel() : kLabels[slot.builtin];
+}
+
 void GuideDialog::DrawBladeIcon(ImDrawList* dl, int blade, ImVec2 c, float a) {
   const ImU32 col = WithAlpha(color::kText, a);
-  switch (blade) {
+  if (!blades_[size_t(blade)].menu.empty()) return DrawMenuMark(dl, blades_[size_t(blade)].menu, c, a);
+  switch (blades_[size_t(blade)].builtin) {
     case kSocialBlade: DrawGlyph(dl, Glyph::kPeople, c, Px(40), col); break;
     case kGamesBlade: {
       // apps.png's tiles fill only 35 x 24 of its 128 x 128 (from 46, 47):
@@ -279,6 +297,30 @@ void GuideDialog::DrawSignIn(ImDrawList* dl, float a) {
     DrawList(dl, l0, l1, a);
   }
   DrawLegend(dl, ImVec2(p0.x + Px(20), p1.y + Px(34)), a);
+  DrawDisclaimer(dl, p0, p1, a);
+}
+
+void GuideDialog::DrawDisclaimer(ImDrawList* dl, ImVec2 p0, ImVec2 p1, float a) {
+  // Under the legend, centred on the blade.
+  static constexpr const char* kText = "RexLiveless is not affiliated with Microsoft or its affiliates, All assets/layouts/sounds are recreations and not rips of original content.";
+  const ImVec2 s = Measure(Regular(), Px(15), kText);
+  Text(dl, Regular(), Px(15), ImVec2(std::floor((p0.x + p1.x - s.x) * 0.5f), p1.y + Px(62)), WithAlpha(color::kTextDim, a),
+       kText);
+}
+
+void GuideDialog::DrawServerWarning(ImDrawList* dl) {
+  // A debug build pointed at another server (REXLIVELESS_SERVER, the mock):
+  // shown over the game as well as the Guide, so it can't be mistaken for
+  // the real one.
+  const std::string server = backend_->unofficial_server();
+  if (server.empty()) return;
+  const std::string text = "DEBUG: not the RexLiveless server (" + server + ")";
+  const ImVec2 s = Measure(Semibold(), Px(16), text);
+  const ImVec2 b0(std::floor((display_.x - s.x) * 0.5f) - Px(14), Px(10));
+  const ImVec2 b1(b0.x + s.x + Px(28), b0.y + s.y + Px(10));
+  dl->AddRectFilled(b0, b1, IM_COL32(200, 120, 0, 220), Px(6));
+  dl->AddRect(b0, b1, IM_COL32(255, 210, 120, 255), Px(6), 0, Px(1.5f));
+  Text(dl, Semibold(), Px(16), ImVec2(b0.x + Px(14), b0.y + Px(5)), color::kWhite, text);
 }
 
 }  // namespace rexglue_guide

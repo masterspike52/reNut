@@ -95,6 +95,13 @@ registers = ["r11"]
 after_instruction = true
 
 [[midasm_hook]]
+address = 0x824FB648
+name = "unlock_all_parts"
+registers = []
+after_instruction = false
+jump_address_on_true = 0x824FB650
+
+[[midasm_hook]]
 address = 0x826333E0
 name = "VehicleSize_fits"
 registers = ["r10", "r11"]
@@ -169,3 +176,30 @@ name = "keep_escaped_vehicle"
 registers = ["r30", "r31"]
 after_instruction = false
 jump_address_on_true = 0x8238DE40
+
+[[midasm_hook]]
+address = 0x82C08DB4
+name = "title_server_cache_key"
+registers = ["r10", "r11"]
+after_instruction = true
+
+[[midasm_hook]]
+address = 0x82A049F8
+name = "storage_upload"
+registers = ["r3", "r4", "r5", "r6", "r7"]
+after_instruction = false
+return_on_true = true
+
+[[midasm_hook]]
+address = 0x82A04490
+name = "storage_download"
+registers = ["r3", "r4", "r5", "r6", "r7", "r8", "r9"]
+after_instruction = false
+return_on_true = true
+
+[[midasm_hook]]
+address = 0x82A04770
+name = "storage_enumerate"
+registers = ["r3", "r4", "r5", "r6", "r7", "r8", "r9"]
+after_instruction = false
+return_on_true = true

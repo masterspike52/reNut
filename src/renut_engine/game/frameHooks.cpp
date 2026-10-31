@@ -147,7 +147,7 @@ REX_HOOK_RAW(sub_8224B3A8)
 }
 
 
-REXCVAR_DEFINE_STRING(frame_cap, "Off", "Nuts&Bolts/Performance",
+REXCVAR_DEFINE_STRING(frame_cap, "60", "Nuts&Bolts/Performance",
 	"Frame-rate cap (low-overhead limiter that cuts GPU load). "
 	"Off = uncapped, Display = match monitor refresh. With renut_vsync on, the "
 	"display paces the game at its refresh, and only caps below it apply.")

@@ -20,6 +20,7 @@
 #include "renut_engine/gpu/log.h"
 #include "renut_engine/gpu/render/graphics_options.h"
 #include "renut_engine/gpu/render/menu_colour.h"
+#include "renut_engine/gpu/render/settings_icon.h"
 #include "renut_engine/gpu/render/title_logo.h"
 #include "renut_engine/gpu/render/parallel.h"
 #include "renut_engine/gpu/backend/video.h"
@@ -368,8 +369,10 @@ void ReadLevel(const TextureFormatInfo &info, const TextureFetch &fetch, const L
         ConvertTexels(info.conversion, row.data(), out, blocks_w);
     }
   }
-  // BC2 one-level 2D textures are also where the game's title logo is.
-  if (menu_panel && !ReplaceTitleLogo(dst, blocks_w, blocks_h, dst_row_pitch))
+  // BC2 one-level 2D textures are also where the game's title logo and the
+  // map tab's icon (reNut's pause tab: the gear) are.
+  if (menu_panel && !ReplaceTitleLogo(dst, blocks_w, blocks_h, dst_row_pitch) &&
+      !ReplaceSettingsIcon(dst, blocks_w, blocks_h, dst_row_pitch))
     RecolourMenuPanel(dst, blocks_w, blocks_h, dst_row_pitch);
 }
 

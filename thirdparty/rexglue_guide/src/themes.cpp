@@ -4,6 +4,7 @@
 #include <cctype>
 #include <cstdio>
 #include <iterator>
+#include <utility>
 
 #include <nlohmann/json.hpp>
 
@@ -27,6 +28,11 @@ constexpr ElementInfo kElements[kElementCount] = {
     {"selected_sub", "Selected Row Subtext"},
     {"backdrop", "Backdrop"},
     {"popup", "Pop-ups"},
+    {"keyboard_header", "Keyboard Header"},
+    {"keyboard_body", "Keyboard Body"},
+    {"key", "Keys"},
+    {"key_label", "Key Labels"},
+    {"keyboard_field", "Keyboard Text Field"},
 };
 
 // The built-in themes' colours: an accent pair, and the blades in Light mode
@@ -62,6 +68,12 @@ Palette MakePalette(const BuiltInColors& c, bool dark) {
   p.colors[kSelectedSub] = IM_COL32(235, 245, 228, 255);
   p.colors[kBackdrop] = IM_COL32(6, 9, 13, 185);
   p.colors[kPopup] = IM_COL32(26, 31, 38, 240);
+  // The keyboard: the 360's greys in Light mode.
+  p.colors[kKeyboardHeader] = dark ? IM_COL32(58, 63, 71, 255) : IM_COL32(168, 171, 176, 255);
+  p.colors[kKeyboardBody] = dark ? IM_COL32(36, 39, 45, 255) : IM_COL32(219, 220, 222, 255);
+  p.colors[kKey] = dark ? IM_COL32(68, 73, 82, 255) : IM_COL32(247, 247, 248, 255);
+  p.colors[kKeyLabel] = dark ? IM_COL32(226, 229, 233, 255) : IM_COL32(58, 58, 60, 255);
+  p.colors[kKeyboardField] = dark ? IM_COL32(22, 24, 28, 255) : IM_COL32(236, 236, 237, 255);
   return p;
 }
 
@@ -85,10 +97,21 @@ json PaletteJson(const Palette& p) {
 }
 
 void ParsePalette(const json& j, Palette* p) {
-  if (!j.is_object()) return;
-  for (int e = 0; e < kElementCount; ++e) {
-    const auto it = j.find(kElements[e].key);
-    if (it != j.end() && it->is_string()) ParseHex(it->get<std::string>(), &p->colors[e]);
+  bool given[kElementCount] = {};
+  if (j.is_object()) {
+    for (int e = 0; e < kElementCount; ++e) {
+      const auto it = j.find(kElements[e].key);
+      if (it != j.end() && it->is_string()) given[e] = ParseHex(it->get<std::string>(), &p->colors[e]);
+    }
+  }
+  // Themes made before the keyboard had colours (or that leave them out)
+  // give it their own blades', not the default theme's greys.
+  constexpr std::pair<Element, Element> kKeyboardFrom[] = {
+      {kKeyboardHeader, kBladeStrip}, {kKeyboardBody, kBlade},          {kKey, kSideBlade},
+      {kKeyLabel, kSideText},         {kKeyboardField, kSideBladeFar},
+  };
+  for (const auto& [element, from] : kKeyboardFrom) {
+    if (!given[element]) p->colors[element] = p->colors[from];
   }
 }
 
@@ -118,7 +141,8 @@ std::string DataJson(const Theme& theme) {
   return json{{"light", PaletteJson(theme.light)},
               {"dark", PaletteJson(theme.dark)},
               {"image_alpha", theme.image_alpha},
-              {"image_blur", theme.image_blur}}
+              {"image_blur", theme.image_blur},
+              {"backdrop_blur", theme.backdrop_blur}}
       .dump();
 }
 
@@ -131,6 +155,7 @@ void ParseData(const std::string& text, Theme* theme) {
     ParsePalette(j.value("dark", json()), &theme->dark);
     theme->image_alpha = std::clamp(j.value("image_alpha", 0.6f), 0.0f, 1.0f);
     theme->image_blur = std::clamp(j.value("image_blur", 0.0f), 0.0f, 1.0f);
+    theme->backdrop_blur = std::clamp(j.value("backdrop_blur", 0.5f), 0.0f, 1.0f);
   } catch (...) {
   }
 }
@@ -168,6 +193,11 @@ void Apply(const Palette& p) {
   color::kSelectedSub = p.colors[kSelectedSub];
   color::kBackdrop = p.colors[kBackdrop];
   color::kPopup = p.colors[kPopup];
+  color::kKeyboardHeader = p.colors[kKeyboardHeader];
+  color::kKeyboardBody = p.colors[kKeyboardBody];
+  color::kKey = p.colors[kKey];
+  color::kKeyLabel = p.colors[kKeyLabel];
+  color::kKeyboardField = p.colors[kKeyboardField];
 }
 
 }  // namespace rexglue_guide::themes

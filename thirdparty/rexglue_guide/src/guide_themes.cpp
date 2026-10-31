@@ -139,14 +139,15 @@ void GuideDialog::DrawThemeGallery(ImDrawList* dl, ImVec2 pos, ImVec2 end, Page&
   const float pitch = tile_h + gap;
   const int count = int(gallery_.size());
   const int rows = (count + kGalleryColumns - 1) / kGalleryColumns;
-  const int visible = std::max(1, int((end.y - pos.y + gap) / pitch));
+  const float fit = (end.y - pos.y + gap) / pitch;  // rows the view holds, part ones too
+  const int visible = std::max(1, int(fit));
   page.selected = std::clamp(page.selected, 0, std::max(0, count - 1));
   const int sel_row = page.selected / kGalleryColumns;
-  float target = page.scroll;
-  if (sel_row < target) target = float(sel_row);
-  if (sel_row >= target + visible) target = float(sel_row - visible + 1);
-  target = std::clamp(target, 0.0f, float(std::max(0, rows - visible)));
-  page.scroll += (target - page.scroll) * std::min(1.0f, ImGui::GetIO().DeltaTime * 16.0f);
+  float follow = page.scroll;
+  if (sel_row < follow) follow = float(sel_row);
+  if (sel_row >= follow + visible) follow = float(sel_row - visible + 1);
+  const float target = ScrollTowards(page, follow, float(rows) - fit);
+  if (page.free_scroll) page.selected = KeepInGrid(page.selected, count, kGalleryColumns, target, fit);
 
   dl->PushClipRect(ImVec2(pos.x - Px(8), pos.y - Px(8)), ImVec2(end.x, end.y), true);
   for (int i = 0; i < count; ++i) {
@@ -234,15 +235,23 @@ void GuideDialog::HandleGalleryInput(const NavInput& in, Page& page) {
   if (in.right && sel + 1 < count) ++sel;
   if (in.up && sel >= kGalleryColumns) sel -= kGalleryColumns;
   if (in.down && sel + kGalleryColumns < count) sel += kGalleryColumns;
+  if (in.left || in.right || in.up || in.down) page.free_scroll = false;
   const ImGuiIO& io = ImGui::GetIO();
-  if (io.MouseWheel != 0.0f) sel = std::clamp(sel - int(io.MouseWheel) * kGalleryColumns, 0, std::max(0, count - 1));
+  if (io.MouseWheel != 0.0f) {
+    HoldScroll(page);
+    page.scroll_goal -= io.MouseWheel;  // a row a notch
+  }
   if (sel != page.selected) audio::Play(Sound::kMove);
   page.selected = sel;
   bool use = in.accept;
   for (size_t i = 0; i < gallery_cells_.size(); ++i) {
     if (!ImGui::IsMouseHoveringRect(gallery_cells_[i].first, gallery_cells_[i].second, false)) continue;
-    if (io.MouseDelta.x != 0 || io.MouseDelta.y != 0) page.selected = int(i);
+    if (io.MouseDelta.x != 0 || io.MouseDelta.y != 0) {
+      HoldScroll(page);
+      page.selected = int(i);
+    }
     if (ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+      HoldScroll(page);
       page.selected = int(i);
       use = true;
     }
@@ -252,7 +261,8 @@ void GuideDialog::HandleGalleryInput(const NavInput& in, Page& page) {
   if (in.x || sort_clicked) {
     theme_sort_ = ThemeSort((int(theme_sort_) + 1) % int(ThemeSort::kCount));
     page.selected = 0;
-    page.scroll = 0.0f;
+    page.scroll = page.scroll_goal = 0.0f;
+    page.free_scroll = false;
     audio::Play(Sound::kSelect);
     SavePreferences();
   } else if (in.y && page.selected < count) {
@@ -354,7 +364,7 @@ void GuideDialog::OpenDesigner(int server_id) {
 }
 
 bool GuideDialog::DesignerOpen() const {
-  for (const Page& p : stacks_[kSettingsBlade]) {
+  for (const Page& p : stacks_[size_t(BladeOf(kSettingsBlade))]) {
     if (p.kind == PageKind::kThemeDesigner) return true;
   }
   return false;
@@ -418,6 +428,11 @@ void GuideDialog::ThemeDesignerRows(std::vector<Row>& rows, Page&) {
   rows.push_back({.label = "NSFW", .detail = t.nsfw ? "Yes" : "No", .activate = [this] {
                     draft_->theme.nsfw = !draft_->theme.nsfw;
                     draft_->dirty = true;
+                  }});
+  rows.push_back({.label = "Background Blur", .detail = Percent(t.backdrop_blur), .slider = t.backdrop_blur,
+                  .set_slider = [this, changed](float v) {
+                    draft_->theme.backdrop_blur = v;
+                    changed();
                   }});
   const bool has_image = d.image == ThemeDraft::Image::kNew || (d.image == ThemeDraft::Image::kKept && t.has_image);
   rows.push_back({.label = "Background Picture", .detail = has_image ? "Change" : "None",

@@ -35,6 +35,14 @@ if(NOT renut_linuxdeploy)
 endif()
 
 set(renut_appdir "${CMAKE_BINARY_DIR}/AppDir")
+
+# SentryWork's crash daemon goes next to renut, with the libraries it needs.
+set(renut_sentry_crash "")
+if(TARGET sentry-crash)
+    set(renut_sentry_crash
+        COMMAND "${CMAKE_COMMAND}" -E copy "$<TARGET_FILE:sentry-crash>" "${renut_appdir}/usr/bin/sentry-crash")
+    set(renut_sentry_crash_executable --executable "${renut_appdir}/usr/bin/sentry-crash")
+endif()
 set(renut_appimage "${CMAKE_BINARY_DIR}/renut-x86_64.AppImage")
 
 add_custom_command(
@@ -43,6 +51,7 @@ add_custom_command(
     COMMAND "${CMAKE_COMMAND}" -E rm -rf "${renut_appdir}"
     COMMAND "${CMAKE_COMMAND}" -E make_directory "${renut_appdir}/usr/bin"
     COMMAND "${CMAKE_COMMAND}" -E copy "$<TARGET_FILE:renut>" "${renut_appdir}/usr/bin/renut"
+    ${renut_sentry_crash}
     # The rexglue runtime is found where the SDK installed it, and the EOS SDK
     # next to renut (copied there after linking). linuxdeploy runs extracted,
     # so FUSE is not needed on the build machine.
@@ -52,6 +61,7 @@ add_custom_command(
             "LDAI_OUTPUT=${renut_appimage}" "OUTPUT=${renut_appimage}"
             "${renut_linuxdeploy}" --appdir "${renut_appdir}"
             --executable "${renut_appdir}/usr/bin/renut"
+            ${renut_sentry_crash_executable}
             --desktop-file "${CMAKE_SOURCE_DIR}/icon/renut.desktop"
             --icon-file "${CMAKE_SOURCE_DIR}/icon/renut.png"
             --output appimage

@@ -6,7 +6,8 @@
 #include <iterator>
 #include <vector>
 
-#include <rex/ui/image_decode.h>
+
+#include "image.h"
 
 #define STB_IMAGE_WRITE_STATIC
 #define STB_IMAGE_WRITE_IMPLEMENTATION
@@ -74,7 +75,7 @@ std::vector<uint8_t> Decode(const std::filesystem::path& path, size_t max_bytes,
   }
   std::ifstream file(path, std::ios::binary);
   const std::vector<uint8_t> data((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
-  std::vector<uint8_t> rgba = rex::ui::DecodeImageRGBA(data.data(), data.size(), *w, *h);
+  std::vector<uint8_t> rgba = image::Decode(data.data(), data.size(), w, h);
   if (rgba.empty() || *w <= 0 || *h <= 0) {
     *error = "That file isn't a picture the Guide can read (PNG, JPEG, BMP, GIF or TGA).";
     return {};
@@ -120,7 +121,7 @@ std::string FromFile(const std::filesystem::path& path, std::string* error) {
   std::ifstream file(path, std::ios::binary);
   const std::vector<uint8_t> data((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
   int w = 0, h = 0;
-  const std::vector<uint8_t> rgba = rex::ui::DecodeImageRGBA(data.data(), data.size(), w, h);
+  const std::vector<uint8_t> rgba = image::Decode(data.data(), data.size(), &w, &h);
   if (rgba.empty() || w <= 0 || h <= 0) {
     *error = "That file isn't a picture the Guide can read (PNG, JPEG, BMP, GIF or TGA).";
     return {};

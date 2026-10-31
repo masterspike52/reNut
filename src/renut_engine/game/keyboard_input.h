@@ -23,4 +23,9 @@ void DetachKeyboard();
 // code and XINPUT_KEYSTROKE flags (down, up, or a held key's repeat).
 bool NextKeystroke(uint16_t &virtual_key, uint16_t &flags);
 
+// Any thread: the pad buttons (XINPUT_GAMEPAD wButtons) the bound keys hold
+// now, 0 while the keys play nothing (renut_keyboard off, an overlay window or
+// the Guide taking them).
+uint32_t KeyboardButtons();
+
 } // namespace renut::game

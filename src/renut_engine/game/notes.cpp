@@ -17,6 +17,7 @@
 #include <string>
 
 #include "renut_engine/app/renut_logging.h"
+#include "renut_engine/game/cheats.h"
 #include "renut_engine/online/online.h"
 
 REXCVAR_DEFINE_STRING(notes_amount, "", "Nuts&Bolts/Cheats",
@@ -53,6 +54,7 @@ void SetNotes() {
   auto *count = memory->TranslateVirtual<uint32_t *>(counters + kNotes);
   RNUT_INFO("Set Notes: {} -> {}", int32_t(rex::byte_swap(*count)), notes);
   *count = rex::byte_swap(uint32_t(notes));
+  renut::game::NotesSet();
 }
 
 }  // namespace

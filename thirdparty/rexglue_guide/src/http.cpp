@@ -20,6 +20,7 @@
 #pragma comment(lib, "winhttp.lib")
 using socket_t = SOCKET;
 constexpr socket_t kBadSocket = INVALID_SOCKET;
+constexpr int kSendFlags = 0;
 static void CloseSocket(socket_t s) {
   closesocket(s);
 }
@@ -31,6 +32,9 @@ static void CloseSocket(socket_t s) {
 #include <unistd.h>
 using socket_t = int;
 constexpr socket_t kBadSocket = -1;
+// A send to a server that has closed raises SIGPIPE on Linux, which ends the
+// process; with this it fails instead.
+constexpr int kSendFlags = MSG_NOSIGNAL;
 static void CloseSocket(socket_t s) {
   close(s);
 }
@@ -146,6 +150,8 @@ constexpr int kOptUserAgent = 10018;
 constexpr int kOptHttpHeader = 10023;
 constexpr int kOptCustomRequest = 10036;
 constexpr int kOptPost = 47;
+constexpr int kOptFollowLocation = 52;
+constexpr int kOptMaxRedirs = 68;
 constexpr int kOptPostFieldSize = 60;
 constexpr int kOptNoSignal = 99;
 constexpr int kOptTimeoutMs = 155;
@@ -230,6 +236,9 @@ Response RequestTls(const Endpoint& endpoint, const std::string& method, const s
   api->easy_setopt(easy, curl::kOptNoSignal, 1L);  // runs on the worker thread
   api->easy_setopt(easy, curl::kOptConnectTimeoutMs, long(timeout_ms));
   api->easy_setopt(easy, curl::kOptTimeoutMs, long(timeout_ms));
+  // Follows redirects as WinHTTP does; curl leaves the token off for another host.
+  api->easy_setopt(easy, curl::kOptFollowLocation, 1L);
+  api->easy_setopt(easy, curl::kOptMaxRedirs, 3L);
   api->easy_setopt(easy, curl::kOptWriteFunction, &curl::Append);
   api->easy_setopt(easy, curl::kOptWriteData, &response.body);
   if (method == "POST") {
@@ -274,10 +283,12 @@ bool ParseUrl(const std::string& url, Endpoint* out) {
   return !out->host.empty();
 }
 
-Response Request(const Endpoint& endpoint, const std::string& method, const std::string& path,
-                 const std::string& body, const std::string& token, const std::string& content_type,
-                 int timeout_ms) {
-  if (endpoint.tls) return RequestTls(endpoint, method, path, body, token, content_type, timeout_ms);
+namespace {
+
+// One request over plain HTTP; *location: where a redirect sends it.
+Response RequestPlain(const Endpoint& endpoint, const std::string& method, const std::string& path,
+                      const std::string& body, const std::string& token, const std::string& content_type,
+                      int timeout_ms, std::string* location) {
   EnsureSockets();
   Response response;
   addrinfo hints{};
@@ -313,7 +324,7 @@ Response Request(const Endpoint& endpoint, const std::string& method, const std:
   request += body;
   size_t sent = 0;
   while (sent < request.size()) {
-    const int n = send(s, request.data() + sent, int(request.size() - sent), 0);
+    const int n = send(s, request.data() + sent, int(request.size() - sent), kSendFlags);
     if (n <= 0) {
       CloseSocket(s);
       response.error = "The connection to the RexLiveless server dropped.";
@@ -342,7 +353,44 @@ Response Request(const Endpoint& endpoint, const std::string& method, const std:
   if (headers.find("transfer-encoding: chunked") != std::string::npos) {
     response.body = DecodeChunked(response.body);
   }
+  if (const size_t at = headers.find("\r\nlocation:"); at != std::string::npos) {
+    const size_t from = raw.find_first_not_of(" \t", at + 11);
+    *location = raw.substr(from, raw.find("\r\n", from) - from);
+  }
   return response;
+}
+
+}  // namespace
+
+// Follows redirects (a game gamerpic's goes to the archive's CDN): HTTPS does
+// itself, plain HTTP here. The sign-in token only goes to the host it's for.
+Response Request(const Endpoint& endpoint, const std::string& method, const std::string& path,
+                 const std::string& body, const std::string& token, const std::string& content_type,
+                 int timeout_ms) {
+  if (endpoint.tls) return RequestTls(endpoint, method, path, body, token, content_type, timeout_ms);
+  Endpoint at = endpoint;
+  std::string m = method, p = path, b = body, t = token;
+  for (int hop = 0;; ++hop) {
+    std::string location;
+    Response r = at.tls ? RequestTls(at, m, p, b, t, content_type, timeout_ms)
+                        : RequestPlain(at, m, p, b, t, content_type, timeout_ms, &location);
+    const bool redirect = r.status == 301 || r.status == 302 || r.status == 303 || r.status == 307 || r.status == 308;
+    if (!redirect || location.empty() || hop == 3) return r;
+    if (location[0] == '/') {
+      p = location;
+    } else {
+      Endpoint next;
+      if (!ParseUrl(location, &next)) return r;
+      const size_t slash = location.find('/', location.find("://") + 3);
+      p = slash == std::string::npos ? "/" : location.substr(slash);
+      if (next.host != at.host || next.port != at.port) t.clear();
+      at = next;
+    }
+    if (r.status == 303 || ((r.status == 301 || r.status == 302) && m == "POST")) {
+      m = "GET";
+      b.clear();
+    }
+  }
 }
 
 Worker::Worker() : thread_([this] { Run(); }) {}
