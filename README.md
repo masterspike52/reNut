@@ -33,16 +33,20 @@ currently the only devices supported are linux devices and windows devices, i ha
 
  How to play
  ---------------------------------------------------
- * acquire your banjo-kazooie: nuts and bolts (usa) iso as well as the titleupdate
+ * Dump your banjo-kazooie: nuts and bolts (usa) iso as well as the titleupdate
 
-* download <a href="https://github.com/etonedemid/NutStaller/releases">nutstaller</a>
+* Download the Latest release of reNut
 
-* open nutstaller, and click do everything and select your iso from the first step, the titleupdate in the second step
+* Select Extract Game Disk and select your banjo-kazooie: nuts and bolts (usa) iso
+
+* Select Extract Title Update and select your title update 3 package file for banjo-kazooie: nuts and bolts (usa)
+
+* If you have the DLC package file for banjo-kazooie: nuts and bolts you can click ADD DLC to add your dlc package in which renut will extract it to the proper place at startup
 
 * click play
 
-* you can also use dlc by taking the package for the dlc (E41F20AAF7094B9AFCA8CC90489D689D72A5062B4D) and place it in a folder named dlc next to the exe(appimage for linux)
-
+the game will not let you start without dumping the assets for the iso and title update, if you already have them dumped you can point the launcher to them by clicking game folder and update folder 
+<img width="1912" height="1075" alt="image" src="https://github.com/user-attachments/assets/477b076d-4d25-4835-92b1-d55d024b5756" />
 
 
 Theres an android port
