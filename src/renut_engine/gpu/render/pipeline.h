@@ -74,6 +74,9 @@ struct PipelineInputs {
   plume::RenderShader *vertex_shader = nullptr;
   plume::RenderShader *pixel_shader = nullptr;
   const HostVertexLayout *layout = nullptr;  // the declaration's (key.layout_hash)
+  // The draw may be left out while the pipeline is built (renut_async_pipelines,
+  // behind the jiggy wall): GetPipelineLocked then returns nullptr for now.
+  bool may_wait_a_frame = false;
 };
 
 // Built pipeline for the key, compiling it on first use unless the built-in
@@ -94,6 +97,16 @@ void StopPipelinePrebuild();
 
 // The game made a shader object of this cache entry (any thread, any time).
 void PipelineShaderLoaded(const ShaderCacheEntry *entry);
+
+// Whether the workers still have pipelines to build for the shaders the game
+// has made, or a draw left out lately waits for one (renut_async_pipelines;
+// false when off). The jiggy wall stays shut meanwhile
+// (game/jiggy_wall_hold.cpp). Any thread.
+bool PipelineBuildsPending();
+
+// While the jiggy wall is held for them, the workers run at normal priority
+// instead of below it. Any thread.
+void BoostPipelineBuilds(bool boost);
 
 // For the memory report: pipelines the draws use, pipelines built ahead from
 // the list that no draw has asked for yet (all of them stay built), listed

@@ -4,6 +4,8 @@
 #include "renut_engine/gpu/render/pipeline.h"
 
 #include <algorithm>
+#include <atomic>
+#include <chrono>
 #include <condition_variable>
 #include <cstring>
 #include <ctime>
@@ -38,6 +40,7 @@
 #include "renut_engine/gpu/backend/backend.h"
 #include "renut_engine/gpu/render/format.h"
 #include "renut_engine/gpu/log.h"
+#include "renut_engine/gpu/guest/guest_memory.h"
 #include "renut_engine/gpu/guest/resources.h"
 #include "renut_engine/gpu/render/shader_library.h"
 
@@ -45,6 +48,13 @@ REXCVAR_DEFINE_BOOL(renut_pipeline_capture, false, "Nuts&Bolts/Debug",
                     "Writes each pipeline a draw had to build itself (none of the built-in "
                     "list's) to pipeline_capture_<date>.txt next to renut, for "
                     "tools/pipeline_cache.py to add to the built-in list");
+
+REXCVAR_DEFINE_BOOL(renut_async_pipelines, true, "Nuts&Bolts/Performance",
+                    "While the jiggy wall is shut (going into or out of a world), a draw whose "
+                    "pipeline is not built yet is left out while the worker threads build it, and "
+                    "the wall stays shut, still animating, until they are done, instead of the "
+                    "game stopping while the pipelines are built. Off: the game waits for every "
+                    "pipeline.");
 
 namespace renut::gpu {
 
@@ -384,15 +394,18 @@ struct PipelineCapture {
 };
 PipelineCapture g_capture;
 
-// A listed pipeline, as the worker threads build it.
+// A listed pipeline, as the worker threads build it; or, with
+// renut_async_pipelines, one a draw asked for (TakeAsync).
 struct Job {
   PipelineKey key{};
   uint64_t hash = 0;
-  const HostVertexLayout *layout = nullptr;  // g_built_in_layouts
+  const HostVertexLayout *layout = nullptr;  // g_built_in_layouts, or own_layout
+  std::unique_ptr<HostVertexLayout> own_layout;  // a draw's job: its declaration's, copied
   enum class Stage { Pending, Building, Done } stage = Stage::Pending;
   std::unique_ptr<plume::RenderPipeline> pipeline;  // Done: nullptr if taken or failed
   // Its shaders the game has not made yet (PipelineShaderLoaded); queued at 0.
   u32 shaders_missing = 0;
+  bool asked = false;  // a draw waits for it: queued at the front once
 };
 
 // The built-in list's layouts, made at the start.
@@ -471,6 +484,7 @@ struct Prebuild {
   std::condition_variable work;  // a job queued, or stopping
   std::condition_variable done;  // a job reached Done, or a worker ended
   std::vector<std::unique_ptr<Job>> jobs;
+  size_t listed = 0;             // of jobs, the built-in list's (the rest draws asked for)
   std::unordered_map<uint64_t, std::vector<Job *>> by_hash;
   std::deque<Job *> queue;       // shaders all made; may have been claimed since
   // The shaders the game has made, and the jobs waiting for each of the others.
@@ -494,10 +508,15 @@ plume::RenderShader *PrebuildShader(const ShaderCacheEntry *entry) {
   return slot.get();
 }
 
+// The jiggy wall is held shut for the workers (BoostPipelineBuilds): the game
+// waits on them, so they run at normal priority meanwhile.
+std::atomic<bool> g_prebuild_boost{false};
+
 void PrebuildWorker() {
 #if defined(_WIN32)
   SetThreadDescription(GetCurrentThread(), L"renut pipeline prebuild");
   SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
+  bool boosted = false;
 #endif
   std::unique_lock lock(g_prebuild.mutex);
   for (;;) {
@@ -508,6 +527,12 @@ void PrebuildWorker() {
     g_prebuild.queue.pop_front();
     if (job.stage != Job::Stage::Pending)
       continue;  // the render thread claimed it (TakePrebuilt)
+#if defined(_WIN32)
+    if (const bool boost = g_prebuild_boost.load(std::memory_order_relaxed); boost != boosted) {
+      boosted = boost;
+      SetThreadPriority(GetCurrentThread(), boost ? THREAD_PRIORITY_NORMAL : THREAD_PRIORITY_BELOW_NORMAL);
+    }
+#endif
     job.stage = Job::Stage::Building;
     ++g_prebuild.building;
     PipelineInputs inputs;
@@ -568,6 +593,96 @@ plume::RenderPipeline *TakePrebuilt(const PipelineKey &key, uint64_t hash,
   g_prebuild.done.wait(lock, [job] { return job->stage == Job::Stage::Done; });
   out = std::move(job->pipeline);
   return out.get();
+}
+
+// The jiggy wall, N&B's transition into and out of a world (IDA, TU3):
+// sub_82558DC0 begins one (requests + 1), its end takes the request away, and
+// sub_82559010, each frame, closes the wall over the screen while there are
+// requests (noting them in 'shown') and opens it again once there are none
+// ('shown' back to 0). A world's shaders come with its load, behind the wall,
+// and its pipelines with them (PipelineShaderLoaded): the first frames after
+// the load wanted hundreds of pipelines at once, and the game stopped,
+// animations and all, until the render thread had built them one by one.
+// Now, while the wall closes, stays shut or is held shut for the workers
+// (game/jiggy_wall_hold.cpp, PipelineBuildsPending), a draw whose pipeline is
+// not built yet is left out; once it opens, every pipeline is waited for again.
+constexpr u32 kJiggyWallRequests = 0x82E19EE0;  // dword_82E19EE0
+constexpr u32 kJiggyWallShown = 0x82E19EE4;     // dword_82E19EE4
+
+bool JiggyWallShut() {
+  auto word = [](u32 va) {
+    const auto *p = GuestPtr<const u32>(va);
+    return p ? rex::byte_swap(*p) : 0u;
+  };
+  return word(kJiggyWallRequests) || word(kJiggyWallShown);
+}
+
+u32 g_deferred_draws = 0;  // draws left out since the wall went up
+// When a draw was last left out (steady clock, ms): PipelineBuildsPending.
+std::atomic<int64_t> g_last_deferred_ms{0};
+
+int64_t SteadyMs() {
+  return std::chrono::duration_cast<std::chrono::milliseconds>(
+             std::chrono::steady_clock::now().time_since_epoch())
+      .count();
+}
+
+// Whether a draw may be left out for a pipeline the workers build
+// (renut_async_pipelines). Render thread.
+bool AsyncPipelinesNow() {
+  static bool active = false;
+  const bool async = REXCVAR_GET(renut_async_pipelines) && JiggyWallShut();
+  if (active && !async && g_deferred_draws) {
+    RGPU_INFO("Pipelines: {} draws waited a frame or more for pipelines the workers built, "
+              "behind the jiggy wall", g_deferred_draws);
+    g_deferred_draws = 0;
+  }
+  active = async;
+  return async;
+}
+
+// AsyncPipelinesNow: the pipeline for the key once a worker has built it.
+// Until then nullptr with 'ready' false, and the job goes to the front of the
+// workers' queue: the list's, or one made here for a pipeline the list lacks
+// (recorded for the capture). 'ready' true with nullptr: the caller builds it
+// as before (no workers, a shader outside the cache, or a failed build).
+// Render thread.
+plume::RenderPipeline *TakeAsync(const PipelineKey &key, uint64_t hash, const HostVertexLayout &layout,
+                                 std::unique_ptr<plume::RenderPipeline> &out, bool &ready) {
+  ready = true;
+  std::unique_lock lock(g_prebuild.mutex);
+  if (g_prebuild.workers == 0 || g_prebuild.stop || !key.vertex_shader)
+    return nullptr;
+  std::vector<Job *> &same_hash = g_prebuild.by_hash[hash];
+  Job *job = nullptr;
+  for (Job *j : same_hash) {
+    if (std::memcmp(&j->key, &key, sizeof(key)) == 0)
+      job = j;
+  }
+  if (!job) {
+    auto made = std::make_unique<Job>();
+    made->key = key;
+    made->hash = hash;
+    made->own_layout = std::make_unique<HostVertexLayout>(layout);
+    made->layout = made->own_layout.get();
+    job = made.get();
+    same_hash.push_back(job);
+    g_prebuild.jobs.push_back(std::move(made));
+    g_capture.Add(key, layout);
+  }
+  if (job->stage == Job::Stage::Done) {
+    out = std::move(job->pipeline);
+    return out.get();
+  }
+  ready = false;
+  ++g_deferred_draws;
+  g_last_deferred_ms.store(SteadyMs(), std::memory_order_relaxed);
+  if (job->stage == Job::Stage::Pending && !job->asked) {
+    job->asked = true;
+    g_prebuild.queue.push_front(job);
+    g_prebuild.work.notify_one();
+  }
+  return nullptr;
 }
 
 } // namespace
@@ -637,7 +752,14 @@ plume::RenderPipeline *GetPipelineLocked(const PipelineKey &key, const PipelineI
   }
   std::unique_ptr<plume::RenderPipeline> pipeline;
   bool claimed = false;
-  if (!TakePrebuilt(key, hash, pipeline, claimed)) {
+  if (inputs.may_wait_a_frame && AsyncPipelinesNow()) {
+    bool ready = true;
+    TakeAsync(key, hash, *inputs.layout, pipeline, ready);
+    if (!ready)
+      return nullptr;  // the draw is left out this time; nothing is kept for the key
+    claimed = pipeline != nullptr;  // a job's: captured when it was made, if at all
+  }
+  if (!pipeline && !TakePrebuilt(key, hash, pipeline, claimed)) {
     pipeline = Build(key, inputs);
     if (pipeline && !claimed)
       g_capture.Add(key, *inputs.layout);
@@ -675,6 +797,7 @@ void StartPipelinePrebuild() {
     return;
   std::lock_guard lock(g_prebuild.mutex);
   g_prebuild.jobs = std::move(jobs);
+  g_prebuild.listed = g_prebuild.jobs.size();
   for (const auto &job : g_prebuild.jobs) {
     g_prebuild.by_hash[job->hash].push_back(job.get());
     QueueOrWait(*job);
@@ -717,6 +840,30 @@ void PipelineShaderLoaded(const ShaderCacheEntry *entry) {
     g_prebuild.work.notify_all();
 }
 
+void BoostPipelineBuilds(bool boost) {
+  g_prebuild_boost.store(boost, std::memory_order_relaxed);
+}
+
+bool PipelineBuildsPending() {
+  // A draw left out this recently still waits for its pipeline.
+  constexpr int64_t kRecentDeferMs = 250;
+  if (!REXCVAR_GET(renut_async_pipelines))
+    return false;
+  const int64_t last = g_last_deferred_ms.load(std::memory_order_relaxed);
+  if (last && SteadyMs() - last < kRecentDeferMs)
+    return true;
+  std::lock_guard lock(g_prebuild.mutex);
+  if (g_prebuild.workers == 0 || g_prebuild.stop)
+    return false;
+  if (g_prebuild.building)
+    return true;
+  for (const Job *job : g_prebuild.queue) {
+    if (job->stage == Job::Stage::Pending)
+      return true;
+  }
+  return false;
+}
+
 PipelineCounts PipelineCountsLocked() {
   PipelineCounts counts;
   for (const auto &[hash, bucket] : g_pipelines) {
@@ -724,7 +871,7 @@ PipelineCounts PipelineCountsLocked() {
       counts.built += cached.pipeline ? 1 : 0;
   }
   std::lock_guard lock(g_prebuild.mutex);
-  counts.listed = g_prebuild.jobs.size();
+  counts.listed = g_prebuild.listed;
   for (const auto &job : g_prebuild.jobs) {
     counts.prebuilt_unused += job->pipeline ? 1 : 0;
     counts.waiting += job->stage == Job::Stage::Pending && job->shaders_missing ? 1 : 0;

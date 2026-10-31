@@ -6,7 +6,7 @@
 # in), the desktop entry and the icon. linuxdeploy's exclude list keeps the
 # system's own C, graphics and audio libraries out: the Vulkan driver is the
 # user's. The shader cache is compiled into the executable, and the game data
-# is not packed: the path setup asks for it on first run. Settings, logs and
+# is not packed: the launcher menu extracts it from the disc image. Settings, logs and
 # saves go to ~/.local/share/renut (src/renut_engine/app/app_paths.h), as the
 # AppImage itself is mounted read-only.
 #

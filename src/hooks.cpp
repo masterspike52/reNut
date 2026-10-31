@@ -44,7 +44,7 @@ REXCVAR_DEFINE_BOOL(infinite_parts, false, "Nuts&Bolts/Cheats", "vehicle parts n
 REXCVAR_DEFINE_STRING(banjo_skin, "default", "Nuts&Bolts/Skins", "Banjo skin override")
 .allowed({ "default", "robot", "tuxedo" });
 // Name = "No Out of Bounds Reset"
-REXCVAR_DEFINE_BOOL(no_out_of_bounds_reset, false, "Nuts&Bolts/Cheats", "Going past the edge of the world no longer resets Banjo with a jiggy wall. Off in online multiplayer unless the host allows cheats.")
+REXCVAR_DEFINE_BOOL(no_out_of_bounds_reset, false, "Nuts&Bolts/Cheats", "Vehicles drive and fly through Showdown Town's invisible walls and ceiling, and going past the edge of the world no longer resets Banjo with a jiggy wall. Off in online multiplayer unless the host allows cheats.")
 .validator(CheatValueAllowed);
 // Name = "Unlock All Parts"
 REXCVAR_DEFINE_BOOL(unlock_all_parts, false, "Nuts&Bolts/Cheats", "Every vehicle part crate is unlocked in the garage, whether or not you've earned it. Takes effect on the next level load. Off in online multiplayer unless the host allows cheats.")
@@ -85,9 +85,10 @@ bool town_jet_thrust() {
 // 0x08000000 (the edge walls). The game's contact callback (sub_823456A0)
 // has a mesh contact's material flags at 0x8234591C, r25 for body A's and
 // r23 for body B's (0 when that body isn't a mesh), r24 and r27 being bodies
-// A and B; 0x82345960 rejects the contact. True rejects a vehicle's contact
-// with them in the town: vehicle bodies are on filter layer 7 with the
-// vehicle as user data (sub_825F87D0), and the vehicle's world + 88 is 1 there.
+// A and B; 0x82345960 rejects the contact. With no_out_of_bounds_reset on,
+// true rejects a vehicle's contact with them in the town: vehicle bodies are
+// on filter layer 7 with the vehicle as user data (sub_825F87D0), and the
+// vehicle's world + 88 is 1 there.
 static constexpr uint32_t kTownBoundaryMaterialFlags = 0x0C000000;
 static constexpr uint32_t kBodyUserData = 0x0C;
 static constexpr uint32_t kBodyFilterInfo = 0x2C;
@@ -108,7 +109,7 @@ static bool IsVehicleInTown(uint32_t body) {
 }
 
 bool town_boundary_pass(PPCRegister& r23, PPCRegister& r24, PPCRegister& r25, PPCRegister& r27) {
-    if (!REXCVAR_GET(change_vehicles_anywhere) || !CheatsAllowed())
+    if (!REXCVAR_GET(no_out_of_bounds_reset) || !CheatsAllowed())
         return false;
     return ((r25.u32 & kTownBoundaryMaterialFlags) && IsVehicleInTown(r27.u32)) ||
            ((r23.u32 & kTownBoundaryMaterialFlags) && IsVehicleInTown(r24.u32));

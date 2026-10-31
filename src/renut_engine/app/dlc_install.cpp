@@ -29,9 +29,11 @@ namespace {
 namespace fs = std::filesystem;
 
 // An Xbox 360 package's header (big-endian): the magic, then at 0x344 the
-// content type, 0x360 the title ID and 0x411 the display name (UTF-16).
+// content type, 0x354 the media ID, 0x360 the title ID and 0x411 the display
+// name (UTF-16).
 constexpr size_t kHeaderBytes = 0x500;
 constexpr size_t kContentTypeOffset = 0x344;
+constexpr size_t kMediaIdOffset = 0x354;
 constexpr size_t kTitleIdOffset = 0x360;
 constexpr size_t kDisplayNameOffset = 0x411;
 constexpr size_t kDisplayNameChars = 64;
@@ -48,34 +50,6 @@ fs::path g_user_data_root;
 
 uint32_t LoadBe32(const uint8_t *p) {
     return uint32_t(p[0]) << 24 | uint32_t(p[1]) << 16 | uint32_t(p[2]) << 8 | p[3];
-}
-
-struct Package {
-    uint32_t content_type = 0;
-    uint32_t title_id = 0;
-    std::string name;  // display name (ASCII part)
-};
-
-// The package's header, or nothing if the file isn't an Xbox 360 package.
-bool ReadPackage(const fs::path &path, Package &out) {
-    std::ifstream f(path, std::ios::binary);
-    std::array<uint8_t, kHeaderBytes> h{};
-    if (!f.read(reinterpret_cast<char *>(h.data()), h.size()))
-        return false;
-    const std::string magic(reinterpret_cast<const char *>(h.data()), 4);
-    if (magic != "LIVE" && magic != "PIRS" && magic != "CON ")
-        return false;
-    out.content_type = LoadBe32(h.data() + kContentTypeOffset);
-    out.title_id = LoadBe32(h.data() + kTitleIdOffset);
-    out.name.clear();
-    for (size_t i = 0; i < kDisplayNameChars; ++i) {
-        const uint8_t *c = h.data() + kDisplayNameOffset + 2 * i;
-        const uint16_t ch = uint16_t(c[0] << 8 | c[1]);
-        if (!ch)
-            break;
-        out.name.push_back(ch < 0x80 ? char(ch) : '?');
-    }
-    return true;
 }
 
 std::string HexTitle(uint32_t title_id) {
@@ -107,6 +81,35 @@ std::string ListEntry(const std::string &file_name, uintmax_t size) {
 
 } // namespace
 
+bool ReadPackageInfo(const fs::path &path, PackageInfo &out) {
+    std::ifstream f(path, std::ios::binary);
+    std::array<uint8_t, kHeaderBytes> h{};
+    if (!f.read(reinterpret_cast<char *>(h.data()), h.size()))
+        return false;
+    const std::string magic(reinterpret_cast<const char *>(h.data()), 4);
+    if (magic != "LIVE" && magic != "PIRS" && magic != "CON ")
+        return false;
+    out.content_type = LoadBe32(h.data() + kContentTypeOffset);
+    out.media_id = LoadBe32(h.data() + kMediaIdOffset);
+    out.title_id = LoadBe32(h.data() + kTitleIdOffset);
+    out.name.clear();
+    for (size_t i = 0; i < kDisplayNameChars; ++i) {
+        const uint8_t *c = h.data() + kDisplayNameOffset + 2 * i;
+        const uint16_t ch = uint16_t(c[0] << 8 | c[1]);
+        if (!ch)
+            break;
+        out.name.push_back(ch < 0x80 ? char(ch) : '?');
+    }
+    return true;
+}
+
+fs::path PackageFolder() {
+    fs::path folder = rex::to_path(REXCVAR_GET(renut_dlc_folder));
+    if (folder.is_relative())
+        folder = renut::paths::WritableFolder() / folder;
+    return folder;
+}
+
 void SetUserDataRoot(const fs::path &root) {
     g_user_data_root = root;
 }
@@ -114,9 +117,7 @@ void SetUserDataRoot(const fs::path &root) {
 void InstallPackages(rex::Runtime *runtime) {
     if (!runtime || !runtime->kernel_state())
         return;
-    fs::path folder = rex::to_path(REXCVAR_GET(renut_dlc_folder));
-    if (folder.is_relative())
-        folder = renut::paths::WritableFolder() / folder;
+    const fs::path folder = PackageFolder();
     std::error_code ec;
     fs::create_directories(folder, ec);
 
@@ -136,8 +137,8 @@ void InstallPackages(rex::Runtime *runtime) {
 
     for (const fs::path &path : files) {
         const std::string file_name = rex::path_to_utf8(path.filename());
-        Package package;
-        if (!ReadPackage(path, package)) {
+        PackageInfo package;
+        if (!ReadPackageInfo(path, package)) {
             RNUT_WARN("DLC: {} is not an Xbox 360 package; left alone", file_name);
             continue;
         }
