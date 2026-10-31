@@ -14,6 +14,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdlib>
+#include <cstring>
 #include <string>
 #include <thread>
 
@@ -94,58 +95,142 @@ REX_HOOK_RAW(sub_824FF2F0)
 	renut::game::ChallengeMusicTick(ctx, base, 0, false);
 }
 
-// Havok steps N&B's physics in fixed 1/60 s steps on its own thread
-// (sub_82353060): the frame sets its time marker to the current time plus
-// the frame's delta (capped at four steps), and it steps the world a full
-// step at a time until the current time, the earlier of the step time and the
-// marker, reaches the marker. On the console's vsynced 30 fps every frame is
-// two whole steps and ends on a step. At 60 fps the frames are a step long
-// give or take the timer's jitter: a frame a hair short still takes a step,
-// one a hair long takes two, and the world drifts ahead of the marker it is
-// shown at. Whatever the game pins in place each frame (Banjo on a ledge, a
-// tightrope or a ladder) is then flung about. So the frame's delta is sent as
-// whole steps, the nearest number to it plus what earlier frames left over,
-// and every frame ends on a step as on the console.
+// Havok steps the physics on its own thread (sub_82353060, command 8 from
+// physicsStepSend, sub_8224B3A8): fixed 1/60 s steps up to a time marker set
+// from the frame delta (at most four steps). On the console's 30 fps every
+// frame was exactly two steps. At 60 fps and above, timer jitter makes frames
+// take zero or two steps, which flings about whatever the game pins in place
+// each frame (Banjo on ledges and ladders, vehicles).
+//
+// Fix: send each frame a whole number of steps, carrying the remainder. Above
+// 60 fps the step is split into n (1/120 s, 1/180 s, ...) so a step is about a
+// frame long and every frame takes one. Split steps cost the same CPU each,
+// and the four-step cap then covers a shorter hitch.
 REXCVAR_DEFINE_BOOL(renut_physics_whole_steps, true, "Nuts&Bolts/Performance",
-	"Advance physics by whole 1/60 s steps each frame, carrying the remainder, as the "
-	"console's 30 fps did. Off: the game's own stepping, which flings Banjo about on "
-	"ledges, tightropes and ladders at 60 fps.");
+	"Advance physics by whole steps each frame. Off: the game's own stepping, which "
+	"flings Banjo about on ledges and ladders at 60 fps and above.");
+
+REXCVAR_DEFINE_BOOL(renut_physics_substeps, true, "Nuts&Bolts/Performance",
+	"Above 60 fps, split the physics step to match the frame rate so every frame "
+	"advances physics. Needs renut_physics_whole_steps.");
 
 static constexpr float kPhysicsStep = 0.016666668f;  // the step sub_8224B3A8 sends
-static constexpr int kMaxPhysicsSteps = 4;            // the physics thread's cap
-static constexpr uint32_t kPhysicsWorldOffset = 60;
-static constexpr uint32_t kPhysicsDueOffset = 232;    // cleared when the step is sent
-static double g_physicsCarry = 0.0;
+static constexpr int kMaxPhysicsSteps = 4;            // the physics thread's cap (x step)
+static constexpr int kMaxSubsteps = 8;                // 1/480 s, for up to 480 fps
+// Keeps timer noise near a multiple of 60 fps from changing the split.
+static constexpr double kSubstepSlack = 0.1;
+static constexpr double kSubstepHysteresis = 0.1;
 
-REX_EXTERN(__imp__sub_8224B3A8);
+REX_EXTERN(__imp__sub_82353060);
 
-static uint32_t renutLoad32(const uint8_t* base, uint32_t va)
+// Physics thread state (sub_82353060 runs only there).
+static double g_physicsCarry = 0.0;          // seconds the steps sent are behind
+static std::atomic<int> g_physicsSubsteps{ 1 };  // n: the 1/60 s step split in n
+static double g_physicsFrameAverage = 0.0;   // seconds between frames, smoothed
+static std::chrono::steady_clock::time_point g_physicsLastFrame{};
+
+// n from the measured frame interval (not the game's delta, which slow
+// motion scales).
+static int renutPhysicsSubsteps()
+{
+	using clock = std::chrono::steady_clock;
+	const clock::time_point now = clock::now();
+	const double interval = g_physicsLastFrame.time_since_epoch().count() == 0
+		? 0.0 : std::chrono::duration<double>(now - g_physicsLastFrame).count();
+	g_physicsLastFrame = now;
+
+	if (!REXCVAR_GET(renut_physics_substeps)) {
+		g_physicsFrameAverage = 0.0;
+		return 1;
+	}
+	// Ignore pauses, loading and hitches.
+	if (interval > 0.0 && interval < 0.1)
+		g_physicsFrameAverage = g_physicsFrameAverage > 0.0
+			? g_physicsFrameAverage + (interval - g_physicsFrameAverage) * 0.1
+			: interval;
+	if (g_physicsFrameAverage <= 0.0)
+		return g_physicsSubsteps.load(std::memory_order_relaxed);
+
+	const double frames = double(kPhysicsStep) / g_physicsFrameAverage;  // frames a 1/60 s step
+	// Fewest splits that make a step no longer than a frame.
+	const int fit = std::max(1, int(std::ceil(frames - kSubstepSlack)));
+	int n = g_physicsSubsteps.load(std::memory_order_relaxed);
+	if (fit > n || frames < n - 1 - kSubstepHysteresis)
+		n = fit;
+	return std::clamp(n, 1, kMaxSubsteps);
+}
+
+// void physicsStep(float frameDelta, float step), physics thread.
+REX_HOOK_RAW(sub_82353060)
+{
+	const int substeps = renutPhysicsSubsteps();
+	if (!REXCVAR_GET(renut_physics_whole_steps) || float(ctx.f2.f64) != kPhysicsStep) {
+		g_physicsCarry = 0.0;
+		g_physicsSubsteps.store(1, std::memory_order_relaxed);
+		__imp__sub_82353060(ctx, base);
+		return;
+	}
+	g_physicsSubsteps.store(substeps, std::memory_order_relaxed);
+	const float step = kPhysicsStep / float(substeps);
+	const double wanted = ctx.f1.f64 + g_physicsCarry;
+	int steps = int(std::floor(wanted / step + 0.5));
+	// With split steps a frame takes at least one step, unless physics is
+	// already well ahead.
+	if (substeps > 1 && ctx.f1.f64 >= 0.5 * step && wanted >= 0.25 * step)
+		steps = std::max(steps, 1);
+	// The physics thread's own cap.
+	steps = std::clamp(steps, 0, kMaxPhysicsSteps);
+	const double sent = double(float(steps) * step);
+	g_physicsCarry = std::clamp(wanted - sent, -double(step), double(step));
+	ctx.f1.f64 = sent;
+	ctx.f2.f64 = double(step);
+	__imp__sub_82353060(ctx, base);
+}
+
+static uint32_t renutLoadU32(const uint8_t* base, uint32_t va)
 {
 	return rex::byte_swap(*reinterpret_cast<const uint32_t*>(base + va));
 }
 
-// void physicsStepSend(game*, ?, float frameDelta): queues the physics
-// thread's step (command 8: the delta and the 1/60 s step), from the game
-// tick (sub_822309B8, delta = time scale x frame delta) and sub_82268F78.
-REX_HOOK_RAW(sub_8224B3A8)
-{
-	const uint32_t game = ctx.r3.u32;
-	const bool due = renutLoad32(base, game + kPhysicsWorldOffset) &&
-		renutLoad32(base, game + kPhysicsDueOffset);
-	if (!due || !REXCVAR_GET(renut_physics_whole_steps)) {
-		__imp__sub_8224B3A8(ctx, base);
-		return;
-	}
-	const double wanted = ctx.f1.f64 + g_physicsCarry;
-	const int steps = std::clamp(int(std::floor(wanted / kPhysicsStep + 0.5)), 0, kMaxPhysicsSteps);
-	const double sent = double(float(steps * kPhysicsStep));
-	ctx.f1.f64 = sent;
-	__imp__sub_8224B3A8(ctx, base);
-	// Sent unless the game had no physics world for this thread.
-	if (!renutLoad32(base, game + kPhysicsDueOffset))
-		g_physicsCarry = std::clamp(wanted - sent, -double(kPhysicsStep), double(kPhysicsStep));
-}
+// Vehicle steering (vtable 0x82115B2C, calcSteering sub_8233FA80) moves each
+// wheel's angle towards its target with sub_82210520, which wraps to [0, 2pi).
+// While steering the angles are kept in [-pi, pi), but with the stick centred
+// they are not: a wheel released from a left turn can settle just under 2pi,
+// which reads as full steering lock, so the vehicle keeps turning. Short
+// (split) steps hit this almost every time. Wrap the angles back to [-pi, pi).
 
+static constexpr uint32_t kSteeringWheelCountOffset = 12;  // steering + 12: wheel count
+static constexpr uint32_t kSteeringOutWheelsOffset = 4;    // out + 4: wheel angles
+
+REX_EXTERN(__imp__sub_8233FA80);
+
+// void calcSteering(this, float dt, vehicle, driverInput, SteeringAnglesOutput* out)
+REX_HOOK_RAW(sub_8233FA80)
+{
+	const uint32_t steering = ctx.r3.u32;
+	const uint32_t out = ctx.r7.u32;
+	__imp__sub_8233FA80(ctx, base);
+	if (!steering || !out)
+		return;
+	const int32_t count = int32_t(renutLoadU32(base, steering + kSteeringWheelCountOffset));
+	const uint32_t wheels = renutLoadU32(base, out + kSteeringOutWheelsOffset);
+	if (!wheels || count <= 0 || count > 64)
+		return;
+	constexpr float kPi = 3.14159265f;
+	constexpr float kTwoPi = 6.28318531f;
+	for (int32_t i = 0; i < count; ++i) {
+		uint32_t* slot = reinterpret_cast<uint32_t*>(base + wheels + 4 * uint32_t(i));
+		const uint32_t raw = rex::byte_swap(*slot);
+		float angle;
+		std::memcpy(&angle, &raw, sizeof(angle));
+		if (!(angle >= kPi || angle < -kPi))
+			continue;
+		angle = angle >= kPi ? angle - kTwoPi : angle + kTwoPi;
+		uint32_t fixed;
+		std::memcpy(&fixed, &angle, sizeof(fixed));
+		*slot = rex::byte_swap(fixed);
+	}
+}
 
 REXCVAR_DEFINE_STRING(frame_cap, "60", "Nuts&Bolts/Performance",
 	"Frame-rate cap (low-overhead limiter that cuts GPU load). "
