@@ -5,6 +5,10 @@
 Created using the <a href="https://github.com/rexglue/rexglue-sdk">Rexglue-SDK</a>
 
 
+
+
+**NOTICE** ***The code has heavy ai useage, your opinion on ai useage means very little to me, if you have a problem with it you're free to fork the repo and redo it your own way. You are also free to fork the repo for any other purpose you feel necessary(this is the purpose of open source projects). I do not use Licenses because they say the same thing with more jargon than what people are willing to read.**
+
 Discord
 ----------------------------------------------
 https://discord.gg/D5Bz2ZsHdY - you can join the discord here
@@ -17,8 +21,6 @@ Issues
 About
 --------------------------------------------
 * Renut is a Recompilation of Banjo-Kazooie: Nuts and Bolts using the Rexglue-SDK
-
-* the code has heavy ai useage, your opinion on ai useage means very little to me, if you have a problem with it you're free to fork the repo and redo it your own way (this is the purpose of open source projects)
 
 * Renut does have a native renderer in which the games D3D functions are natively hooked to run through plume as well as compiles its recompiled shaders from xenosrecomp into its executables which makes the latest release different from previous releases which used the xenos emulation pipeline that rexglue provides for debugging
 
