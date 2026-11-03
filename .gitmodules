@@ -1,0 +1,3 @@
+[submodule "thirdparty/reblue-XenosRecomp"]
+	path = thirdparty/reblue-XenosRecomp
+	url = https://github.com/masterspike52/reblue-XenosRecomp.git
