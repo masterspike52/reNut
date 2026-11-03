@@ -33,19 +33,21 @@ currently the only devices supported are linux devices and windows devices, i ha
 
  How to play
  ---------------------------------------------------
-* Dump your banjo-kazooie: nuts and bolts (usa) iso as well as the titleupdate
+* Dump your banjo-kazooie: nuts and bolts (usa or europe) iso as well as the titleupdate
 
 * Download the Latest release of reNut
 
-* Select Extract Game Disk and select your banjo-kazooie: nuts and bolts (usa) iso, if you already have it extracted you can set that location with the Game folder option
+* Select Extract Game Disk and select your banjo-kazooie: nuts and bolts (usa or europe) iso, if you already have it extracted you can set that location with the Game folder option
 
-* Select Extract Title Update and select your title update 3 package file for banjo-kazooie: nuts and bolts (usa), if you already have it dumped you can set it with the Update Folder option
+* Select Extract Title Update and select your title update 3 package file for banjo-kazooie: nuts and bolts (usa or europe), if you already have it dumped you can set it with the Update Folder option
 
 * If you have the DLC package file for banjo-kazooie: nuts and bolts you can click ADD DLC to add your dlc package in which renut will extract it to the proper place at startup
 
 * click play
 
 the game will not let you start without dumping the assets for the iso and title update, if you already have them dumped you can point the launcher to them by clicking game folder and update folder 
+
+the US (NTSC) and EU (PAL) discs are taken; other regions (like japan) are not supported yet. the title update has to match your disc's region (the US title update 3 for a US disc, the EU title update 3 for an EU disc)
 <img width="1912" height="1075" alt="image" src="https://github.com/user-attachments/assets/80e5b460-b066-4221-aa5c-0543cdbc8745" />
 
 

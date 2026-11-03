@@ -850,7 +850,8 @@ struct LauncherMenu::Impl {
             paths.game = picked[0];
             Changed();
             if (status.other_region)
-                Say("That folder has another region's Nuts & Bolts: reNut runs the US (NTSC) version.", true);
+                Say("That folder has another region's Nuts & Bolts: reNut runs the US (NTSC) or EU (PAL) version.",
+                    true);
             else
                 Say(status.game ? "The game's files are there." : "Extract the game disc into it.", false);
             break;
@@ -880,7 +881,8 @@ struct LauncherMenu::Impl {
         if (!RowEnabled(row, busy)) {
             if (row == Row::kPlay && !busy)
                 Say(status.other_region ? "The game folder has another region's Nuts & Bolts: reNut runs the US "
-                                          "(NTSC) version. Extract the US disc, or choose a folder that has it."
+                                          "(NTSC) or EU (PAL) version. Extract one of those discs, or choose a "
+                                          "folder that has one."
                     : !status.game      ? "Extract the game disc first (or choose a game folder that has it)."
                                         : "Extract Title Update #3 first: reNut runs on it.",
                     true);
