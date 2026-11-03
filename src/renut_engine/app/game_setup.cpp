@@ -34,6 +34,7 @@ using rex::X_STATUS;  // X_STATUS_SUCCESS names it unqualified
 
 constexpr uint32_t kTitleId = 0x4D5307ED;  // Banjo-Kazooie: Nuts & Bolts
 constexpr uint32_t kUsMediaId = 0x3E567DFF;  // its US (NTSC) disc, which reNut is
+constexpr uint32_t kEuMediaId = 0x56F18A12;  // its EU (PAL) disc, which has the same files
 constexpr uint32_t kContentTypeTitleUpdate = 0x000B0000;
 constexpr uint32_t kContentTypeDlc = 2;
 // Where the console installs DLC in the save folder (dlc_install.cpp): the
@@ -45,6 +46,12 @@ constexpr const char kSystemUpdate[] = "$SystemUpdate";
 // that still has it was cut short (a stopped job, a full disk, a crash).
 constexpr const char kUnfinished[] = ".renut_unfinished";
 constexpr size_t kChunkBytes = size_t(8) << 20;
+
+// Which discs the setup takes: the release whose code reNut recompiled and the
+// EU release, whose game files are the same as that release's.
+bool IsSupportedMedia(uint32_t media_id) {
+    return media_id == kUsMediaId || media_id == kEuMediaId;
+}
 
 // A job's failure, said to the player as it is.
 struct Failure : std::runtime_error {
@@ -218,8 +225,8 @@ std::string ExtractDisc(const fs::path &image, const fs::path &game) {
     const XexIds ids = DiscXexIds(xex);
     if (ids.title_id != kTitleId)
         throw Failure(fmt::format("That is another game's disc (title {:08X}), not Nuts & Bolts.", ids.title_id));
-    if (ids.media_id != kUsMediaId)
-        throw Failure("That is another region's Nuts & Bolts disc: reNut runs the US (NTSC) version.");
+    if (!IsSupportedMedia(ids.media_id))
+        throw Failure("That is another region's Nuts & Bolts disc: reNut runs the US (NTSC) or EU (PAL) version.");
     g.total = TreeBytes(root, kSystemUpdate);
     std::vector<uint8_t> buffer(kChunkBytes);
     MarkUnfinished(game);
@@ -236,8 +243,8 @@ std::string ExtractTitleUpdate(const fs::path &package, const fs::path &game, co
         throw Failure("That package is for another game.");
     if (info.content_type != kContentTypeTitleUpdate)
         throw Failure("That package is not a title update.");
-    if (info.media_id != kUsMediaId)
-        throw Failure("That title update is for another region's Nuts & Bolts: reNut needs the US (NTSC) one.");
+    if (!IsSupportedMedia(info.media_id))
+        throw Failure("That title update is for a region reNut does not take: it needs the US (NTSC) or EU (PAL) one.");
     if (info.name.find("Title Update #") != std::string::npos &&
         info.name.find("Title Update #3") == std::string::npos)
         throw Failure("That is " + info.name + "; reNut runs on Title Update #3.");
@@ -387,7 +394,7 @@ Status Check(const Paths &paths) {
     std::error_code ec;
     if (fs::is_regular_file(paths.game / "default.xex", ec) && !fs::exists(paths.game / kUnfinished, ec)) {
         const XexIds ids = FileXexIds(paths.game / "default.xex");
-        s.game = ids.title_id == kTitleId && ids.media_id == kUsMediaId;
+        s.game = ids.title_id == kTitleId && IsSupportedMedia(ids.media_id);
         s.other_region = !s.game;
     }
     if (fs::is_regular_file(paths.game / "default.xexp", ec) && fs::is_directory(paths.update, ec) &&
