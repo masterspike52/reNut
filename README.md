@@ -9,7 +9,7 @@ Created using the <a href="https://github.com/rexglue/rexglue-sdk">Rexglue-SDK</
 
 **NOTICE**
 -----------------------------------------------------
-**The code has heavy ai useage, your opinion on ai useage means very little to me, if you have a problem with it you're free to fork the repo and redo it your own way. You are also free to fork the repo for any other purpose you feel necessary(this is the purpose of open source projects). I do not use Licenses because they say the same thing with more jargon than what people are willing to read.**
+**The code has heavy ai useage, your opinion on ai useage means very little to me, if you have a problem with it you're free to fork the repo and redo it your own way. You are also free to fork the repo for any other purpose you feel necessary outside of commercial use. I do not use Licenses because they say the same thing with more jargon than what people are willing to read.**
 
 Discord
 ----------------------------------------------
