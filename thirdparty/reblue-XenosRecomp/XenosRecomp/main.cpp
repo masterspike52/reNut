@@ -298,7 +298,7 @@ int main(int argc, char** argv)
                 dxil.insert(dxil.end(), reinterpret_cast<uint8_t *>(shader.dxil->GetBufferPointer()),
                     reinterpret_cast<uint8_t *>(shader.dxil->GetBufferPointer()) + shader.dxil->GetBufferSize());
             }
-            
+
             spirv.insert(spirv.end(), shader.spirv.begin(), shader.spirv.end());
         }
 
