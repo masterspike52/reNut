@@ -10,6 +10,23 @@ Discord
 https://discord.gg/D5Bz2ZsHdY - you can join the discord here
 
 
+**NOTICE**
+----------------------------------
+* the code has heavy ai useage, your opinion on ai useage means very little to me, if you have a problem with it you're free to fork the repo and redo it your own way (this is the purpose of open source projects)
+
+* if you wish to fork the repo for any reason outside of commercial use that is fine with me (you couldn't sell it anyways since its a recomp and the original holder is rare)
+
+* if you wish to advertise your fork on social media please be sure to mention my repo, not mentioning my repo is considered a blatant slap to the face as the original creator of renut
+
+* if you choose to download renut from somewhere other than this github, i am not responsible for any malicious contents that download may provide for i will never provide a release outside of github
+
+* you are free to have launchers (like quiverlauncher, goopie, etc) download from the gihub but not upload the files themselves to the launcher, doing such will be taken as a blatant stealing of any work on this github
+
+* renut has no affiliation with microsoft, rare, or their affiliates.
+
+* you must provide your own iso, titleupdate, and optional dlc to use renut, it is ill advised to download versions of the game with these things bundled for they could contain malware.
+
+
 Issues
 -------------------------------------------
 * the games physics are funky above 60fps, please set your frame limit to 60 in F4 > Performance to avoid physics issues like banjo being flung through space. i will not be changing this because fucking with the physics engine is scary and it scared me to mess with it for 60.
@@ -18,7 +35,6 @@ About
 --------------------------------------------
 * Renut is a Recompilation of Banjo-Kazooie: Nuts and Bolts using the Rexglue-SDK
 
-* the code has heavy ai useage, your opinion on ai useage means very little to me, if you have a problem with it you're free to fork the repo and redo it your own way (this is the purpose of open source projects)
 
 * Renut does have a native renderer in which the games D3D functions are natively hooked to run through plume as well as compiles its recompiled shaders from xenosrecomp into its executables which makes the latest release different from previous releases which used the xenos emulation pipeline that rexglue provides for debugging
 
