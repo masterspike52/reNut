@@ -15,6 +15,7 @@
 #include "renut_engine/app/save_headers.h"
 #include "renut_engine/mods/mod_loader.h"
 #include "renut_engine/game/cheats.h"
+#include "renut_engine/game/language.h"
 #include "renut_engine/game/mouse_camera.h"
 #include "renut_engine/game/controllers.h"
 #include "renut_engine/game/keyboard_input.h"
@@ -77,6 +78,7 @@ public:
         sentrywork::Init({.app_name = app_name_,
                           .database_dir = renut::paths::WritableFolder() / "sentry",
                           .tags = {{"build", RENUT_BUILD}}});
+        renut::game::ApplyLanguage();
     }
 
     // The game folder is mounted and the XEX loaded; the game has not
