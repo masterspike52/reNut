@@ -37,6 +37,7 @@ set(RENUT_SOURCES
 	src/renut_engine/game/status_dials.cpp
 	src/renut_engine/game/notes.cpp
 	src/renut_engine/game/cheats.cpp
+	src/renut_engine/game/language.cpp
 	src/renut_engine/game/flag_editor.cpp
 	src/renut_engine/game/walk_up_slopes.cpp
 	src/renut_engine/game/challenge_replay.cpp
