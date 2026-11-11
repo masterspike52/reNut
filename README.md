@@ -1,4 +1,5 @@
-<img width="1920" height="1080" alt="renut logo" src="https://github.com/user-attachments/assets/273bee28-755f-4494-920f-9333af72091e" />
+<img width="1280" height="720" alt="RENUT_title_final" src="https://github.com/user-attachments/assets/c496a67f-9176-4258-addc-a949e186cd04" />
+
 
 
 
