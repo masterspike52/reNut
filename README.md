@@ -1,4 +1,5 @@
-<img width="1280" height="720" alt="RENUT_title_final" src="https://github.com/user-attachments/assets/c496a67f-9176-4258-addc-a949e186cd04" />
+<img width="1280" height="720" alt="image" src="https://github.com/user-attachments/assets/4bbb3a93-667c-4fba-8a0b-40af41ab8816" />
+
 
 
 
