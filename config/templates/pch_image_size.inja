@@ -1,0 +1,5 @@
+// The SDK maps the base XEX (0x10A0000) before TU3 shrinks it to {{ image_size }}, and the function table sits
+// at REX_IMAGE_BASE + REX_IMAGE_SIZE, so it goes past the larger of the two.
+#undef REX_IMAGE_SIZE
+#define REX_IMAGE_SIZE 0x10A0000ull
+
