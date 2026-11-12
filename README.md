@@ -137,7 +137,7 @@ the <a href="https://discord.gg/ksm4vVbBf">Rexglue SDK discord</a> for helping w
 <br>
 SolarCookies for a handful of midasm hooks 
 <br>
-ValcomDrifty for the renut logo
+Rayzo for the renut logo and custom renut settings icon
 <br>
 OlieGamerTV for the information and documentations made for nuts and bolts specifically as well as a multitude of other things as well as assisting with other things about nuts and bolts
 <br>
