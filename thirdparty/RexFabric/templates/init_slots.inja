@@ -1,0 +1,12 @@
+
+//=============================================================================
+// RexFabric Hook Slots
+//=============================================================================
+
+{% for fn in functions %}{% if not fn.is_import %}rexfabric::HookSlot rexfabric_slot_{{ fn.name }}{ {{ fn.address }} };
+{% endif %}{% endfor %}
+extern const rexfabric::SlotEntry rexfabric_slots[] = {
+{% for fn in functions %}{% if not fn.is_import %}	{ {{ fn.address }}, &rexfabric_slot_{{ fn.name }} },
+{% endif %}{% endfor %}};
+
+extern const uint32_t rexfabric_slot_count = sizeof(rexfabric_slots) / sizeof(rexfabric_slots[0]);

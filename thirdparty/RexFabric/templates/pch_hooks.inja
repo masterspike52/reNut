@@ -1,0 +1,18 @@
+//=============================================================================
+// RexFabric Hook Slots
+//=============================================================================
+// Each recompiled function checks its slot on entry: with hooks attached it
+// hands the call to RexFabric, otherwise it tail calls its own body. A project
+// that defines the function itself (REX_HOOK) still replaces it outright.
+
+#include <rexfabric/hook_slot.h>
+
+#define DEFINE_REX_FUNC(name) \
+  extern rexfabric::HookSlot rexfabric_slot_##name; \
+  REX_EXTERN(__imp__##name); \
+  __attribute__((weak, noinline)) extern "C" REX_FUNC(name) { \
+    if (rexfabric_slot_##name.chain.load(std::memory_order_relaxed)) [[unlikely]] return rexfabric::Dispatch(rexfabric_slot_##name, __imp__##name, ctx, base); \
+    REX_MUSTTAIL return __imp__##name(ctx, base); \
+  } \
+  REX_RECOMPILED_CODE_SECTION REX_EXTERN(__imp__##name)
+

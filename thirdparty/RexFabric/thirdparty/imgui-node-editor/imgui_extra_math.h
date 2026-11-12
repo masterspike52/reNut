@@ -1,0 +1,74 @@
+//------------------------------------------------------------------------------
+// LICENSE
+//   This software is dual-licensed to the public domain and under the following
+//   license: you are granted a perpetual, irrevocable license to copy, modify,
+//   publish, and distribute this file as you see fit.
+//
+// CREDITS
+//   Written by Michal Cichon
+//------------------------------------------------------------------------------
+# ifndef IMGUI_EXTRA_MATH_H
+# define IMGUI_EXTRA_MATH_H
+# pragma once
+
+
+//------------------------------------------------------------------------------
+# ifndef IMGUI_DEFINE_MATH_OPERATORS
+#     define IMGUI_DEFINE_MATH_OPERATORS
+# endif
+# include <imgui.h>
+# include <imgui_internal.h>
+
+
+//------------------------------------------------------------------------------
+struct ImLine
+{
+    ImVec2 A, B;
+};
+
+
+//------------------------------------------------------------------------------
+# if IMGUI_VERSION_NUM < 19002
+static inline bool operator==(const ImVec2& lhs, const ImVec2& rhs);
+static inline bool operator!=(const ImVec2& lhs, const ImVec2& rhs);
+# endif
+# if IMGUI_VERSION_NUM < 18955
+static inline ImVec2 operator-(const ImVec2& lhs);
+# endif
+
+
+//------------------------------------------------------------------------------
+static inline float  ImLength(float v);
+static inline float  ImLength(const ImVec2& v);
+static inline float  ImLengthSqr(float v);
+static inline ImVec2 ImNormalized(const ImVec2& v);
+
+
+//------------------------------------------------------------------------------
+static inline bool   ImRect_IsEmpty(const ImRect& rect);
+static inline ImVec2 ImRect_ClosestPoint(const ImRect& rect, const ImVec2& p, bool snap_to_edge);
+static inline ImVec2 ImRect_ClosestPoint(const ImRect& rect, const ImVec2& p, bool snap_to_edge, float radius);
+static inline ImVec2 ImRect_ClosestPoint(const ImRect& rect, const ImRect& b);
+static inline ImLine ImRect_ClosestLine(const ImRect& rect_a, const ImRect& rect_b);
+static inline ImLine ImRect_ClosestLine(const ImRect& rect_a, const ImRect& rect_b, float radius_a, float radius_b);
+
+
+
+//------------------------------------------------------------------------------
+namespace ImEasing {
+
+template <typename V, typename T>
+static inline V EaseOutQuad(V b, V c, T t)
+{
+    return b - c * (t * (t - 2));
+}
+
+} // namespace ImEasing
+
+
+//------------------------------------------------------------------------------
+# include "imgui_extra_math.inl"
+
+
+//------------------------------------------------------------------------------
+# endif // IMGUI_EXTRA_MATH_H
