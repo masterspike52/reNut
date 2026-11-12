@@ -236,6 +236,8 @@ public:
   // Idempotent; safe before the guest runtime exists.
   static bool CreateHostDevice();
   static bool HostReady();
+  // Any thread. Whether the game has presented a frame of its own yet.
+  static bool GuestPresented();
 
   // Stops recording/presenting. Resources are intentionally leaked at exit.
   static void BeginShutdown();

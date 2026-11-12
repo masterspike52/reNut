@@ -6,7 +6,7 @@
 
 namespace renut::gpu {
 
-// Shape key tables (NutTool's docs/renut-shapes.md): a model's shape names and their weights, keyed by the
+// Shape key tables (docs/nuttool/custom-models.md): a model's shape names and their weights, keyed by the
 // model's asset id. Lua (game/custom_shapes.cpp) defines and sets them; draws read them. Thread-safe.
 void DefineShapeTable(uint32_t table, const std::vector<std::string> &names, const std::vector<float> &weights);
 

@@ -1,4 +1,4 @@
-// Shape keys of NutTool's models (NutTool's docs/renut-shapes.md), for the part, world and skinned vertex
+// Shape keys of NutTool's models (docs/nuttool/custom-models.md), for the part, world and skinned vertex
 // shaders: they define VsConstant, VertexFetchSlot, VertexFetchData4, ShapeCount and VertexIndexOffset.
 
 // A delta's big-endian words in host order. The stream's own endian mode is for its vertices (a

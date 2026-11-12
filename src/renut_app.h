@@ -223,9 +223,9 @@ private:
         rexglue_guide::ConfigureFonts(&GetUI().GetFonts());
         rexglue_guide::AddCredit("MadLadMikael", "reNut Lead Programmer");
         rexglue_guide::AddCredit("EtoneDemid", "Nutstaller");
-        rexglue_guide::AddCredit("ValcomDrifty", "reNut Title Logo");
-        rexglue_guide::AddCredit("SolarCookies", "Various Small Things");
+        rexglue_guide::AddCredit("Rayzo", "Making the reNut Title Logo");
         rexglue_guide::AddCredit("Rayzo", "Making the reNut Settings icon");
+        rexglue_guide::AddCredit("SolarCookies", "Various Small Things");
         rexglue_guide::AddCredit("You, The Player", "Playing the game.");
         rexglue_guide::Install(GetUI(),
                                {.title_name = "Banjo-Kazooie: Nuts & Bolts",

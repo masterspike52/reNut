@@ -58,7 +58,12 @@ Value CheckValue(lua_State* L, int arg, ValueType type) {
       if (auto* ud = static_cast<ObjectUD*>(luaL_testudata(L, arg, kObjectMeta))) return Value(static_cast<int64_t>(ud->address));
       return Value(static_cast<int64_t>(luaL_checkinteger(L, arg)));
     case ValueType::kFloat: return Value(static_cast<double>(luaL_checknumber(L, arg)));
-    case ValueType::kString: return Value(std::string(luaL_checkstring(L, arg)));
+    case ValueType::kString: {
+      // With its length: a string can hold zero bytes (binary data), which a C string would end at.
+      size_t length = 0;
+      const char* text = luaL_checklstring(L, arg, &length);
+      return Value(std::string(text, length));
+    }
     case ValueType::kObject: return Value(CheckObject(L, arg));
   }
   return {};

@@ -56,7 +56,6 @@ set(RENUT_SOURCES
 	src/renut_engine/game/startup_logo.cpp
 	src/renut_engine/online/rexliveless.cpp
 	src/renut_engine/online/net_api.cpp
-	src/renut_engine/online/coop_challenge.cpp
 	src/renut_engine/app/renut_settings.cpp
 	src/renut_engine/app/xam_workspace.cpp
 	src/renut_engine/app/crash_dump.cpp
@@ -210,7 +209,7 @@ set_source_files_properties(src/renut_engine/ui/launcher_menu.cpp PROPERTIES OBJ
 # The renut Lua API's definitions beside the executable (lua_api), which RexFabric's node editor makes nodes from.
 add_custom_command(TARGET renut POST_BUILD
     COMMAND "${CMAKE_COMMAND}" -E make_directory "$<TARGET_FILE_DIR:renut>/lua_api"
-    COMMAND "${CMAKE_COMMAND}" -E copy_if_different "${CMAKE_SOURCE_DIR}/docs/lua-mods/meta/renut.lua"
+    COMMAND "${CMAKE_COMMAND}" -E copy_if_different "${CMAKE_SOURCE_DIR}/src/renut_engine/lua_api/renut.lua"
             "$<TARGET_FILE_DIR:renut>/lua_api/renut.lua"
     VERBATIM)
 

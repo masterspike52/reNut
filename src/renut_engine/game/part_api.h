@@ -13,7 +13,7 @@ namespace renut::game::part_api {
 using renut::mods::CustomPart;
 
 // Before rexfabric::Start: declares the renut namespace for RexFabric mods (renut.parts,
-// renut.vehicle, renut.fx and the renut.* events). docs/lua-mods/lua-parts.md describes it.
+// renut.vehicle, renut.fx and the renut.* events). docs/renut-api.md describes it.
 void Declare();
 
 // Game thread, from a behaviour part's class callbacks (their guest context is lent to

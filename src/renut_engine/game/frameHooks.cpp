@@ -8,6 +8,7 @@
 #include <rex/setting.h>
 #include <rex/settings_registry.h>
 #include <rex/types.h>
+#include <rexfabric/project_hooks.h>
 
 #include <algorithm>
 #include <atomic>
@@ -23,7 +24,6 @@
 #include "renut_engine/game/custom_npcs.h"
 #include "renut_engine/game/part_api.h"
 #include "renut_engine/game/stereo.h"
-#include "renut_engine/online/coop_challenge.h"
 #include "renut_engine/ui/position_overlay.h"
 
 namespace {
@@ -103,7 +103,7 @@ static constexpr int32_t kChallengePlayFirst = 6;
 static constexpr int32_t kChallengePlayEnd = 18;
 static std::atomic<bool> g_saucerOfPeril{ false };
 
-REX_EXTERN(__imp__sub_821BD590);
+REXFABRIC_HOOKABLE(sub_821BD590);  // mods' rex.hook on the tick run around the game's own
 REX_EXTERN(__imp__sub_824FF2F0);
 
 REX_EXTERN(__imp__sub_821CD438);
@@ -138,9 +138,7 @@ REX_HOOK_RAW(sub_821CD438)
 REX_HOOK_RAW(sub_821BD590)
 {
 	const uint32_t man = ctx.r3.u32;
-	// In a co-op world the tick runs as in single player, with the co-op group's holds.
-	if (!renut::online::coop_challenge::RunTick(ctx, base, man))
-		__imp__sub_821BD590(ctx, base);
+	REXFABRIC_ORIGINAL(sub_821BD590)(ctx, base);
 	const uint32_t id = rex::byte_swap(*reinterpret_cast<const uint32_t*>(base + man + kChallengeIdOffset));
 	g_saucerOfPeril.store(id == kSaucerOfPerilChallenge, std::memory_order_relaxed);
 	const int32_t state = int32_t(rex::byte_swap(*reinterpret_cast<const uint32_t*>(base + man + kChallengeStateOffset)));

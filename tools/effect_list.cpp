@@ -1,6 +1,6 @@
 // Lists every particle effect asset in the game's bundles: its asset id (as
 // fx.play takes it), its type, its name and the bundles holding it. Its
-// output made docs/modding/effects.md.
+// output made docs/effects.md.
 // build: clang++ -std=c++20 -O2 -I src tools/effect_list.cpp src/renut_engine/mods/xcompress.cpp -o effect_list.exe
 // usage: effect_list <game folder> > effects.tsv
 // (CAFF symbols are "aid_<type>_<name>,<timestamp>,<version>"; an id is

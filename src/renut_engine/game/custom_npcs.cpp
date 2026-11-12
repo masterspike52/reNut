@@ -27,12 +27,12 @@
 #include <system_error>
 #include <unordered_map>
 #include <vector>
+#include <rexfabric/project_hooks.h>
 #include "renut_engine/game/part_api.h"
 #include "renut_engine/game/stereo.h"
 #include "renut_engine/mods/custom_parts.h"
 #include "renut_engine/mods/json.h"
 #include "renut_engine/mods/mod_loader.h"
-#include "renut_engine/online/coop_challenge.h"
 
 REX_EXTERN(__imp__sub_822237D0);
 REX_EXTERN(__imp__sub_823F05B0);
@@ -1305,15 +1305,13 @@ REX_HOOK_RAW(sub_82227CC0) {
   }
 }
 
-REX_HOOK_RAW(sub_824AC1C0) {
+// counterAdd (profile, counter, amount, quiet); mods' rex.hook on it run around all of this.
+REXFABRIC_HOOK_RAW(sub_824AC1C0) {
   using namespace renut::game::custom_npcs;
   const uint32_t profile = ctx.r3.u32;
   const uint32_t amount = ctx.r5.u32;
   const uint32_t quiet = ctx.r6.u32;
 
-  // A co-op guest's challenge reward also goes to the host; the host drops one a guest already gave.
-  if (renut::online::coop_challenge::CounterAdded(base, profile, ctx.r4.u32, amount))
-    return;
   if (!profile || !g_any_names.load(std::memory_order_acquire) || !IsJiggyCounter(base, ctx.r4.u32)) {
     __imp__sub_824AC1C0(ctx, base);
     return;

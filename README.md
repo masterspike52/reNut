@@ -105,7 +105,14 @@ Mods
 
 * depending on the size of the mod the game could take a while to open (this only happens once) and not all mods work (this will be trial and error)
 
-* we can now add custom parts following <a href="https://github.com/masterspike52/reNut/blob/main/docs/modding/custom-parts.md">custom-parts.md</a>
+* reNut has its own Lua modding: new parts and vehicles, whole worlds, characters, challenges, HUDs, online features and more. Everything is documented in <a href="https://github.com/masterspike52/reNut/blob/main/docs/README.md">the modding docs</a>:
+  * <a href="https://github.com/masterspike52/reNut/blob/main/docs/getting-started.md">Getting started</a>: your first mod, step by step
+  * <a href="https://github.com/masterspike52/reNut/blob/main/docs/mods-and-scripts.md">Mods and scripts</a>: how mods load and run
+  * <a href="https://github.com/masterspike52/reNut/blob/main/docs/renut-api.md">The renut API</a>: every function reNut gives mods
+  * <a href="https://github.com/masterspike52/reNut/blob/main/docs/rexfabric-api.md">The RexFabric API</a>: hooks, memory, input, settings and drawing
+  * <a href="https://github.com/masterspike52/reNut/blob/main/docs/node-editor.md">The node editor</a>: making mods from nodes in game (F10)
+  * Tutorials: <a href="https://github.com/masterspike52/reNut/blob/main/docs/tutorials/parts-and-vehicles.md">parts and vehicles</a>, <a href="https://github.com/masterspike52/reNut/blob/main/docs/tutorials/worlds-and-doors.md">worlds and doors</a>, <a href="https://github.com/masterspike52/reNut/blob/main/docs/tutorials/characters-and-challenges.md">characters and challenges</a>, <a href="https://github.com/masterspike52/reNut/blob/main/docs/tutorials/hud-menus-and-input.md">HUD, menus and input</a>, <a href="https://github.com/masterspike52/reNut/blob/main/docs/tutorials/online-multiplayer.md">online multiplayer</a>, <a href="https://github.com/masterspike52/reNut/blob/main/docs/tutorials/hooks-and-memory.md">hooks and memory</a>
+  * <a href="https://github.com/masterspike52/reNut/blob/main/docs/nuttool/README.md">NutTool</a>: custom models, textures, animations, parts, worlds, characters and player models
 
 
 
@@ -137,7 +144,7 @@ the <a href="https://discord.gg/ksm4vVbBf">Rexglue SDK discord</a> for helping w
 <br>
 SolarCookies for a handful of midasm hooks 
 <br>
-Rayzo for the renut logo and custom renut settings icon
+ValcomDrifty for the renut logo
 <br>
 OlieGamerTV for the information and documentations made for nuts and bolts specifically as well as a multitude of other things as well as assisting with other things about nuts and bolts
 <br>

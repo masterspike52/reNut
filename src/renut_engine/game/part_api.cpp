@@ -1,6 +1,4 @@
 #include "renut_engine/game/part_api.h"
-#include "renut_engine/online/coop_challenge.h"
-#include "renut_engine/online/net_api.h"
 
 #include <rex/kernel/guest_memory.h>
 #include <rex/kernel/memory_view.h>
@@ -10,6 +8,7 @@
 #include <rex/string/text.h>
 #include <rex/types.h>
 #include <rexfabric/game_api.h>
+#include <rexfabric/project_hooks.h>
 #include <rexfabric/rexfabric.h>
 
 #include <algorithm>
@@ -138,7 +137,7 @@ REX_IMPORT(__imp__rex_gameSaveSave, SaveGame, u32(u32));                // sub_8
 REX_IMPORT(__imp__rex_audioMainPlayHash, PlayCue, u32(u32, u32, u32, f64));  // (&cue id, -, workspace 0, volume): its handle
 REX_IMPORT(__imp__sub_8239F790, StopCue, void(u32, u32, u32));           // (cue record, 1, 0)
 REX_IMPORT(__imp__sub_82211450, CuePlaying, u32(u32));                   // (cue record): u8
-REX_EXTERN(__imp__rex_gameSaveSave);
+REXFABRIC_HOOKABLE(rex_gameSaveSave);
 REX_EXTERN(__imp__sub_8260FC20);  // (part, vehicle, control): its button down
 REX_EXTERN(__imp__sub_8260FD50);  // ... and up
 REX_EXTERN(__imp__sub_82384340);  // (object, 0): it's removed
@@ -156,8 +155,10 @@ REX_EXTERN(__imp__sub_82216C78);
 REX_EXTERN(__imp__sub_82289908);  // a world becomes the running one
 REX_EXTERN(__imp__sub_82289C30);  // (stack entry): a world is torn down
 REX_EXTERN(__imp__sub_823D0AF0);  // avatarSetVehicle (avatar, vehicle or 0, seat part)
-REX_EXTERN(__imp__sub_824FDC38);  // (challengeMan, &aid, flag): a challenge begins
-REX_EXTERN(__imp__sub_82503568);  // (challengeMan): settles a finished challenge's outcome
+// Mods' rex.hook on these run around the game's own (rexfabric/project_hooks.h).
+REXFABRIC_HOOKABLE(sub_824FDC38);  // (challengeMan, &aid, flag): a challenge begins
+REXFABRIC_HOOKABLE(sub_82503568);  // (challengeMan): settles a finished challenge's outcome
+REXFABRIC_HOOKABLE(sub_8236A570);  // (class, objparams copy, net): makes an object
 REX_EXTERN(__imp__sub_8255B428);  // opens the pause menu
 REX_EXTERN(__imp__sub_8255B598);  // closes it
 REX_EXTERN(__imp__rex_meCalculateView);  // builds the view from the current camera node
@@ -2055,9 +2056,9 @@ constexpr uint32_t kCueRecordBytes = 32, kCueRecordId = 16, kMaxCues = 64;
 std::map<int64_t, uint32_t> g_cues;  // game thread
 int64_t g_next_cue = 1;
 
-// Each player's pad: g_padInputs[port] + 52 its record, whose + 16 is the current entry's index, the 40-byte entries
-// from + 20 (keyboard_input.cpp's padStatePush); the player's port at their profile + 128.
-constexpr uint32_t kPadInputs = 0x82E0B158, kPadRecord = 52, kPadIndex = 16, kPadEntries = 20, kPadEntry = 40;
+// Each player's pad: g_padInputs[port] + 52 its record, whose + 0 is the current entry's index (0 or 1), the two
+// 40-byte entries from + 4 (padStatePush, sub_821CB628); the player's port at their profile + 128.
+constexpr uint32_t kPadInputs = 0x82E0B158, kPadRecord = 52, kPadIndex = 0, kPadEntries = 4, kPadEntry = 40;
 // Player `number`'s pad entry this frame into `entry` (big-endian, as the game keeps it): what a mod holding the game's
 // input keeps from it (keyboard_input.cpp), else the record's current one. False without a pad.
 bool PadEntry(int64_t number, uint8_t (&entry)[kPadEntry]) {
@@ -2074,7 +2075,7 @@ bool PadEntry(int64_t number, uint8_t (&entry)[kPadEntry]) {
     return false;
   const uint32_t record = inputs + kPadRecord;
   const uint32_t index = Load32(record + kPadIndex);
-  if (index >= 64)
+  if (index >= 2)
     return false;
   std::memcpy(entry, Base() + record + kPadEntries + kPadEntry * index, kPadEntry);
   return true;
@@ -5408,12 +5409,7 @@ REX_HOOK_RAW(sub_825EF480) {
 
 // gameSaveSave (profile): a save of the game begins (1) or doesn't (0). renut.game_save once it has.
 REX_HOOK_RAW(rex_gameSaveSave) {
-  // In a co-op session the co-op save takes it (renut.net); the player's own save isn't written.
-  if (renut::online::net_api::TakeGameSave(ctx, base, ctx.r3.u32)) {
-    ctx.r3.u64 = 0;
-    return;
-  }
-  __imp__rex_gameSaveSave(ctx, base);
+  REXFABRIC_ORIGINAL(rex_gameSaveSave)(ctx, base);
   if ((ctx.r3.u32 & 0xFF) && part_api::g_events)
     part_api::Fire(&ctx, base, part_api::g_events->game_save);
 }
@@ -5436,7 +5432,6 @@ REX_HOOK_RAW(sub_8260FD50) {
 // (object, 0): an object is removed, with what it holds. renut.object_removed before it goes.
 REX_HOOK_RAW(sub_82384340) {
   const uint32_t object = ctx.r3.u32;
-  renut::online::coop_challenge::ObjectRemoved(object);
   if (part_api::g_events && part_api::Heap(object) && part_api::g_events->object_removed.HasListeners()) {
     std::string kind;
     {
@@ -5567,18 +5562,10 @@ REX_HOOK_RAW(sub_823D0AF0) {
     part_api::Fire(&ctx, base, part_api::g_events->vehicle_enter, int64_t(vehicle), int64_t(avatar), player);
 }
 
-// (challengeMan, &aid, flag): a challenge begins; its aid is at challengeMan + 12 after. In a co-op world it
-// runs as in single player and is a co-op group's (coop_challenge.h).
+// (challengeMan, &aid, flag): a challenge begins; its aid is at challengeMan + 12 after.
 REX_HOOK_RAW(sub_824FDC38) {
-  namespace coop = renut::online::coop_challenge;
-  const uint32_t man = ctx.r3.u32, flag = ctx.r5.u32;
-  const bool scoped = coop::BeginStarting(base, man);
-  {
-    coop::SinglePlayerScope scope(base, scoped);
-    __imp__sub_824FDC38(ctx, base);
-  }
-  if (scoped)
-    coop::BeginDone(base, man, flag);
+  const uint32_t man = ctx.r3.u32;
+  REXFABRIC_ORIGINAL(sub_824FDC38)(ctx, base);
   if (!part_api::g_events || !part_api::Heap(man))
     return;
   if (const uint32_t challenge = part_api::Load32(man + part_api::kChallengeRunning))
@@ -5586,14 +5573,10 @@ REX_HOOK_RAW(sub_824FDC38) {
 }
 
 // (challengeMan): from challengeManTick, settles a finished challenge (state 14 to 15) with player 1's outcome.
-// A co-op group's end waits here until its starter releases it.
 REX_HOOK_RAW(sub_82503568) {
   const uint32_t man = ctx.r3.u32;
-  if (renut::online::coop_challenge::HoldSettle(ctx, base, man))
-    return;
-  ctx.r3.u64 = man;
   const uint32_t before = part_api::Heap(man) ? part_api::Load32(man + part_api::kChallengeState) : 0;
-  __imp__sub_82503568(ctx, base);
+  REXFABRIC_ORIGINAL(sub_82503568)(ctx, base);
   if (!part_api::g_events || before != part_api::kChallengeSettling ||
       part_api::Load32(man + part_api::kChallengeState) != part_api::kChallengeSettled)
     return;
@@ -5707,17 +5690,6 @@ REX_HOOK_RAW(sub_824FA620) {
 REX_HOOK_RAW(sub_8236A570) {
   using namespace part_api;
   const uint32_t copy = ctx.r4.u32;
-  {
-    // A co-op joiner doesn't make its own of the starter's networked challenge objects.
-    const auto r3 = ctx.r3, r4 = ctx.r4, r5 = ctx.r5;
-    if (renut::online::coop_challenge::SkipObject(ctx, base, copy, r5.u32)) {
-      ctx.r3.u64 = 0;
-      return;
-    }
-    ctx.r3 = r3;
-    ctx.r4 = r4;
-    ctx.r5 = r5;
-  }
   std::string kind;
   uint32_t aid = 0;
   if (Heap(copy)) {
@@ -5727,9 +5699,8 @@ REX_HOOK_RAW(sub_8236A570) {
       g_crate_objparams.store(aid, std::memory_order_release);
     kind = LearnKind(copy);
   }
-  __imp__sub_8236A570(ctx, base);
+  REXFABRIC_ORIGINAL(sub_8236A570)(ctx, base);
   const uint32_t object = ctx.r3.u32;
-  renut::online::coop_challenge::ObjectMade(base, object);
   if (Heap(object) && (!kind.empty() || aid)) {
     std::lock_guard lock(g_kinds_mutex);
     if (!kind.empty())

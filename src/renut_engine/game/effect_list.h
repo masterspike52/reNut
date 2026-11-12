@@ -4,7 +4,7 @@
 
 namespace renut::game {
 
-// Every particle effect in the game's bundles (docs/lua-mods/effects.md), by name and asset id. Names two effects share
+// Every particle effect in the game's bundles (docs/effects.md), by name and asset id. Names two effects share
 // end in their kind: _emitter, _particle, _gpu or _composite.
 struct KnownEffect {
   const char *name;

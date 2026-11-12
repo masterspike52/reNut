@@ -569,6 +569,10 @@ bool Video::HostReady() {
   return s.host_ready;
 }
 
+bool Video::GuestPresented() {
+  return State().last_guest_present_ms.load(std::memory_order_acquire) != 0;
+}
+
 void Video::BeginShutdown() {
   auto &s = State();
   s.shutting_down.store(true, std::memory_order_release);

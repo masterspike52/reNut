@@ -1182,7 +1182,7 @@ UploadAllocation ScaleDepthOfField(const ConstantUpload &last, float strength) {
   return alloc;
 }
 
-// Shape keys of NutTool's models (NutTool's docs/renut-shapes.md): a draw whose stream 0 ends in the
+// Shape keys of NutTool's models (docs/nuttool/custom-models.md): a draw whose stream 0 ends in the
 // footer, its deltas in the same buffer, and its weights from the Lua-set tables (shape_weights.h).
 constexpr u32 kShapeHeaderMagic = 0x524D5048u;  // "RMPH"
 constexpr u32 kShapeFooterMagic = 0x524D5046u;  // "RMPF"
@@ -1196,7 +1196,7 @@ struct ShapeDraw {
   float weights[kMaxShapes] = {};
 };
 
-// NutTool's world materials (its docs/renut-materials.md): a record ending the draw's stream, after its
+// NutTool's world materials (docs/nuttool/worlds.md): a record ending the draw's stream, after its
 // vertices and any shape keys', then {header offset, "RMTF"}.
 constexpr u32 kMaterialHeaderMagic = 0x524D5448u;  // "RMTH"
 constexpr u32 kMaterialFooterMagic = 0x524D5446u;  // "RMTF"

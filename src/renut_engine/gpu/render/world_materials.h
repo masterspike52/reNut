@@ -6,8 +6,8 @@
 
 namespace renut::gpu {
 
-// What Lua can change of a material of NutTool's world models while the game runs (NutTool's
-// docs/renut-materials.md): its emissive colour and strength, glow and opacity.
+// What Lua can change of a material of NutTool's world models while the game runs
+// (docs/nuttool/worlds.md): its emissive colour and strength, glow and opacity.
 struct MaterialValues {
   float emissive[3] = {0, 0, 0};
   float strength = 1;

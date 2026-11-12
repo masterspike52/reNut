@@ -38,6 +38,7 @@
 #include "renut_engine/app/workshop.h"
 #include "renut_engine/game/graphics_menu.h"
 #include "renut_engine/gpu/backend/native_window.h"
+#include "renut_engine/gpu/backend/video.h"
 #include "renut_engine/mods/mod_loader.h"
 // The Guide's HTTP client (WinHTTP, or the system's libcurl), built into reNut
 // with the Guide.
@@ -815,6 +816,8 @@ struct LauncherMenu::Impl {
     PlayFn on_play;
     QuitFn on_quit;
     bool visible = false;
+    // PLAY was pressed: the whole launcher stays up, taking no input, until the game's first frame.
+    bool starting = false;
     Page page = Page::kMain;
 
     // OPTIONS: the page chosen there (0 BACK), and its settings.
@@ -1158,11 +1161,11 @@ struct LauncherMenu::Impl {
         switch (row) {
         case Row::kPlay: {
             setup::SavePaths(app_name, paths);
-            visible = false;
+            // Hidden by Draw once the game presents: until then the title loading shows the launcher, not a blank.
+            starting = true;
             pads.Close();
             capture.Detach();
             music.Stop();
-            ReleaseImages();
             if (on_play)
                 on_play(paths);
             break;
@@ -2097,6 +2100,12 @@ struct LauncherMenu::Impl {
     }
 
     void Draw() {
+        if (starting && renut::gpu::Video::GuestPresented()) {
+            visible = false;
+            starting = false;
+            ReleaseImages();
+            return;
+        }
         ImGuiIO &io = ImGui::GetIO();
         web.Pump();
         TakePick();
@@ -2145,7 +2154,7 @@ struct LauncherMenu::Impl {
                      (louder.Step(held & kPadRightBumper, dt) || key_louder ? 1 : 0);
         // A key bind waiting for its key has every key and button.
         // So has a text field being typed in (its Enter and Escape are its own).
-        if (UpdateBinding(dt, pressed) || editing != ShareRow::kNone || io.WantTextInput) {
+        if (UpdateBinding(dt, pressed) || editing != ShareRow::kNone || io.WantTextInput || starting) {
             step = side = volume = 0;
             activate = back = stop = mute = false;
         }
@@ -2189,7 +2198,7 @@ struct LauncherMenu::Impl {
         case Page::kSettings: DrawSettings(f, step, side, activate); break;
         case Page::kShare: DrawShare(f, step, side, activate); break;
         }
-        if (DrawMusic(f, editing == ShareRow::kNone))
+        if (DrawMusic(f, editing == ShareRow::kNone && !starting))
             mute = true;
         ImGui::End();
         RestartForUpdate(busy);
@@ -2198,7 +2207,7 @@ struct LauncherMenu::Impl {
         else if (volume)
             SetMusicVolume(music_choice.volume + double(volume) / kVolumeBars, true);
 
-        if (!activate)
+        if (!activate || starting)
             return;
         switch (page) {
         case Page::kMain: Activate(selected, busy); break;

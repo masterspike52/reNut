@@ -7,7 +7,7 @@
 namespace renut::game::custom_worlds {
 
 // Before rexfabric::Start: declares renut.worlds and renut.doors for RexFabric mods.
-// docs/lua-mods/lua-worlds.md describes them.
+// docs/tutorials/worlds-and-doors.md describes them.
 void Declare();
 
 // The music a mod's world gave (renut.worlds.add's music) for scene script `scene`, and its volume.
