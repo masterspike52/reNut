@@ -30,6 +30,13 @@ param(
 
 $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $PSScriptRoot
+
+# A Windows CMake: an MSYS2 one (devkitPro's) earlier on the PATH doesn't report the host as Windows, so every
+# win-* preset counts as disabled.
+$windowsCmake = Get-Command cmake -All -CommandType Application |
+    Where-Object { $_.Source -notmatch '\\(msys\d*|usr)\\' } | Select-Object -First 1
+if (-not $windowsCmake) { throw "No Windows CMake on the PATH (only MSYS2 ones)" }
+Set-Alias -Name cmake -Value $windowsCmake.Source -Scope Script
 $versionFile = Join-Path $root "version.txt"
 
 $current = (Get-Content $versionFile -TotalCount 1).Trim()
