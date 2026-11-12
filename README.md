@@ -99,12 +99,6 @@ things i havent tested for online
 
 Mods
 --------------------------------------------
-* mods made with https://github.com/weighta/NB-Studio-Banjo-Kazooie-Nuts-and-Bolts-World-Editor- made by XephyrCraft, they make .nbpatch files.
-
-* to use the nbpatch files all you have to do is make a mods folder and place them in (its that simple)
-
-* depending on the size of the mod the game could take a while to open (this only happens once) and not all mods work (this will be trial and error)
-
 * reNut has its own Lua modding: new parts and vehicles, whole worlds, characters, challenges, HUDs, online features and more. Everything is documented in <a href="https://github.com/masterspike52/reNut/blob/main/docs/README.md">the modding docs</a>:
   * <a href="https://github.com/masterspike52/reNut/blob/main/docs/getting-started.md">Getting started</a>: your first mod, step by step
   * <a href="https://github.com/masterspike52/reNut/blob/main/docs/mods-and-scripts.md">Mods and scripts</a>: how mods load and run
