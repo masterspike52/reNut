@@ -1,6 +1,3 @@
-/**
- * @file    gpu/render/format.cpp
- */
 #include "renut_engine/gpu/render/format.h"
 
 #include <cstring>
@@ -233,9 +230,8 @@ inline uint16_t Expand16(uint32_t value, uint32_t bits) {
 } // namespace
 
 void ConvertTexels(TexelConversion conversion, const uint8_t *src, uint8_t *dst, uint32_t count) {
-  // Xenos packs the first component in the lowest bits; the host formats put
-  // it first in memory, so components are kept in XYZW order and the fetch
-  // constant's swizzle is applied by the texture view.
+  // Components stay in XYZW order (Xenos packs the first in the lowest bits);
+  // the texture view applies the fetch constant's swizzle.
   switch (conversion) {
   case TexelConversion::Copy:
     break;
@@ -315,12 +311,8 @@ void DecodeBlockRow(TexelConversion conversion, const uint8_t *src, uint8_t *dst
                     uint32_t dst_row_pitch) {
   if (conversion != TexelConversion::CTX1)
     return;
-  // CTX1, as the game's own encoder writes it (EncodeBlockCTX1, 0x828D1580):
-  // two endpoints A and B of two components, then a 2-bit palette entry per
-  // texel, one byte per row, texel x in bits 2x. Entries 0 and 1 are A and B,
-  // 2 and 3 its 168:88 and 88:168 blends of them. In memory the block is
-  // A.x A.y B.x B.y and rows 1 0 3 2; the fetch's 8in16 swap (applied before
-  // this) leaves A.y A.x B.y B.x and rows 0 to 3.
+  // CTX1 (EncodeBlockCTX1, 0x828D1580), after the 8in16 swap: A.y A.x B.y B.x,
+  // then per row a byte of 2-bit entries (A, B, 168:88 and 88:168 blends).
   for (uint32_t b = 0; b < count; ++b, src += 8) {
     const uint8_t a[2] = {src[1], src[0]};
     const uint8_t e[2] = {src[3], src[2]};

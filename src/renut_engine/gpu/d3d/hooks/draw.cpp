@@ -1,18 +1,3 @@
-/**
- * @file    gpu/d3d/hooks/draw.cpp
- * @brief   Draw, clear and resolve entry points, and the shader setters.
- *
- * The draws replace N&B's D3D entirely: the originals would flush the device's
- * dirty state into GPU packets, including binding shaders by reading their
- * microcode, which renderer-owned shader objects do not carry. Clear, Resolve
- * and tiling queue their host work and do the device work of N&B's D3D
- * natively (d3d_native.h): dirty masks, the tiling state, fences on the
- * destination.
- *
- * The host work runs on the render thread (queued.h); a device recording a
- * command buffer records its draws, clears and resolves (command_buffers.h)
- * instead. Neither takes State().mutex here.
- */
 #include <algorithm>
 #include <bit>
 #include <cmath>
@@ -21,7 +6,7 @@
 #include <unordered_map>
 #include <vector>
 
-#include <rex/hook.h>
+#include <rex/ppc/hook.h>
 #include <rex/types.h>
 
 #include "renut_engine/gpu/guest/command_buffers.h"
@@ -30,7 +15,6 @@
 #include "renut_engine/gpu/render/draw.h"
 #include "renut_engine/gpu/guest/guest_memory.h"
 #include "renut_engine/gpu/guest/guest_records.h"
-#include "renut_engine/gpu/log.h"
 #include "renut_engine/gpu/backend/queued.h"
 #include "renut_engine/gpu/backend/render_thread.h"
 #include "renut_engine/gpu/render/surfaces.h"
@@ -38,9 +22,8 @@
 
 using namespace renut::gpu;
 
-// A float argument also takes the GPR (or stack) slot of its position, which
-// the marshaling does not skip: the u32 after each double in the hooks'
-// parameters stands in for it.
+// A float argument also takes its position's GPR (or stack) slot; the u32
+// after each double in the hooks' parameters stands in for it.
 
 namespace {
 
@@ -51,9 +34,8 @@ constexpr u32 kFullViewport = 0x82001744;
 // D3DRS_HIZWRITEENABLE's index in the render state table.
 constexpr u32 kRenderStateHiZWriteEnable = 97;
 
-// Guest memory Begin*Vertices hands out; the game writes one draw's vertices
-// into it before its next D3D call. One per device, as devices record on
-// different threads.
+// Guest memory Begin*Vertices hands out for one draw's vertices, one per
+// device as devices record on different threads.
 constexpr u32 kVerticesScratchSize = 4u << 20;
 std::mutex g_vertices_scratch_mutex;  // devices call from their own threads
 std::unordered_map<u32, u32> g_vertices_scratch;
@@ -135,10 +117,6 @@ void D3DDevice_DrawIndexedVertices_hook(u32 device, u32 primitive, u32 base_vert
 
 // void D3DDevice_DrawIndexedTessellatedVertices(D3DDevice*, D3DTESSPRIMITIVETYPE,
 //     INT BaseVertexIndex, UINT StartIndex, UINT IndexCount) [0x82230838]
-// Replaced like the other draws: the original's state flush binds the shader
-// from its microcode, and bugchecks (0xF5) on a tessellation shader without
-// the tessellation state the original SetVertexShader keeps. The draw is
-// tessellated on the host (DrawCall::tessellation).
 void D3DDevice_DrawIndexedTessellatedVertices_hook(u32 device, u32 primitive, u32 base_vertex,
                                                    u32 start_index, u32 index_count) {
   if (!Active())
@@ -174,9 +152,8 @@ void D3DDevice_DrawVerticesUP_hook(u32 device, u32 primitive, u32 vertex_count, 
     QueueDraw(device, call, vertex_count * stride, 0);
 }
 
-// void D3DDevice_DrawIndexedVerticesUP(D3DDevice*, D3DPRIMITIVETYPE, UINT MinVertexIndex,
-//     UINT NumVertices, UINT IndexCount, const void *pIndexData, D3DFORMAT IndexDataFormat,
-//     const void *pVertexStreamZeroData, UINT VertexStreamZeroStride) [0x82656728]
+// void D3DDevice_DrawIndexedVerticesUP(D3DDevice*, D3DPRIMITIVETYPE, MinVertexIndex,
+//     NumVertices, IndexCount, pIndexData, IndexDataFormat, pVertexData, Stride) [0x82656728]
 void D3DDevice_DrawIndexedVerticesUP_hook(u32 device, u32 primitive, u32 min_vertex,
                                           u32 num_vertices, u32 index_count, u32 index_data,
                                           u32 index_format, u32 vertex_data, u32 stride) {
@@ -199,11 +176,8 @@ void D3DDevice_DrawIndexedVerticesUP_hook(u32 device, u32 primitive, u32 min_ver
     QueueDraw(device, call, vertex_bytes, index_bytes);
 }
 
-// void *D3DDevice_BeginVertices(D3DDevice*, D3DPRIMITIVETYPE, UINT VertexCount,
-//                               UINT VertexStreamZeroStride) [0x8222CC50]
-// Callers write the vertices, then end inline by restoring m_pRing from the
-// device, so the draw's state is captured now and its vertices copied at the
-// device's next hook (FlushDeferredVertices).
+// D3DDevice_BeginVertices [0x8222CC50]: captures the draw's state now; its
+// vertices are copied at the device's next hook (FlushDeferredVertices).
 u32 D3DDevice_BeginVertices_hook(u32 device, u32 primitive, u32 vertex_count, u32 stride) {
   const u64 bytes = u64(vertex_count) * stride;
   if (!bytes || bytes > kVerticesScratchSize)
@@ -232,9 +206,8 @@ u32 D3DDevice_BeginVertices_hook(u32 device, u32 primitive, u32 vertex_count, u3
   return scratch;
 }
 
-// A clear: the renderer's, recorded or queued, then N&B's device work.
-// whole_target: BeginTiling's, of one tile's worth of EDRAM, which on the
-// host is the whole tiled target.
+// A clear: the renderer's, recorded or queued, then N&B's device work;
+// whole_target clears the whole tiled target (BeginTiling's).
 void Clear(u32 device, u32 flags, const ClearRect *rect, const float color[4], float z,
            u32 stencil, bool whole_target) {
   const ClearRect *host_rect = whole_target ? nullptr : rect;
@@ -264,11 +237,9 @@ void Resolve(u32 device, u32 flags, const ClearRect *rect, u32 dest_texture, i32
                   parameters);
 }
 
-// void D3DDevice_ClearF(D3DDevice*, DWORD Flags, const D3DRECT *pRect,
-//                       const D3DVECTOR4 *pColor, float Z, DWORD Stencil) [0x822811A0]
+// D3DDevice_ClearF(D3DDevice*, Flags, pRect, pColor, float Z, Stencil) [0x822811A0];
 // Z takes r7's slot, so Stencil arrives in r8.
-void D3DDevice_ClearF_hook(u32 device, u32 flags, u32 rect_va, u32 color_va, double z,
-                           u32 /*z_slot*/, u32 stencil) {
+void D3DDevice_ClearF_hook(u32 device, u32 flags, u32 rect_va, u32 color_va, double z, u32 stencil) {
   ClearRect rect;
   const bool has_rect = rect_va && ReadRect(rect_va, rect);
   float color[4] = {0, 0, 0, 0};  // unk_82001160 without one
@@ -277,12 +248,10 @@ void D3DDevice_ClearF_hook(u32 device, u32 flags, u32 rect_va, u32 color_va, dou
   Clear(device, flags, has_rect ? &rect : nullptr, color, float(z), stencil, false);
 }
 
-// void D3DDevice_Clear(D3DDevice*, DWORD Count, const D3DRECT *pRects, DWORD Flags,
-//     D3DCOLOR Color, float Z, DWORD Stencil) [0x822812C8]: ClearF with the
-// color as a vector (XMLoadColor: each byte as 1 + b / 2^23, scaled by
-// 2^23 / 255 and offset), per rect. Z takes r8's slot.
+// D3DDevice_Clear [0x822812C8]: ClearF per rect with the D3DCOLOR as a vector
+// (XMLoadColor); Z takes r8's slot.
 void D3DDevice_Clear_hook(u32 device, u32 count, u32 rects_va, u32 flags, u32 color_argb,
-                          double z, u32 /*z_slot*/, u32 stencil) {
+                          double z, u32 stencil) {
   const float scale = std::bit_cast<float>(0x47008081u);  // aG, unk_82001150
   auto channel = [scale](u32 byte) {
     return std::fmaf(std::bit_cast<float>(0x3F800000u | (byte & 0xFF)), scale, -scale);
@@ -300,15 +269,11 @@ void D3DDevice_Clear_hook(u32 device, u32 count, u32 rects_va, u32 flags, u32 co
   }
 }
 
-// void D3DDevice_Resolve(D3DDevice*, DWORD Flags, const D3DRECT *pSourceRect,
-//     D3DBaseTexture *pDestTexture, const D3DPOINT *pDestPoint, UINT DestLevel,
-//     UINT DestSliceOrFace, const D3DVECTOR4 *pClearColor, float ClearZ,
-//     DWORD ClearStencil, const D3DRESOLVE_PARAMETERS *pParameters) [0x8222D6C8]
-// ClearZ is in f1 and takes the first stack slot; ClearStencil and pParameters
-// are in the two after it.
+// D3DDevice_Resolve [0x8222D6C8]: ClearZ is in f1 and takes the first stack
+// slot; ClearStencil and pParameters are in the two after it.
 void D3DDevice_Resolve_hook(u32 device, u32 flags, u32 rect_va, u32 dest_texture, u32 point_va,
                             u32 dest_level, u32 dest_slice, u32 color_va, double clear_z,
-                            u32 /*z_slot*/, u32 clear_stencil, u32 parameters) {
+                            u32 clear_stencil, u32 parameters) {
   ClearRect rect;
   const bool has_rect = rect_va && ReadRect(rect_va, rect);
   i32 dest_x = 0, dest_y = 0;
@@ -320,13 +285,8 @@ void D3DDevice_Resolve_hook(u32 device, u32 flags, u32 rect_va, u32 dest_texture
           dest_slice, color_va, float(clear_z), clear_stencil, parameters);
 }
 
-// void D3DDevice_BeginTiling(D3DDevice*, DWORD Count, const D3DRECT *pTileRects,
-//     const D3DVECTOR4 *pClearColor) [0x82246798]: TU3's build dropped the
-// arguments BeginTiling never used (Flags, ClearZ, ClearStencil).
-// The surfaces bound from here to EndTiling are backed by targets covering
-// every tile (SetTilingExtentLocked). N&B's BeginTiling clears with Z 0.0 and
-// stencil 0, unless the device records a one-pass Z pass (Flags3 0x20); its
-// ring segment for the tiles is left out.
+// D3DDevice_BeginTiling(D3DDevice*, Count, pTileRects, pClearColor) [0x82246798]:
+// backs the bound surfaces with targets covering every tile and clears them.
 void D3DDevice_BeginTiling_hook(u32 device, u32 count, u32 rects_va, u32 color_va) {
   native::Device d = native::DeviceAt(device);
   if (!d)
@@ -420,15 +380,8 @@ void D3DDevice_BeginTiling_hook(u32 device, u32 count, u32 rects_va, u32 color_v
   native::ResetAllState(d);
 }
 
-// HRESULT D3DDevice_EndTiling(D3DDevice*, D3DBaseTexture *pDestTexture,
-//     const D3DVECTOR4 *pClearColor) [0x821E17C0]: TU3's build dropped the
-// arguments EndTiling never used (ResolveFlags, pResolveRects, ClearZ,
-// ClearStencil, pParameters).
-// N&B's EndTiling resolves each tile's rect (flags 0x300: color and depth
-// cleared) with BeginTiling's clear values, the last one with pClearColor,
-// Z 1.0 and stencil 0. The host resolve reads each rect from the full-size
-// target. Left out: the tiles' ring segment, D3D's WorkerDpc callback that
-// replays it per tile, and its fence's packets.
+// D3DDevice_EndTiling(D3DDevice*, pDestTexture, pClearColor) [0x821E17C0]:
+// resolves each tile's rect from the full-size target, clearing color and depth.
 u32 D3DDevice_EndTiling_hook(u32 device, u32 dest_texture, u32 color_va) {
   native::Device d = native::DeviceAt(device);
   if (!d)
@@ -507,17 +460,14 @@ void D3DDevice_BeginExport_hook(u32 device, u32 index, u32 resource, u32 flags) 
   native::BeginExport(native::DeviceAt(device), index, resource, flags);
 }
 
-// void D3DDevice_EndExport(D3DDevice*, DWORD Index, D3DResource*, DWORD Flags)
-// [0x822693B0]: the resource is busy until the current fence, which completes
-// once the render thread has written the stream's results.
+// D3DDevice_EndExport [0x822693B0]: the resource is busy until the current
+// fence, which completes once the render thread has written the results.
 void D3DDevice_EndExport_hook(u32 device, u32 index, u32 resource, u32 flags) {
   native::EndExport(native::DeviceAt(device), index, resource, flags);
 }
 
-// void D3DDevice_Present(D3DDevice*) [0x82654778]: the automatic back buffer
-// resolved into the automatic front buffer, then Swap. N&B creates its device
-// without an automatic front buffer, so its callers (XUI, the threaded movie
-// player) have nothing to resolve to.
+// D3DDevice_Present [0x82654778]: the automatic back buffer resolved into the
+// automatic front buffer (N&B has none), then Swap.
 void D3DDevice_Present_hook(u32 device) {
   native::Device d = native::DeviceAt(device);
   if (!d)

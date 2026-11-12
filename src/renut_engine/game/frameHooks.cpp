@@ -4,8 +4,9 @@
 #include <SDL3/SDL_video.h>
 #endif
 
-#include <rex/hook.h>
-#include <rex/cvar.h>
+#include <rex/ppc/hook.h>
+#include <rex/setting.h>
+#include <rex/settings_registry.h>
 #include <rex/types.h>
 
 #include <algorithm>
@@ -18,20 +19,56 @@
 #include <string>
 #include <thread>
 
+#include "renut_engine/app/renut_settings.h"
+#include "renut_engine/game/custom_npcs.h"
+#include "renut_engine/game/part_api.h"
 #include "renut_engine/game/stereo.h"
+#include "renut_engine/online/coop_challenge.h"
+#include "renut_engine/ui/position_overlay.h"
+
+namespace {
+
+struct FrameSettings final : rex::SettingOwner {
+	FrameSettings() : rex::SettingOwner(renut::settings::kScope) { renut::settings::Add(*this); }
+	REX_SETTING(bool, debug_player_position, false,
+		"Shows Banjo's position (x, y, z) in the top right: the coordinates world doors, characters and "
+		"markers take.");
+	REX_SETTING(bool, renut_physics_whole_steps, true,
+		"Advance physics by whole steps each frame. Off: the game's own stepping, which "
+		"flings Banjo about on ledges and ladders at 60 fps and above.");
+	REX_SETTING(bool, renut_physics_substeps, true,
+		"Above 60 fps, shorten the physics step to a frame's length so every frame "
+		"advances physics by one step. Needs renut_physics_whole_steps.");
+	REX_SETTING(std::string, frame_cap, "60",
+		"Frame-rate cap (low-overhead limiter that cuts GPU load). "
+		"Off = uncapped, Display = match monitor refresh. With renut_vsync on, the "
+		"display paces the game at its refresh, and only caps below it apply.",
+		rex::Allowed("Off", "30", "60", "120", "144", "Display"));
+};
+FrameSettings &g_frame = *new FrameSettings();  // never freed, registered by RenutApp::OnConfigure
+
+}  // namespace
+
+namespace renut::debug {
+
+// debug_player_position, for the position overlay (ui/position_overlay.h).
+bool PlayerPositionEnabled() {
+	return g_frame.debug_player_position.Get();
+}
+
+}  // namespace renut::debug
 
 // Typed import of the original generated implementation at sub_823BBE58.
-REX_IMPORT(__imp__rex_setParamInterval, setParamInterval, void(int));
+REX_IMPORT(__imp__rex_setParamInterval, SetParamInterval, void(int));
 
-// Klungo's arcade games run their logic once per frame, so they play too fast
-// above 30 fps. While the arcade exists the frame limiter holds the game at
-// 30 fps at most, whatever frame_cap says; frame_cap applies again once it goes.
+// Klungo's arcade games run their logic once per frame, so while the arcade
+// exists the frame limiter holds the game at 30 fps at most.
 static constexpr int kKlungoArcadeFps = 30;
 static std::atomic<bool> g_klungoArcade{ false };
 
 void klungoConstruct_hook() // Called at 8244a7a0 (End of the function)
 {
-	setParamInterval(2);
+	SetParamInterval(2);
 	g_klungoArcade.store(true, std::memory_order_relaxed);
 }
 
@@ -39,13 +76,12 @@ void klungoDestruct_hook() // Called at 8244b744 (End of the function)
 {
 	// Back to the game's own interval: everything in the game that changes it
 	// (the movie player, the loading swap) restores 7 afterwards.
-	setParamInterval(7);
+	SetParamInterval(7);
 	g_klungoArcade.store(false, std::memory_order_relaxed);
 }
 
-// Klungo's arcade 2 (the DLC) is its own game object (sub_823C47E0 builds it,
-// sub_823C68A8 tears it down, dword_82E19AD8 points at it meanwhile), held at
-// 30 fps the same way.
+// Klungo's arcade 2 (the DLC; built by sub_823C47E0, torn down by
+// sub_823C68A8), held at 30 fps the same way.
 void klungoDlcConstruct_hook() // Called at 823c519c (End of the function)
 {
 	klungoConstruct_hook();
@@ -56,16 +92,12 @@ void klungoDlcDestruct_hook() // Called at 823c6b80 (End of the function)
 	klungoDestruct_hook();
 }
 
-// The Saucer of Peril Returns (Terrarium of Terror, act 2 game 3) never ends
-// above 30 fps: the saucer ride keeps going. While it runs the frame limiter
-// holds the game at 30 fps, as for Klungo's arcade. The challenge manager
-// (challengeManBegin, sub_824FDC38) keeps the running challenge's asset id at
-// +12, and challengeManSetState (sub_824FEDD8) clears it at state 0 (idle).
+// The Saucer of Peril Returns never ends above 30 fps (the ride stops short of
+// its last gate), so it is held at 30 fps; challengeMan + 12 is the running id.
 static constexpr uint32_t kSaucerOfPerilChallenge = 0x3DDFA82A;  // aid_challenge_banjox_terrorium_act2_game3
 static constexpr uint32_t kChallengeIdOffset = 12;
-// challengeMan + 20: its state (challengeManSetState). The tick treats 6 to
-// 17 as the challenge in play (it updates the players' runs then); before are
-// talking to its giver, the objective and the intro, after the results.
+// challengeMan + 20: its state (challengeManSetState); 6 to 17 is the
+// challenge in play.
 static constexpr uint32_t kChallengeStateOffset = 20;
 static constexpr int32_t kChallengePlayFirst = 6;
 static constexpr int32_t kChallengePlayEnd = 18;
@@ -74,16 +106,48 @@ static std::atomic<bool> g_saucerOfPeril{ false };
 REX_EXTERN(__imp__sub_821BD590);
 REX_EXTERN(__imp__sub_824FF2F0);
 
+REX_EXTERN(__imp__sub_821CD438);
+
+// An avatar's position (entity + 80, as the camera reads it).
+static constexpr uint32_t kAvatarPosition = 80;
+
+// void sub_821CD438(player, , avatar, world): the player's camera, each frame, on foot or driving
+// (Showdown Town included); it aims at the avatar's position. The position overlay reads Banjo's here.
+REX_HOOK_RAW(sub_821CD438)
+{
+	const uint32_t avatar = ctx.r5.u32;
+	renut::game::custom_npcs::SetPlayerAvatar(avatar);  // renut.player
+	if (avatar && g_frame.debug_player_position.Get()) {
+		auto loadf = [&](uint32_t va) {
+			const uint32_t bits = rex::byte_swap(*reinterpret_cast<const uint32_t*>(base + va));
+			float f;
+			std::memcpy(&f, &bits, 4);
+			return f;
+		};
+		renut::debug::PlayerPosition &p = renut::debug::g_player_position;
+		p.x.store(loadf(avatar + kAvatarPosition), std::memory_order_relaxed);
+		p.y.store(loadf(avatar + kAvatarPosition + 4), std::memory_order_relaxed);
+		p.z.store(loadf(avatar + kAvatarPosition + 8), std::memory_order_relaxed);
+		p.known.store(true, std::memory_order_release);
+	}
+	__imp__sub_821CD438(ctx, base);
+}
+
 // void challengeManTick(challengeMan*), once a frame from sub_82207320. The
 // running challenge also picks reNut's challenge songs (stereo.h).
 REX_HOOK_RAW(sub_821BD590)
 {
 	const uint32_t man = ctx.r3.u32;
-	__imp__sub_821BD590(ctx, base);
+	// In a co-op world the tick runs as in single player, with the co-op group's holds.
+	if (!renut::online::coop_challenge::RunTick(ctx, base, man))
+		__imp__sub_821BD590(ctx, base);
 	const uint32_t id = rex::byte_swap(*reinterpret_cast<const uint32_t*>(base + man + kChallengeIdOffset));
 	g_saucerOfPeril.store(id == kSaucerOfPerilChallenge, std::memory_order_relaxed);
 	const int32_t state = int32_t(rex::byte_swap(*reinterpret_cast<const uint32_t*>(base + man + kChallengeStateOffset)));
 	renut::game::ChallengeMusicTick(ctx, base, id, state >= kChallengePlayFirst && state < kChallengePlayEnd);
+	renut::game::WorldMusicTick(ctx, base, renut::game::custom_npcs::ActiveScene());
+	renut::game::NpcSoundsTick(ctx, base, renut::game::custom_npcs::ActiveScene());
+	renut::game::part_api::GameTick(ctx, base);  // renut.game_tick, and the mods' calls waiting for it
 }
 
 // void challengeManTeardown(challengeMan*, bool). The tick may stop with the
@@ -92,37 +156,13 @@ REX_HOOK_RAW(sub_824FF2F0)
 {
 	__imp__sub_824FF2F0(ctx, base);
 	g_saucerOfPeril.store(false, std::memory_order_relaxed);
+	renut::debug::g_player_position.known.store(false, std::memory_order_release);
+	renut::game::custom_npcs::SetPlayerAvatar(0);
 	renut::game::ChallengeMusicTick(ctx, base, 0, false);
 }
 
-// Havok steps the physics on its own thread (sub_82353060, command 8 from
-// physicsStepSend, sub_8224B3A8): fixed 1/60 s steps up to a time marker set
-// from the frame delta (at most four steps). On the console's 30 fps every
-// frame was exactly two steps. At 60 fps and above, timer jitter makes frames
-// take zero or two steps, which flings about whatever the game pins in place
-// each frame (Banjo on ledges and ladders, vehicles).
-//
-// Fix: send each frame a whole number of steps, carrying the remainder. Above
-// 60 fps the step is made as long as a frame (the measured frame interval,
-// smoothed: 1/120 s at 120 fps, 1/144 s at 144), so every frame takes one step
-// at any refresh rate. Whole splits of 1/60 s (1/120, 1/180, ...) did not fit
-// rates between the multiples of 60: at 144 fps a 1/180 s step against a
-// 1/144 s frame took one or two steps a frame by turns (judder), and from 61
-// to 66 fps a 1/60 s step against a shorter frame took none now and then (the
-// fling). Each step costs the same CPU however long it is.
-//
-// sub_82353060 caps a frame at four steps (frameDelta > 4 * step is cut). A
-// frame longer than four short steps (a hitch: 33 ms at 120 fps) takes 1/60 s
-// steps instead, as many as it needs up to the cap, so physics keeps up with
-// the clock as it did at 60 fps instead of losing the time.
-REXCVAR_DEFINE_BOOL(renut_physics_whole_steps, true, "Nuts&Bolts/Performance",
-	"Advance physics by whole steps each frame. Off: the game's own stepping, which "
-	"flings Banjo about on ledges and ladders at 60 fps and above.");
-
-REXCVAR_DEFINE_BOOL(renut_physics_substeps, true, "Nuts&Bolts/Performance",
-	"Above 60 fps, shorten the physics step to a frame's length so every frame "
-	"advances physics by one step. Needs renut_physics_whole_steps.");
-
+// Havok's physics step (sub_82353060) gets a whole number of steps each frame,
+// carrying the remainder; above 60 fps the step is shortened to a frame's length.
 static constexpr float kPhysicsStep = 0.016666668f;  // the step sub_8224B3A8 sends
 static constexpr int kMaxPhysicsSteps = 4;            // the physics thread's cap (x step)
 static constexpr double kMaxSplit = 8.0;              // 1/480 s, for up to 480 fps
@@ -135,8 +175,7 @@ static double g_physicsFrameAverage = 0.0;   // seconds between frames, smoothed
 static std::chrono::steady_clock::time_point g_physicsLastFrame{};
 
 // How many steps the 1/60 s step is cut into (1 at 60 fps and below, 2.4 at
-// 144 fps), from the measured frame interval (not the game's delta, which slow
-// motion scales).
+// 144 fps), from the measured frame interval.
 static double renutPhysicsSplit()
 {
 	using clock = std::chrono::steady_clock;
@@ -145,7 +184,7 @@ static double renutPhysicsSplit()
 		? 0.0 : std::chrono::duration<double>(now - g_physicsLastFrame).count();
 	g_physicsLastFrame = now;
 
-	if (!REXCVAR_GET(renut_physics_substeps)) {
+	if (!g_frame.renut_physics_substeps.Get()) {
 		g_physicsFrameAverage = 0.0;
 		return 1.0;
 	}
@@ -164,7 +203,7 @@ static double renutPhysicsSplit()
 REX_HOOK_RAW(sub_82353060)
 {
 	const double split = renutPhysicsSplit();
-	if (!REXCVAR_GET(renut_physics_whole_steps) || float(ctx.f2.f64) != kPhysicsStep) {
+	if (!g_frame.renut_physics_whole_steps.Get() ||float(ctx.f2.f64) != kPhysicsStep) {
 		g_physicsCarry = 0.0;
 		__imp__sub_82353060(ctx, base);
 		return;
@@ -195,12 +234,8 @@ static uint32_t renutLoadU32(const uint8_t* base, uint32_t va)
 	return rex::byte_swap(*reinterpret_cast<const uint32_t*>(base + va));
 }
 
-// Vehicle steering (vtable 0x82115B2C, calcSteering sub_8233FA80) moves each
-// wheel's angle towards its target with sub_82210520, which wraps to [0, 2pi).
-// While steering the angles are kept in [-pi, pi), but with the stick centred
-// they are not: a wheel released from a left turn can settle just under 2pi,
-// which reads as full steering lock, so the vehicle keeps turning. Short
-// (split) steps hit this almost every time. Wrap the angles back to [-pi, pi).
+// Vehicle steering (calcSteering sub_8233FA80) can leave a centred wheel's angle
+// just under 2pi (full lock); wraps the angles back to [-pi, pi).
 
 static constexpr uint32_t kSteeringWheelCountOffset = 12;  // steering + 12: wheel count
 static constexpr uint32_t kSteeringOutWheelsOffset = 4;    // out + 4: wheel angles
@@ -235,14 +270,20 @@ REX_HOOK_RAW(sub_8233FA80)
 	}
 }
 
-REXCVAR_DEFINE_STRING(frame_cap, "60", "Nuts&Bolts/Performance",
-	"Frame-rate cap (low-overhead limiter that cuts GPU load). "
-	"Off = uncapped, Display = match monitor refresh. With renut_vsync on, the "
-	"display paces the game at its refresh, and only caps below it apply.")
-	.allowed({ "Off", "30", "60", "120", "144", "Display" });
-
-// gpu/backend/present.cpp
-REXCVAR_DECLARE(bool, renut_vsync);
+// renut_vsync (gpu/backend/present.cpp), found once it is registered; its default (on) until then.
+static bool renutVsync()
+{
+	static std::atomic<rex::Setting<bool>*> vsync{ nullptr };
+	rex::Setting<bool>* setting = vsync.load(std::memory_order_acquire);
+	if (!setting) {
+		auto found = REX_SETTINGS().Find("renut.renut_vsync");
+		if (!found || (*found)->GetType() != rex::SettingType::kBool)
+			return true;
+		setting = static_cast<rex::Setting<bool>*>(*found);
+		vsync.store(setting, std::memory_order_release);
+	}
+	return setting->Get();
+}
 
 
 #if defined(_WIN32)
@@ -308,15 +349,14 @@ static void renutSleep(std::chrono::steady_clock::duration duration)
 // The user's frame_cap setting; 0 = uncapped.
 static int renutUserFrameCapFps()
 {
-	const std::string& v = REXCVAR_GET(frame_cap);
+	const std::string v = g_frame.frame_cap.Get();
 	if (v.empty() || v == "Off") return 0;
 	// Asked once it is known.
 	static int hz = 0;
 	if (!hz) hz = renutDisplayHz();
-	// With vsync the display paces the game at its refresh. A cap at or above
-	// it would only fight that: the limiter runs off the rounded refresh rate,
-	// drifts against the real one, and a frame now and then misses its vblank.
-	const bool vsync = REXCVAR_GET(renut_vsync);
+	// With vsync the display paces the game, so a cap at or above the refresh
+	// is dropped (it would drift against vblank).
+	const bool vsync = renutVsync();
 	if (v == "Display")
 		return vsync ? 0 : (hz ? hz : 60);
 	const int fps = std::atoi(v.c_str());

@@ -1,94 +1,83 @@
-#include <rex/hook.h>
-#include <rex/system/kernel_state.h>
+#include <rex/kernel/title_runtime.h>
+#include <rex/ppc/hook.h>
+#include <rex/setting.h>
 #include <rex/types.h>
-
 #include <cstdint>
+#include <string>
 #include <string_view>
-
 #include <rexglue_guide/guide.h>
-
+#include "renut_engine/app/renut_settings.h"
 #include "renut_engine/online/online.h"
 
-// Cheats are off in online multiplayer unless the session's host
-// allows them (renut_host_cheats, online/session_cheats.cpp): while the game
-// has a session (renut::online::InSession) they cannot be turned on, and
-// those already on do nothing.
+
 static bool CheatsAllowed() {
     return !renut::online::InSession() || renut::online::SessionAllowsCheats();
 }
 
-// A cheat's new value: turning one off is always allowed, turning one on only
-// outside multiplayer or in a session whose host allows cheats.
-static bool CheatValueAllowed(std::string_view value) {
-    return CheatsAllowed() || (value != "true" && value != "1");
+namespace {
+
+// Turns a cheat back off when it is switched on while the session doesn't allow cheats.
+rex::ScopeGuard GateCheat(rex::Setting<bool> &cheat) {
+    return cheat.OnChange([&cheat](const bool &on) {
+        if (on && !CheatsAllowed())
+            (void)cheat.SetText(cheat.GetLayer(), "false");
+    });
 }
 
-// Name = "Showdown Town Vehicles"
-REXCVAR_DEFINE_BOOL(change_vehicles_anywhere, false, "Nuts&Bolts/Cheats", "Enables Changing Vehicles Anywhere. Off in online multiplayer unless the host allows cheats.")
-.validator(CheatValueAllowed);
-// Name = "No Notes Spent"
-REXCVAR_DEFINE_BOOL(no_notes_spent, false, "Nuts&Bolts/Cheats", "hook created by serenity. Off in online multiplayer unless the host allows cheats.")
-.validator(CheatValueAllowed);
-// Name = "Disable LOD"
-REXCVAR_DEFINE_BOOL(disable_lod, false, "Nuts&Bolts/Graphics", "Disables LOD (Level of Detail) scaling");
-// Name = "Infinite Fuel and Ammo"
-REXCVAR_DEFINE_BOOL(infinite_fuel_and_ammo, false, "Nuts&Bolts/Cheats", "fuel never decreases. Off in online multiplayer unless the host allows cheats.")
-.validator(CheatValueAllowed);
-// Name = "Infinite Health"
-REXCVAR_DEFINE_BOOL(infinite_health, false, "Nuts&Bolts/Cheats", "health never decreases. Off in online multiplayer unless the host allows cheats.")
-.validator(CheatValueAllowed);
-// Name = "Infinite Parts"
-REXCVAR_DEFINE_BOOL(infinite_parts, false, "Nuts&Bolts/Cheats", "vehicle parts never decreases. Off in online multiplayer unless the host allows cheats.")
-.validator(CheatValueAllowed);
-// Name = "Banjo Skins"
-REXCVAR_DEFINE_STRING(banjo_skin, "default", "Nuts&Bolts/Skins", "Banjo skin override")
-.allowed({ "default", "robot", "tuxedo" });
-// Name = "No Out of Bounds Reset"
-REXCVAR_DEFINE_BOOL(no_out_of_bounds_reset, false, "Nuts&Bolts/Cheats", "Vehicles drive and fly through Showdown Town's invisible walls and ceiling, and going past the edge of the world no longer resets Banjo with a jiggy wall. Off in online multiplayer unless the host allows cheats.")
-.validator(CheatValueAllowed);
-// Name = "Unlock All Parts"
-REXCVAR_DEFINE_BOOL(unlock_all_parts, false, "Nuts&Bolts/Cheats", "Every vehicle part crate is unlocked in the garage, whether or not you've earned it. Takes effect on the next level load. Off in online multiplayer unless the host allows cheats.")
-.validator(CheatValueAllowed);
-// Name = "Max Acquired Parts Access"
-REXCVAR_DEFINE_BOOL(max_acquired_parts_access, false, "Nuts&Bolts/Cheats", "Allows max acquired vehicle parts. Off in online multiplayer unless the host allows cheats.")
-.validator(CheatValueAllowed);
+struct HookSettings final : rex::SettingOwner {
+    HookSettings() : rex::SettingOwner(renut::settings::kScope) { renut::settings::Add(*this); }
+    // Name = "Showdown Town Vehicles"
+    REX_SETTING(bool, change_vehicles_anywhere, false, "Enables Changing Vehicles Anywhere. Off in online multiplayer unless the host allows cheats.");
+    // Name = "No Notes Spent"
+    REX_SETTING(bool, no_notes_spent, false, "hook created by serenity. Off in online multiplayer unless the host allows cheats.");
+    // Name = "Disable LOD"
+    REX_SETTING(bool, disable_lod, false, "Disables LOD (Level of Detail) scaling");
+    // Name = "Infinite Fuel and Ammo"
+    REX_SETTING(bool, infinite_fuel_and_ammo, false, "fuel never decreases. Off in online multiplayer unless the host allows cheats.");
+    // Name = "Infinite Health"
+    REX_SETTING(bool, infinite_health, false, "health never decreases. Off in online multiplayer unless the host allows cheats.");
+    // Name = "Infinite Parts"
+    REX_SETTING(bool, infinite_parts, false, "vehicle parts never decreases. Off in online multiplayer unless the host allows cheats.");
+    // Name = "Banjo Skins"
+    REX_SETTING(std::string, banjo_skin, "default", "Banjo skin override", rex::Allowed("default", "robot", "tuxedo"));
+    // Name = "No Out of Bounds Reset"
+    REX_SETTING(bool, no_out_of_bounds_reset, false, "Vehicles drive and fly through Showdown Town's invisible walls and ceiling, and going past the edge of the world no longer resets Banjo with a jiggy wall. Off in online multiplayer unless the host allows cheats.");
+    // Name = "Unlock All Parts"
+    REX_SETTING(bool, unlock_all_parts, false, "Every vehicle part crate is unlocked in the garage, whether or not you've earned it. Takes effect on the next level load. Off in online multiplayer unless the host allows cheats.");
+    // Name = "Max Acquired Parts Access"
+    REX_SETTING(bool, max_acquired_parts_access, false, "Allows max acquired vehicle parts. Off in online multiplayer unless the host allows cheats.");
+
+    rex::ScopeGuard gates[8] = {
+        GateCheat(change_vehicles_anywhere), GateCheat(no_notes_spent),
+        GateCheat(infinite_fuel_and_ammo),   GateCheat(infinite_health),
+        GateCheat(infinite_parts),           GateCheat(no_out_of_bounds_reset),
+        GateCheat(unlock_all_parts),         GateCheat(max_acquired_parts_access),
+    };
+};
+HookSettings &g_hooks = *new HookSettings();  // never freed, registered by RenutApp::OnConfigure
+
+}  // namespace
 
 
 
 
 // True: the fuel/ammo use returns before it takes anything (return_on_true).
 bool Infinite_fuel_and_ammo() {
-    return REXCVAR_GET(infinite_fuel_and_ammo) && CheatsAllowed();
+    return g_hooks.infinite_fuel_and_ammo.Get() && CheatsAllowed();
 }
 
 void overworld_vehicles_hook(PPCRegister& r23, PPCRegister& r26) {
-	// If true, then set r26 to 1. This adds "Change Vehicle" to the pause menu list.
-	// r23 is left alone: in TU3's menu builder (sub_8258DC38) it is "in Showdown Town",
-	// and past this point it only hides "Return to Showdown Town" and "Quit" (entries 5, 6).
 	(void)r23;
-    if (REXCVAR_GET(change_vehicles_anywhere) && CheatsAllowed()) {
+    if (g_hooks.change_vehicles_anywhere.Get() && CheatsAllowed()) {
 		r26.u8 = 1;
     }
 }
 
-// True: a jet pushes in Showdown Town. The jet's physics step (sub_8223FF30)
-// applies no thrust while world+88 == 1 (the town) unless vehicle+0x624 is
-// set, so a vehicle brought in with the cheat only moves by its other parts.
+
 bool town_jet_thrust() {
-    return REXCVAR_GET(change_vehicles_anywhere) && CheatsAllowed();
+    return g_hooks.change_vehicles_anywhere.Get() && CheatsAllowed();
 }
 
-// Showdown Town's invisible ceiling (a lid at 107 m, rising to 214 m over the
-// middle) and its edge walls are triangles of the town's collision mesh
-// (aid_havok_banjox_background_showdowntown_default). Their materials (12
-// bytes: filter info, surface, flags) carry flag 0x04000000 (the ceiling) or
-// 0x08000000 (the edge walls). The game's contact callback (sub_823456A0)
-// has a mesh contact's material flags at 0x8234591C, r25 for body A's and
-// r23 for body B's (0 when that body isn't a mesh), r24 and r27 being bodies
-// A and B; 0x82345960 rejects the contact. With no_out_of_bounds_reset on,
-// true rejects a vehicle's contact with them in the town: vehicle bodies are
-// on filter layer 7 with the vehicle as user data (sub_825F87D0), and the
-// vehicle's world + 88 is 1 there.
 static constexpr uint32_t kTownBoundaryMaterialFlags = 0x0C000000;
 static constexpr uint32_t kBodyUserData = 0x0C;
 static constexpr uint32_t kBodyFilterInfo = 0x2C;
@@ -97,10 +86,11 @@ static constexpr uint32_t kObjectWorld = 0x4C;
 static constexpr uint32_t kWorldIsTown = 0x58;
 
 static uint32_t GuestLoad32(uint32_t va) {
-    return rex::byte_swap(*REX_KERNEL_MEMORY()->TranslateVirtual<const uint32_t*>(va));
+    return rex::byte_swap(*REX_RUNTIME()->GetMembase().TranslateVirtual<const uint32_t*>(va));
 }
 
 static bool IsVehicleInTown(uint32_t body) {
+
     if (!body || (GuestLoad32(body + kBodyFilterInfo) & 0x3F) != kVehicleBodyLayer)
         return false;
     const uint32_t vehicle = GuestLoad32(body + kBodyUserData);
@@ -109,50 +99,28 @@ static bool IsVehicleInTown(uint32_t body) {
 }
 
 bool town_boundary_pass(PPCRegister& r23, PPCRegister& r24, PPCRegister& r25, PPCRegister& r27) {
-    if (!REXCVAR_GET(no_out_of_bounds_reset) || !CheatsAllowed())
+    if (!g_hooks.no_out_of_bounds_reset.Get() || !CheatsAllowed())
         return false;
     return ((r25.u32 & kTownBoundaryMaterialFlags) && IsVehicleInTown(r27.u32)) ||
            ((r23.u32 & kTownBoundaryMaterialFlags) && IsVehicleInTown(r24.u32));
 }
 
-// Past the edge of the world's physics (the broadphase box, from the level's
-// bounds in sub_8238E258) the game's border listener queues the object
-// (sub_8238DCA0), and sub_8238DDD8 sends each one EscapedBackground (message
-// 22), which deletes it with what rides on it (sub_82384340). For the
-// player's vehicle, or Banjo himself, he goes, and the game puts him back at
-// the start with the default vehicle behind a jiggy wall. At 0x8238DE18 (r30
-// the list index * 4, r31 the border) true skips the message, so with the
-// cheat on nothing is removed for leaving the box: Banjo, his vehicle and
-// anything else carry on outside it.
 bool keep_escaped_vehicle(PPCRegister& r30, PPCRegister& r31) {
     (void)r30;
     (void)r31;
-    return REXCVAR_GET(no_out_of_bounds_reset) && CheatsAllowed();
+    return g_hooks.no_out_of_bounds_reset.Get() && CheatsAllowed();
 }
 
-// The title server's connections are cached by server address (the map at
-// 0x82DE693C, filled by sub_82C08EC0). A connection keeps its address at +0x10
-// (sub_82C08D40, with +0x14 set), but its last release (sub_82C08D98) looks
-// the cache entry up by +0x0C, which nothing sets: the entry outlives the
-// connection, and the next lookup for that server, after signing in, hands
-// out freed memory. Once that memory is reused the game crashes (seen on
-// Linux). After the load at 0x82C08DB4 (r11 the connection, r10 the key) the
-// key is the connection's own address, or 0 (no entry) without one.
 static constexpr uint32_t kConnectionAddress = 0x10;
 static constexpr uint32_t kConnectionHasAddress = 0x14;
 
 void title_server_cache_key(PPCRegister& r10, PPCRegister& r11) {
     const uint32_t connection = r11.u32;
     const bool has_address =
-        *REX_KERNEL_MEMORY()->TranslateVirtual<const uint8_t*>(connection + kConnectionHasAddress) != 0;
+        *REX_RUNTIME()->GetMembase().TranslateVirtual<const uint8_t*>(connection + kConnectionHasAddress) != 0;
     r10.u32 = has_address ? GuestLoad32(connection + kConnectionAddress) : 0;
 }
-// The game's XStorage calls (rex_XStorageUploadFromMemory and co., XDK code
-// compiled into it) hand XAM their requests in LIVE's own wire format, which
-// the runtime doesn't answer: a challenge's replay never reached the
-// leaderboard. At each one's entry, its arguments in r3-r9, they go to
-// RexLiveless through the Guide instead; true returns at once with r3 the
-// result. Without a RexLiveless account the game's own code runs, as offline.
+
 bool storage_upload(PPCRegister& r3, PPCRegister& r4, PPCRegister& r5, PPCRegister& r6, PPCRegister& r7) {
     uint32_t result = 0;
     if (!rexglue_guide::StorageUploadFromMemory(r3.u32, r4.u32, r5.u32, r6.u32, r7.u32, &result))
@@ -180,71 +148,73 @@ bool storage_enumerate(PPCRegister& r3, PPCRegister& r4, PPCRegister& r5, PPCReg
 }
 
 bool no_notes_spent() {
-    if (REXCVAR_GET(no_notes_spent) && CheatsAllowed()) {
+    if (g_hooks.no_notes_spent.Get() && CheatsAllowed()) {
         return true;
     }
     return false;
 }
 
 bool disable_lod() {
-    return REXCVAR_GET(disable_lod);
+    return g_hooks.disable_lod.Get();
+}
+
+// A scene script's command on player 1's avatar (r27, world + 0xA44 by slot) with no marker (r11): skipped
+// while there's no avatar, as in a match before the players spawn, instead of reading through null.
+bool script_player_missing(PPCRegister& r11, PPCRegister& r27) {
+    return r11.u32 == 0 && r27.u32 == 0;
 }
 
 bool Infinite_health() {
-    if (REXCVAR_GET(infinite_health) && CheatsAllowed()) {
+    if (g_hooks.infinite_health.Get() && CheatsAllowed()) {
         return true;
     }
     return false;
 }
 
 void Infinite_parts(PPCRegister& r11) {
-    if (REXCVAR_GET(infinite_parts) && CheatsAllowed()) {
+    if (g_hooks.infinite_parts.Get() && CheatsAllowed()) {
         r11.u32 = 100;
     }
 }
 
 bool BanjoActorOverride(PPCRegister& r3, PPCRegister& r5) {
-    const auto& skin = REXCVAR_GET(banjo_skin);
+    const std::string skin = g_hooks.banjo_skin.Get();
 
     if (skin == "robot") {
-        r3.u32 = 0x82148098;  // "robotbanjo_actor"
+        r3.u32 = 0x82148098;
         r5.u32 = 0;
         return false;
     }
 
     if (skin == "tuxedo") {
-        r3.u32 = 0x821480AC;  // "tuxedobanjo_actor"
+        r3.u32 = 0x821480AC;
         r5.u32 = 0;
         return false;
     }
 
-    // "default" — let the original function run
     return true;
 }
 
-// The garage's part list is rebuilt from "unlockable_blocksets" on a level
-// load (sub_824FA3D8 → sub_824FB5D8): each blockset (a part crate) adds its
-// parts only if its game flag is set (sub_824FB740). At 0x824FB648 true takes
-// the unlocked branch for every blockset. Nothing is written to the save, so
-// turning the cheat off brings back the earned list on the next load.
+// True takes the unlocked branch for every part crate at 0x824FB648 when the garage's
+// part list is rebuilt on level load (sub_824FB5D8); nothing is saved.
 bool unlock_all_parts() {
-    return REXCVAR_GET(unlock_all_parts) && CheatsAllowed();
+    return g_hooks.unlock_all_parts.Get() && CheatsAllowed();
 }
 
 void Max_Acquired_Parts_Access_hook_1(PPCRegister& r11) {
-    if (REXCVAR_GET(max_acquired_parts_access) && CheatsAllowed()) {
+    if (g_hooks.max_acquired_parts_access.Get() && CheatsAllowed()) {
         r11.u32 = 255;
     }
 }
 
 void Max_Acquired_Parts_Access_hook_2(PPCRegister& r10) {
-    if (REXCVAR_GET(max_acquired_parts_access) && CheatsAllowed()) {
+    if (g_hooks.max_acquired_parts_access.Get() && CheatsAllowed()) {
         r10.u32 = 255;
     }
 }
 
 void Max_Acquired_Parts_Access_hook_3(PPCRegister& r11) {
-    if (REXCVAR_GET(max_acquired_parts_access) && CheatsAllowed()) {
+    if (g_hooks.max_acquired_parts_access.Get() && CheatsAllowed()) {
         r11.u32 = 255;
     }
 }

@@ -1,8 +1,3 @@
-/**
- * @file    gpu/guest/resources.h
- * @brief   Host records behind the guest D3D objects the renderer creates.
- *          Each starts with the X360 struct the game reads (see d3d.h).
- */
 #pragma once
 
 #include <cstdint>
@@ -41,16 +36,12 @@ struct ShaderRecord {
   uint64_t hash = 0;
   const ShaderCacheEntry *entry = nullptr;  // nullptr: not in the cache (captured)
 
-  // Vertex shaders: what D3DVertexShader_Bind bound the shader to. The bind
-  // bakes the declaration into the microcode, so a draw with no declaration
-  // set uses it; a copy, as N&B releases the declaration right after binding.
-  // And the per-stream strides in bytes, used where SetStreamSource was given
-  // a zero stride (keep the bound one).
+  // Vertex shaders: a copy of the declaration and strides D3DVertexShader_Bind
+  // bound, used by draws with no declaration set or a zero stream stride.
   std::unique_ptr<VertexDeclarationRecord> bound_declaration;
   u32 bound_strides[d3d::kMaxStreams] = {};
-  // Vertex shaders: the declaration the shader's own vfetches describe, for
-  // draws with neither a declaration set nor a bind (bundle meshes). Built on
-  // first use; nullptr when the shader fetches no vertex elements.
+  // Vertex shaders: the declaration the shader's own vfetches describe, for draws
+  // with neither a declaration nor a bind; nullptr when it fetches no elements.
   std::unique_ptr<VertexDeclarationRecord> fetch_declaration;
   u32 fetch_strides[d3d::kMaxStreams] = {};
   bool fetch_declaration_built = false;
@@ -62,9 +53,8 @@ struct ShaderRecord {
   bool pixel() const { return kind == RecordKind::PixelShader; }
 };
 
-// The shader bound as 'shader_va': a record the renderer created, or the host
-// side of a guest object set up in place (XGRegisterVertexShader/PixelShader).
-// nullptr if it is neither. Requires State().mutex.
+// The record bound as 'shader_va' (the renderer's, or the host side of an
+// in-place XGRegister*Shader object), or nullptr. Requires State().mutex.
 ShaderRecord *FindShaderLocked(u32 shader_va, RecordKind kind);
 
 // Drops the host side of an in-place guest shader object, if it has one.

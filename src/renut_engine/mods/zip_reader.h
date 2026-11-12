@@ -1,7 +1,6 @@
 #pragma once
-// Reads the entries of a .nbpatch, which is a plain zip written by .NET's
-// ZipArchive: stored or deflated entries, sizes taken from the central
-// directory, CRC-32 checked. No zip64 (an .nbpatch is far below 4 GB).
+// Reads a .nbpatch's zip entries (stored or deflated, CRC-32 checked, sizes from the
+// central directory); zip64 is not supported.
 
 #include <cstdint>
 #include <filesystem>

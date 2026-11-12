@@ -1,6 +1,3 @@
-/**
- * @file    gpu/backend/smaa.cpp
- */
 #include "renut_engine/gpu/backend/smaa.h"
 
 #include <bit>
@@ -10,8 +7,6 @@
 #include <plume_render_interface.h>
 
 #include "renut_engine/gpu/backend/backend.h"
-#include "renut_engine/gpu/backend/gpu_profile.h"
-#include "renut_engine/gpu/log.h"
 
 #include "host_shaders/smaa_blend_ps.spirv.h"
 #include "host_shaders/smaa_edge_ps.spirv.h"
@@ -43,7 +38,7 @@ struct Target {
 };
 
 struct Smaa {
-  bool failed = false;  // the pipelines or lookup textures could not be made; logged once
+  bool failed = false;  // the pipelines or lookup textures could not be made
   bool built = false;
   std::unique_ptr<plume::RenderShader> edge_ps, weight_ps, blend_ps;
   std::unique_ptr<plume::RenderPipeline> edge, weight, blend;
@@ -134,7 +129,7 @@ bool Build(VideoState &s) {
   if (!m.edge || !m.weight || !m.blend ||
       !Make(s, m.area, AREATEX_WIDTH, AREATEX_HEIGHT, false, "renut smaa area") ||
       !Make(s, m.search, SEARCHTEX_WIDTH, SEARCHTEX_HEIGHT, false, "renut smaa search")) {
-    RGPU_ERROR("SMAA could not be set up; frames are scanned out without it");
+    // Frames are scanned out without it.
     m.failed = true;
     return false;
   }
@@ -219,9 +214,6 @@ PresentImage ApplySmaaLocked(VideoState &s, const PresentImage &image) {
       return image;
     }
   }
-  static const uint32_t kProfileLabel = gpu_profile::Label("SMAA");
-  gpu_profile::Mark(s, kProfileLabel);
-
   if (image.layout && *image.layout != plume::RenderTextureLayout::SHADER_READ) {
     cmd->barriers(plume::RenderBarrierStage::GRAPHICS,
                   plume::RenderTextureBarrier(image.texture, plume::RenderTextureLayout::SHADER_READ));

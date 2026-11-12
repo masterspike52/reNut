@@ -42,6 +42,7 @@ float GuideDialog::RowHeight(const Row& row, float width) const {
     const float h = (width - Px(36)) / row.picture_aspect;
     return (row.picture_height > 0.0f ? std::min(h, Px(row.picture_height)) : h) + Px(12);
   }
+  if (row.progress) return Px(76);
   return row.sub.empty() ? Px(56) : Px(72);
 }
 
@@ -50,6 +51,7 @@ void GuideDialog::DrawList(ImDrawList* dl, ListView& v, std::vector<Page>& stack
   Page& page = stack.back();
   v.row_hits.clear();
   v.slider_hits.clear();
+  v.inner_hits.clear();
   grid_cells_.clear();
   v.scroll_bar = {};  // (a grid or gallery page has none)
   // Pictures download only once the page stops moving (a list scrolled
@@ -103,14 +105,23 @@ void GuideDialog::DrawList(ImDrawList* dl, ListView& v, std::vector<Page>& stack
     return;
   }
 
-  // Row heights, then scroll so the selection stays in view.
-  std::vector<float> heights;
-  float total = 0.0f;
-  for (const Row& r : v.rows) {
-    heights.push_back(RowHeight(r, l1.x - l0.x));
-    total += heights.back();
-  }
+  // Row heights, then scroll so the selection stays in view. Lists rows share
+  // what the others leave of the view.
   const float view = l1.y - y;
+  std::vector<float> heights;
+  float fixed = 0.0f;
+  int fills = 0;
+  for (const Row& r : v.rows) {
+    heights.push_back(r.lists ? 0.0f : RowHeight(r, l1.x - l0.x));
+    fixed += heights.back();
+    fills += r.lists ? 1 : 0;
+  }
+  float total = fixed;
+  for (size_t i = 0; i < v.rows.size(); ++i) {
+    if (!v.rows[i].lists) continue;
+    heights[i] = std::max(Px(260), (view - fixed) / float(fills));
+    total += heights[i];
+  }
   float sel_top = 0.0f;
   for (int i = 0; i < page.selected && i < int(heights.size()); ++i) sel_top += heights[i];
   const float sel_h = page.selected < int(heights.size()) ? heights[page.selected] : 0.0f;
@@ -142,7 +153,8 @@ void GuideDialog::DrawList(ImDrawList* dl, ListView& v, std::vector<Page>& stack
     const ImVec2 r0(l0.x + slide_x, ry), r1(l1.x + slide_x, ry + heights[i] - Px(2));
     v.row_hits.push_back({ImVec2(r0.x, std::max(r0.y, y)), ImVec2(r1.x, std::min(r1.y, l1.y))});
     std::pair<ImVec2, ImVec2> slider{};
-    DrawRow(dl, row, r0, r1, int(i) == page.selected, ca, &slider);
+    if (row.Inner()) DrawInnerRow(dl, v, page, int(i), r0, r1, int(i) == page.selected, ca);
+    else DrawRow(dl, row, r0, r1, int(i) == page.selected, ca, &slider);
     v.slider_hits.push_back(slider);
     ry += heights[i];
   }
@@ -205,6 +217,28 @@ void GuideDialog::DrawRow(ImDrawList* dl, const Row& row, ImVec2 r0, ImVec2 r1, 
     const ImVec2 i0(std::floor(r0.x + Px(18) + (w - pw) * 0.5f), r0.y + Px(4)), i1(i0.x + pw, i0.y + ph);
     if (row.picture) Image(dl, row.picture, i0, i1, WithAlpha(color::kWhite, a), Px(6));
     else dl->AddRectFilled(i0, i1, WithAlpha(IM_COL32(0, 0, 0, 90), a), Px(6));
+    return;
+  }
+  if (row.progress) {
+    const float x0 = r0.x + Px(18), x1 = r1.x - Px(18);
+    float label_w = x1 - x0;
+    if (!row.detail.empty()) {
+      const std::string detail = FitCaps(row.detail, (x1 - x0) * 0.5f);
+      const float dw = CapsWidth(Semibold(), Px(14), detail, Px(1.2f));
+      Caps(dl, Semibold(), Px(14), ImVec2(x1 - dw, r0.y + Px(18)), WithAlpha(color::kTextDim, a), detail, Px(1.2f));
+      label_w -= dw + Px(18);
+    }
+    TextFit(dl, Regular(), Px(26), ImVec2(x0, r0.y + Px(8)), WithAlpha(color::kText, a), row.label, label_w);
+    // The track, and how much is done along it; unknown, a quarter of it sweeping across.
+    const float bh = Px(10), by = r1.y - Px(24);
+    dl->AddRectFilled(ImVec2(x0, by), ImVec2(x1, by + bh), WithAlpha(color::kTextDim, a * 0.35f), bh * 0.5f);
+    float f0 = 0.0f, f1 = std::clamp(*row.progress, 0.0f, 1.0f);
+    if (*row.progress < 0.0f) {
+      const float sweep = std::fmod(time_ * 0.6f, 1.0f) * 1.25f - 0.25f;
+      f0 = std::max(sweep, 0.0f);
+      f1 = std::min(sweep + 0.25f, 1.0f);
+    }
+    if (f1 > f0) dl->AddRectFilled(ImVec2(x0 + (x1 - x0) * f0, by), ImVec2(x0 + (x1 - x0) * f1, by + bh), WithAlpha(color::kGreen, a), bh * 0.5f);
     return;
   }
   if (selected) {

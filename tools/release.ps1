@@ -79,16 +79,16 @@ try {
         if ($UploadSymbols) {
             # From Windows, with the sentry-cli the Windows build found: WSL has no
             # sentry-cli of its own, and sentry-cli uploads Linux files from any OS.
-            # ORG and PROJECT are sentrywork_attach's in CMakeLists.txt.
+            # ORG and PROJECT are renut_sentry_symbols' in CMakeLists.txt.
             $cache = Get-Content (Join-Path $root "out\build\win-amd64-dist\CMakeCache.txt")
-            $cli = ($cache | Select-String '^SENTRYWORK_SENTRY_CLI:FILEPATH=(.+)$').Matches[0].Groups[1].Value
-            $files = @(
-                (Join-Path $root "out\build\linux-amd64-dist\renut"),
-                "G:\github repos\rexglue-sdk\out\install\linux-amd64\lib\librexruntime.so"
-            ) -join '|'
+            $cli = ($cache | Select-String '^RENUT_SENTRY_CLI:FILEPATH=(.+)$').Matches[0].Groups[1].Value
+            # The SDK libraries renut_sentry_symbols uploads on Windows (cmake/sentry_symbols.cmake), in bin as there.
+            $sdkLib = "G:\github repos\rexglue-sdk\out\install\linux-amd64\bin"
+            $files = (@((Join-Path $root "out\build\linux-amd64-dist\renut")) +
+                      @("base", "ppc", "kernel", "xam", "app", "xbdm" | ForEach-Object { Join-Path $sdkLib "librex$_.so" })) -join '|'
             Invoke-Step "Linux: upload symbols" {
                 cmake "-DSENTRY_CLI=$cli" -DORG=madlad-inc -DPROJECT=renut "-DFILES=$files" `
-                      -P (Join-Path $root "thirdparty\sentrywork\cmake\upload_symbols.cmake")
+                      -P (Join-Path $root "cmake\upload_symbols.cmake")
             }
         }
     }

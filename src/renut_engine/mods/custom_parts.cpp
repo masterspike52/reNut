@@ -1,6 +1,7 @@
 #include "renut_engine/mods/custom_parts.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -11,7 +12,6 @@
 #include <string_view>
 #include <system_error>
 
-#include "renut_engine/app/renut_logging.h"
 #include "renut_engine/mods/json.h"
 #include "renut_engine/mods/zip_reader.h"
 
@@ -29,6 +29,7 @@ constexpr std::string_view kAttachPrefix = "aid_avatarhavokdata_";
 constexpr size_t kMaxRecordSize = 0x10000;
 
 std::vector<CustomPart> g_parts;
+std::atomic<bool> g_fixed{false};
 std::vector<KnownCustomPart> g_known;
 std::vector<ModBundle> g_bundles;
 
@@ -76,9 +77,8 @@ bool IsPartId(const std::string &id) {
     return true;
 }
 
-// 'name' without 'type_prefix' ("aid_<type>_"), starting with 'stem_prefix':
-// "propulsion_engines_large", "banjox_vehicleblock_…" or "aid_objparams_…"
-// -> "banjox_vehicleblock_propulsion_engines_large".
+// Lower-cased 'name' without 'type_prefix' ("aid_<type>_") and starting with 'stem_prefix',
+// e.g. "propulsion_engines_large" -> "banjox_vehicleblock_propulsion_engines_large".
 std::string AssetName(std::string name, std::string_view type_prefix, std::string_view stem_prefix) {
     name = Lower(std::move(name));
     if (name.starts_with(type_prefix))
@@ -90,6 +90,11 @@ std::string AssetName(std::string name, std::string_view type_prefix, std::strin
 
 std::string BaseName(std::string base) {
     return AssetName(std::move(base), kObjparamsPrefix, kVehicleBlockPrefix);
+}
+
+// What a removed mod's part made without a base becomes: the game's light cube, every face taking parts.
+uint32_t StandInBase() {
+    return AssetId(kTypeObjparams, std::string(kVehicleBlockPrefix) + "body_light_cube");
 }
 
 void PutBigEndian(std::vector<uint8_t> &out, uint64_t value, size_t size) {
@@ -225,6 +230,22 @@ std::optional<CustomPart> ReadPart(ZipReader &zip, const std::string &entry, std
 
 } // namespace
 
+bool ValidPartId(const std::string &id) {
+    return IsPartId(id);
+}
+
+std::string PartBaseName(std::string base) {
+    return BaseName(std::move(base));
+}
+
+std::string PartModelName(std::string model) {
+    return AssetName(std::move(model), kModelPrefix, kVehiclePartsPrefix);
+}
+
+std::string PartAttachName(std::string attach) {
+    return AssetName(std::move(attach), kAttachPrefix, kVehicleBlockPrefix);
+}
+
 std::optional<std::vector<CustomPart>> ReadCustomParts(ZipReader &zip, std::string *error) {
     std::vector<CustomPart> parts;
     for (const ZipReader::EntryInfo &entry : zip.Entries()) {
@@ -241,20 +262,16 @@ std::optional<std::vector<CustomPart>> ReadCustomParts(ZipReader &zip, std::stri
     return parts;
 }
 
+// A part with the id of an earlier mod's part is skipped.
 void AddCustomParts(std::vector<CustomPart> parts) {
+    if (g_fixed)
+        return;
     for (CustomPart &part : parts) {
         bool taken = false;
         for (const CustomPart &other : g_parts)
             taken |= other.id == part.id;
-        if (taken) {
-            RNUT_ERROR("mods: {}: part '{}' skipped: an earlier mod has a part with that id", part.mod, part.id);
-            continue;
-        }
-        RNUT_INFO("mods: {}: part '{}' ({}){}{}{}", part.mod, part.id, part.name.empty() ? "no name" : part.name,
-                  part.base.empty() ? "" : ", from " + part.base,
-                  part.script.empty() ? "" : ", scripted by " + part.script,
-                  part.model.empty() ? "" : ", model " + part.model);
-        g_parts.push_back(std::move(part));
+        if (!taken)
+            g_parts.push_back(std::move(part));
     }
 }
 
@@ -262,12 +279,26 @@ const std::vector<CustomPart> &CustomParts() {
     return g_parts;
 }
 
+const CustomPart *FindCustomPart(const std::string &id) {
+    for (const CustomPart &part : g_parts)
+        if (part.id == id)
+            return &part;
+    return nullptr;
+}
+
+void FixCustomParts() {
+    g_fixed = true;
+}
+
+bool CustomPartsFixed() {
+    return g_fixed;
+}
+
+// A bundle another mod already adds is skipped.
 void AddModBundle(ModBundle bundle) {
     for (const ModBundle &other : g_bundles) {
-        if (other.id == bundle.id) {
-            RNUT_ERROR("mods: {}: bundle {:08X} skipped: '{}' already adds it", bundle.mod, bundle.id, other.mod);
+        if (other.id == bundle.id)
             return;
-        }
     }
     g_bundles.push_back(std::move(bundle));
 }
@@ -283,15 +314,15 @@ void RememberCustomParts(const std::filesystem::path &mods_folder) {
     if (fs::is_regular_file(file, ec)) {
         std::ifstream in(file, std::ios::binary);
         const std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+        // A damaged file: vehicles with parts of removed mods may not load.
         std::string error;
-        auto json = ParseJson(text, &error);
-        if (!json) {
-            RNUT_WARN("mods: {} is damaged ({}); vehicles with parts of removed mods may not load", kKnownFile, error);
-        } else {
+        if (auto json = ParseJson(text, &error)) {
             for (const JsonValue &p : json->Array("parts")) {
                 KnownCustomPart known;
                 known.aid = uint32_t(std::strtoul(p.String("aid").c_str(), nullptr, 16));
                 known.base_aid = uint32_t(std::strtoul(p.String("base").c_str(), nullptr, 16));
+                if (!known.base_aid)
+                    known.base_aid = StandInBase();
                 known.id = p.String("id");
                 known.mod = p.String("mod");
                 if (known.aid)
@@ -304,7 +335,7 @@ void RememberCustomParts(const std::filesystem::path &mods_folder) {
     for (const CustomPart &part : g_parts) {
         KnownCustomPart now;
         now.aid = AssetId(kTypeObjparams, kPartAssetPrefix + part.id);
-        now.base_aid = part.base.empty() ? 0 : AssetId(kTypeObjparams, part.base);
+        now.base_aid = part.base.empty() ? StandInBase() : AssetId(kTypeObjparams, part.base);
         now.id = part.id;
         now.mod = part.mod;
         auto it = std::find_if(g_known.begin(), g_known.end(), [&](const KnownCustomPart &k) { return k.aid == now.aid; });
@@ -329,9 +360,6 @@ void RememberCustomParts(const std::filesystem::path &mods_folder) {
     fs::create_directories(mods_folder, ec);
     std::ofstream out(file, std::ios::binary | std::ios::trunc);
     out.write(text.data(), std::streamsize(text.size()));
-    if (!out)
-        RNUT_WARN("mods: cannot write {}; vehicles with this run's custom parts may not load once their mods are removed",
-                  kKnownFile);
 }
 
 const KnownCustomPart *FindKnownCustomPart(uint32_t aid) {

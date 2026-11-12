@@ -5,7 +5,7 @@
 #include <mutex>
 
 namespace rex::ui {
-class WindowedAppContext;
+class IUISystem;
 }
 
 namespace rexglue_guide {
@@ -58,7 +58,7 @@ class Input {
   // another thread: SDL's Raw Input and Windows.Gaming.Input pads (a
   // DualSense over Bluetooth, for one) only update on a thread that pumps
   // window messages.
-  void SetUiThread(rex::ui::WindowedAppContext* context) { ui_ = context; }
+  void SetUiThread(rex::ui::IUISystem* ui) { ui_ = ui; }
 
   // text_entry: the keyboard is typing, so letter keys aren't navigation.
   // controller: the one driving the Guide (as in NavInput::guide_from), whose
@@ -94,7 +94,7 @@ class Input {
     Pad pad;
     std::atomic<bool> queued{false};
   };
-  rex::ui::WindowedAppContext* ui_ = nullptr;
+  rex::ui::IUISystem* ui_ = nullptr;
   std::shared_ptr<Sampled> sampled_ = std::make_shared<Sampled>();
   bool prev_[32] = {};
   bool prev_guide_[4] = {};  // each controller's Guide button, as the title read it

@@ -1,6 +1,3 @@
-/**
- * @file    gpu/render/texture_layout.cpp
- */
 #include "renut_engine/gpu/render/texture_layout.h"
 
 #include <algorithm>
@@ -36,10 +33,7 @@ u32 AlignMask(u32 v, u32 a) {
 }
 
 // AlignTextureDimensions (0x82207C28): pads a level's size to what its
-// storage takes and returns its bytes. Rows are 32 blocks at least (for a
-// linear texture as many as fill 256 bytes, if more); rows of blocks come in
-// 32s but for 1D textures, depth slices in 4s for 3D textures; a 2D slice is
-// 4 KiB aligned, a 3D level as a whole.
+// storage takes and returns its bytes.
 u32 AlignTextureDimensions(u32 &width, u32 &height, u32 &depth, u32 bpp, GpuTextureFormat format,
                            TextureDimension dimension, bool tiled) {
   u32 block_width, block_height;
@@ -59,10 +53,7 @@ u32 AlignTextureDimensions(u32 &width, u32 &height, u32 &depth, u32 bpp, GpuText
 }
 
 // GetMipTailLevelOffsetCoords (0x826555E0): where level 'level' of a packed
-// tail starts in the tail level (w x h x d, powers of two). The first three
-// levels line up along the tail's shorter side, 16 >> level texels in; the
-// rest along the other side, at its size >> (level - 2), and once that is
-// under 4, in depth slices 4 apart.
+// tail starts in the tail level (w x h x d, powers of two).
 void MipTailCoords(u32 level, u32 width, u32 height, u32 depth, GpuTextureFormat format,
                    u32 &x_blocks, u32 &y_blocks, u32 &z) {
   const u32 log2_width = CeilLog2(width);
@@ -158,13 +149,8 @@ void FormatBlockSize(GpuTextureFormat format, u32 &block_width, u32 &block_heigh
   }
 }
 
-// The subresource layout (0x82207680) for slice 0 of 'level'. The base level
-// has the header's size and pitch at the base address. Mip levels follow one
-// another from the mip address, each padded from the base size rounded up
-// to powers of two, every slice of one before the next. With packed mips,
-// the first level 16 texels or less on a side holds itself and every
-// smaller level (MipTailCoords); when that is the base level, the whole
-// texture is at the base address.
+// The subresource layout (0x82207680) for slice 0 of 'level': the base level
+// at the base address, mips from the mip address, small ones in a packed tail.
 TextureLevelLayout GetTextureLevelLayout(const TextureFetch &fetch, u32 level) {
   const GpuTextureFormat format = fetch.Format();
   const u32 bpp = FormatBitsPerPixel(format);

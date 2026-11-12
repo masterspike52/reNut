@@ -1,23 +1,3 @@
-/**
- * @file    gpu/render/texture_layout.h
- * @brief   Texture fetch constants and where a texture's data lies in guest
- *          memory, as N&B's own D3D and XGraphics code lays them out.
- *
- * Every field and rule here comes from the game's statically linked
- * libraries (addresses in the N&B database):
- * - The fetch constant: D3D::SetTextureHeader (0x8228E990) writes the data
- *   fields, D3DDevice_SetTexture (0x8222F410) merges them with the sampler
- *   state the D3DDevice_SetSamplerState_* setters keep.
- * - Sizes: GetGpuTextureDimensions (0x82655540); per-format bits per pixel
- *   (table 0x820052F8) and block size (BlockSizeOfGpuFormat, 0x82207B90);
- *   alignment (AlignTextureDimensions, 0x82207C28); total sizes
- *   (FindTextureSize, 0x82287E60).
- * - Level placement: the subresource layout D3D and XGGetTextureLayout use
- *   (0x82207680) and the packed mip tail (GetMipTailLevelOffsetCoords,
- *   0x826555E0).
- * - Tiling: XGRAPHICS::UntileSurface (0x8280A050) and
- *   XGAddress3DTiledOffset (0x8280D318).
- */
 #pragma once
 
 #include <cstdint>
@@ -49,9 +29,8 @@ enum class TextureAddress : u32 {
   MirrorOnceBorder = 7,
 };
 
-// Filter fields as the MagFilter / MinFilter / MipFilter setters write them
-// (D3DTEXF_POINT 0, D3DTEXF_LINEAR 1; a mip filter of 2 samples the base
-// level only).
+// Filter fields as the MagFilter / MinFilter / MipFilter setters write them;
+// a mip filter of 2 samples the base level only.
 enum class TextureFilter : u32 {
   Point = 0,
   Linear = 1,
@@ -66,17 +45,8 @@ enum class TextureSign : u32 {
   Gamma = 3,
 };
 
-// A texture fetch constant, native-endian. Bit layout as the game's D3D
-// writes it (see the file comment):
-//   0: type 0-1 (2 = texture), signs 2-9, clamp U/V/W 10-12/13-15/16-18,
-//      pitch / 32 texels 22-30, tiled 31
-//   1: format 0-5, endian 6-7, stacked 10, base address 12-31
-//   2: size (see Size)
-//   3: number format 0, swizzle 1-12, exponent adjust 13-18, mag / min / mip
-//      filter 19-20 / 21-22 / 23-24, anisotropy 25-27, border 31
-//   4: volume mag / min filter 0 / 1, mip levels min 2-5 / max 6-9, LOD
-//      bias 12-21 (signed, 1/32 steps)
-//   5: border color 0-1, dimension 9-10, packed mips 11, mip address 12-31
+// A texture fetch constant, native-endian, as the game's D3D writes it
+// (D3DDevice_SetTexture, 0x8222F410); the accessors give each field's bits.
 struct TextureFetch {
   u32 dword[6] = {};
 

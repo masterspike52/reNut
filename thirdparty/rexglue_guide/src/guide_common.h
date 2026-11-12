@@ -8,6 +8,8 @@
 #include <cstdint>
 #include <ctime>
 #include <functional>
+#include <map>
+#include <memory>
 #include <mutex>
 #include <optional>
 #include <string>
@@ -68,11 +70,25 @@ struct Credit {
 extern std::mutex g_credits_mutex;
 std::vector<Credit>& AppCredits();  // under g_credits_mutex
 
+// Where the selection is inside an app menu's row that has places of its own:
+// a Bar's buttons, or a Lists row's two lists.
+struct InnerState {
+  int column = 0;           // the button, or the list (0 left, 1 right)
+  std::string item[2];      // per list: the thing selected, by id
+  int index[2] = {};        // its place as last seen, for when it's gone
+  bool held = false;        // picked up, to be carried
+  float scroll[2] = {};     // per list
+  bool free_scroll[2] = {};  // scrolled by the mouse wheel, not following the selection
+};
+
 struct Page {
   PageKind kind;
   std::string title;
   std::string arg;
   int selected = 0;
+  // An app menu's: its rows' keys as last built, for the selection to follow.
+  std::vector<std::string> row_keys;
+  std::map<std::string, InnerState> inner;  // by row key
   float scroll = 0.0f;
   // The mouse has the page (its wheel, or hovering picked the selection): the
   // view goes to scroll_goal rather than following the selection, so it
@@ -109,8 +125,29 @@ inline int KeepInGrid(int selected, int count, int columns, float top, float fit
   return std::clamp(row * columns + selected % columns, 0, count - 1);
 }
 
+// An app menu's two lists side by side (Menu::Lists), as the Guide draws them.
+struct RowLists {
+  struct Item {
+    std::string id, label, sub;
+    std::function<ImTextureID(bool* loading)> icon;
+  };
+  std::string title[2];
+  std::string across[2];  // what sending a thing across does, by the side it's on
+  std::vector<Item> items[2];
+};
+
+// What the player did in a Lists row: opened a thing, or moved it to a place
+// in a list.
+struct ListsDone {
+  bool open = false;
+  std::string id;
+  int list = 0;
+  int index = 0;
+};
+
 struct Row {
   std::optional<ImU32> swatch;  // a colour square on the left (themes)
+  std::string key;  // an app menu's row: what tells it apart from the others
   std::string label;
   std::string sub;     // second line; makes the row tall
   std::string detail;  // small caps on the right
@@ -143,13 +180,34 @@ struct Row {
   ImTextureID picture = 0;
   float picture_aspect = 0.0f;
   float picture_height = 0.0f;
-  bool Selectable() const { return !header && text.empty() && picture_aspect <= 0.0f; }
+  // A progress bar under the label (Menu::Progress): how much is filled, below
+  // 0 when that isn't known.
+  std::optional<float> progress;
+  // Buttons side by side (Menu::Bar), and the one chosen.
+  std::vector<std::string> bar;
+  std::function<void(int)> bar_chosen;
+  // Two lists side by side (Menu::Lists), and what was done in them.
+  std::shared_ptr<const RowLists> lists;
+  std::function<void(ListsDone)> lists_done;
+  bool Inner() const { return !bar.empty() || lists; }
+  bool Selectable() const { return !header && text.empty() && picture_aspect <= 0.0f && !progress; }
+};
+
+// Where the mouse can act inside a Bar or Lists row, as last drawn.
+struct InnerHit {
+  enum class Kind { kButton, kList, kItem, kAcross, kUp, kDown };
+  Kind kind;
+  ImVec2 p0, p1;
+  int row = 0;
+  int column = 0;  // the button, or the list
+  int index = 0;   // the thing in the list
 };
 
 // A list of rows as last drawn, and what the mouse is doing with it: the
 // Guide's open page, or a detached menu's.
 struct ListView {
   std::vector<Row> rows;
+  std::vector<InnerHit> inner_hits;
   std::vector<std::pair<ImVec2, ImVec2>> row_hits;
   std::vector<std::pair<ImVec2, ImVec2>> slider_hits;  // per row; empty unless a slider
   int dragging_slider = -1;
@@ -173,8 +231,10 @@ struct MenuEvent {
   std::optional<int> index;
   std::optional<double> number;
   std::optional<std::string> text;
+  std::optional<ListsDone> lists;
 };
 constexpr char kMenuRow = '\x1d';  // between a page's arg and a row's id
+constexpr char kMenuItem = '\x1c';  // between a Bar or Lists row's id and a button's or thing's, for their pages
 
 // What a list's input asks of the one showing it.
 struct ListInput {

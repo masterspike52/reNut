@@ -12,6 +12,7 @@ function(rexglue_guide_attach target)
   set(sources
     ${dir}/src/assets.cpp
     ${dir}/src/audio.cpp
+    ${dir}/src/enumerator.cpp
     ${dir}/src/file_picker.cpp
     ${dir}/src/guest.cpp
     ${dir}/src/guide.cpp
@@ -24,6 +25,7 @@ function(rexglue_guide_attach target)
     ${dir}/src/guide_games.cpp
     ${dir}/src/guide_input.cpp
     ${dir}/src/guide_menus.cpp
+    ${dir}/src/guide_menu_rows.cpp
     ${dir}/src/guide_messages.cpp
     ${dir}/src/guide_pages.cpp
     ${dir}/src/guide_popups.cpp

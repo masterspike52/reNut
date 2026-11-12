@@ -1,30 +1,9 @@
-/**
- * @file    game/thread_slots.cpp
- * @brief   N&B's thread slots, given back when their threads have exited.
- *
- * N&B keeps a table of the threads it has seen (sub_8220F350; filled in by
- * sub_823ADCB8): 27 entries of {handle, thread ID, slot} at 0x82E0BAD0, the
- * first 6 its own threads', the other 21 given to any other thread the first
- * time it asks for its slot. Its allocator picks the thread's heap by that slot
- * (meInternalAlloc_82332A08: dword_82E0AE70[slot]). Nothing gives an entry
- * back: on the console a thread's ID is used again once it has exited, but the
- * SDK gives every thread a new ID. Short-lived threads (each area change makes
- * some) use the 21 entries up over a long session; the next new thread then
- * gets slot 27, which has no heap, and its first allocation reads through a
- * null heap (guest 0x24): the crash at an area change after an hour or so.
- *
- * When the game finds the table full (slot 27), the entries of threads that
- * have exited are made free here and it asks again. A full table costs a
- * second look only then.
- */
-#include <rex/hook.h>
-#include <rex/system/kernel_state.h>
-#include <rex/system/xthread.h>
+#include <rex/kernel/thread_registry.h>
+#include <rex/kernel/title_runtime.h>
+#include <rex/ppc/hook.h>
 #include <rex/types.h>
 
 #include <cstdint>
-
-#include "renut_engine/app/renut_logging.h"
 
 REX_EXTERN(__imp__sub_8220F350);  // a thread's slot, by thread ID
 
@@ -55,8 +34,8 @@ uint32_t FreeExitedThreads(uint8_t *base) {
     const uint32_t thread_id = Load32(base, entry + kEntryThreadIdOffset);
     if (thread_id == kFreeThreadId)
       continue;
-    const auto thread = REX_KERNEL_STATE()->GetThreadByID(thread_id);
-    if (thread && thread->is_running())
+    const rex::kernel::ThreadPin thread = REX_RUNTIME()->GetThreadRegistry().Find(thread_id);
+    if (thread && thread->IsRunning())
       continue;
     Store32(base, entry + kEntryHandleOffset, 0);
     Store32(base, entry + kEntryThreadIdOffset, kFreeThreadId);
@@ -67,17 +46,14 @@ uint32_t FreeExitedThreads(uint8_t *base) {
 
 } // namespace
 
-// int sub_8220F350(DWORD thread_id): the thread's slot, an entry taken for it
-// the first time.
+// int sub_8220F350(DWORD thread_id): the thread's slot; when the table is full,
+// exited threads' entries are freed and it asks again.
 REX_HOOK_RAW(sub_8220F350) {
   const uint32_t thread_id = ctx.r3.u32;
   __imp__sub_8220F350(ctx, base);
   if (ctx.r3.u32 != kNoSlot)
     return;
-  const uint32_t freed = FreeExitedThreads(base);
-  RNUT_INFO("Threads: the game's thread table was full; {} entries of exited threads freed",
-            freed);
-  if (!freed)
+  if (!FreeExitedThreads(base))
     return;
   ctx.r3.u64 = thread_id;
   __imp__sub_8220F350(ctx, base);

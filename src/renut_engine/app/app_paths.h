@@ -1,20 +1,11 @@
 #pragma once
-// Where reNut writes its own files (renut.toml, logs, pipeline captures,
-// renut.cfg's paths, shader captures, by default the extracted game). Next to the executable, as the SDK assumes;
-// an AppImage runs from a read-only mount, so there it is the user data
-// folder the SDK keeps saves in ($XDG_DATA_HOME/renut, or
-// ~/.local/share/renut), and the working directory is moved there so the
-// paths reNut writes relative to it land there too.
-
 #include <cstdlib>
 #include <filesystem>
 #include <system_error>
-
-#include <rex/filesystem.h>
+#include <rex/platform/file.h>
 
 namespace renut::paths {
 
-// The AppImage runtime sets APPIMAGE to the image's own path.
 inline bool IsAppImage() {
 #if defined(__linux__)
 	const char *image = std::getenv("APPIMAGE");
@@ -26,12 +17,10 @@ inline bool IsAppImage() {
 
 inline std::filesystem::path WritableFolder() {
 	if (IsAppImage())
-		return rex::filesystem::GetUserFolder() / "renut";
-	return rex::filesystem::GetExecutableFolder();
+		return rex::platform::GetUserFolder() / "renut";
+	return rex::platform::GetExecutableFolder();
 }
 
-// Once, before anything is written: creates the folder and, for an AppImage,
-// makes it the working directory.
 inline void PrepareWritableFolder() {
 	if (!IsAppImage())
 		return;
@@ -41,4 +30,4 @@ inline void PrepareWritableFolder() {
 	std::filesystem::current_path(folder, ec);
 }
 
-} // namespace renut::paths
+}

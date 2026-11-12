@@ -1,6 +1,3 @@
-/**
- * @file    gpu/render/parallel.cpp
- */
 #include "renut_engine/gpu/render/parallel.h"
 
 #include <algorithm>

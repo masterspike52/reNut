@@ -1,28 +1,4 @@
-/**
- * @file    game/startup_logo.cpp
- * @brief   A or Start skips the Microsoft Game Studios logo at startup.
- *
- * N&B's startup movies (IDA, TU3): sub_82283E78 loads
- * aid_xmv_banjox_attractsequence_mgslogo and aid_xmv_banjox_bootupsequence_1
- * into memory (meLoadMovie, 0x82283F78; the logo's data at dword_82E18104) and
- * starts the movie thread (sub_82284080). For each movie the thread makes a
- * movie object (dword_82E180F4 points at it meanwhile), opens a player from the
- * data into the object + 24 (XMediaCreateXmvPlayerFromMemory) and renders
- * frames (IXMediaXmvPlayer_RenderNextFrame) until the movie ends or the
- * object's + 12 is set, then releases the player.
- *
- * The boot-up sequence sets + 12 from its frame callback (sub_82284378: A or
- * Start on any port), but only once loading is done (dword_82E180F8, signalled
- * by sub_82283640 during the boot-up sequence; the main thread waits for the
- * logo to end before it loads on, at appMainBoot's wait on dword_82E18100). The
- * logo has no callback, so the game plays it to its end.
- *
- * Here a press of A or Start during the logo (any controller's, or the bound
- * keys' with renut_keyboard) sets the logo's + 12, and the thread goes on as
- * when the logo ends: the boot-up sequence next.
- */
-#include <rex/hook.h>
-#include <rex/logging.h>
+#include <rex/ppc/hook.h>
 #include <rex/types.h>
 
 #include <atomic>
@@ -43,8 +19,6 @@ namespace {
 using renut::guest::Load16;
 using renut::guest::Load32;
 using renut::guest::Store32;
-
-const rex::LogCategoryId kLogoLog = rex::RegisterLogCategory("renut_startup");
 
 // Guest data.
 constexpr uint32_t kLogoData = 0x82E18104;     // the logo's movie data (meLoadMovie)
@@ -74,7 +48,7 @@ uint32_t SkipButtonsHeld(PPCContext &ctx, uint8_t *base) {
   renut::guest::Guest g(ctx, base);
   const uint32_t state = g.Alloc(kStateSize);
   for (uint32_t port = 0; port < kPorts; ++port) {
-    if (GuestXInputGetState(g.frame(), base, port, state) == kErrorSuccess)
+    if (GuestXInputGetState(g.ctx(), base, port, state) == kErrorSuccess)
       buttons |= Load16(base, state + kStateButtonsOffset);
   }
   return buttons & kSkipButtons;
@@ -94,9 +68,8 @@ REX_HOOK_RAW(rex_XMediaCreateXmvPlayerFromMemory) {
   g_held_known = false;
 }
 
-// HRESULT IXMediaXmvPlayer_RenderNextFrame(player, flags, ...), on the movie
-// thread once per frame: a skip press during the logo stops it after this
-// frame (the thread checks the stop after each one).
+// HRESULT IXMediaXmvPlayer_RenderNextFrame(player, flags, ...): a skip press
+// during the logo sets its movie object's stop flag (+ 12).
 REX_HOOK_RAW(rex_IXMediaXmvPlayer_RenderNextFrame) {
   const uint32_t player = ctx.r3.u32;
   const uint32_t logo = g_logo_player.load(std::memory_order_relaxed);
@@ -110,7 +83,6 @@ REX_HOOK_RAW(rex_IXMediaXmvPlayer_RenderNextFrame) {
       if (g_held_known && (held & ~g_held)) {
         Store32(base, movie + kMovieStop, 1);
         g_logo_player.store(0, std::memory_order_relaxed);
-        REXLOG_CAT_INFO(kLogoLog, "Startup: the Microsoft Game Studios logo skipped");
       }
       g_held = held;
       g_held_known = true;
@@ -119,9 +91,8 @@ REX_HOOK_RAW(rex_IXMediaXmvPlayer_RenderNextFrame) {
   __imp__rex_IXMediaXmvPlayer_RenderNextFrame(ctx, base);
 }
 
-// ULONG IXMediaXmvPlayer_Release(player): the logo's player, released when the
-// logo ends unskipped, is no longer the logo's (the boot-up sequence's player
-// may take its address).
+// ULONG IXMediaXmvPlayer_Release(player): forgets the logo's player when it is
+// released (the next player may reuse its address).
 REX_HOOK_RAW(rex_IXMediaXmvPlayer_Release) {
   uint32_t logo = ctx.r3.u32;
   g_logo_player.compare_exchange_strong(logo, 0, std::memory_order_relaxed);

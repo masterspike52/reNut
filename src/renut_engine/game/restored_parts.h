@@ -1,9 +1,3 @@
-/**
- * @file    game/restored_parts.h
- * @brief   The game's own parts reNut gives the player from the start: the
- *          Stereo (renut_stereo, a Jinjo Bingo prize; stereo.cpp plays it) and
- *          the cut Remote Control (renut_cut_parts).
- */
 #pragma once
 
 #include <cstdint>

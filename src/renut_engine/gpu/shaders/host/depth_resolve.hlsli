@@ -1,11 +1,5 @@
-// Depth resolve: a host depth target to what a Xenos resolve of the EDRAM
-// depth writes to memory. Drawn with present_vs over the destination; the
-// source texel is the destination pixel plus g_Push.translate.
-//   g_Push.textureIndex : the depth target's slot in the bindless table
-//   g_Push.param0       : 1 for D24FS8 (20e4 float depth), 0 for D24S8
-// SV_Target0 is the depth a 24_8 / 24_8_FLOAT texture fetch returns; SV_Target1 is
-// the guest word (depth << 8 | stencil) as bytes, least significant first,
-// for 8_8_8_8 textures over the same memory. Stencil reads as 0.
+// Depth resolve: writes a host depth target as a Xenos EDRAM depth resolve would,
+// as fetched depth (SV_Target0) and guest words as 8_8_8_8 bytes (SV_Target1).
 #define UTILITY_OWN_TEXTURE_TABLE
 #include "utility.hlsli"
 
@@ -32,10 +26,8 @@ uint EncodeUnorm24(float depth)
     return uint(saturate(depth) * 16777215.0 + 0.5);
 }
 
-// 20e4: a 4-bit exponent (bias 15) above a 20-bit mantissa, covering [0, 2).
-// From 2^-14 up a value is 1.mantissa * 2^(exponent - 15), which a float's
-// exponent and top 20 mantissa bits give directly; below, the exponent is 0
-// and the mantissa counts steps of 2^-34. Truncated, like the unorm path.
+// 20e4: a 4-bit exponent (bias 15) above a 20-bit mantissa, covering [0, 2);
+// denormals below 2^-14 count steps of 2^-34. Truncated, like the unorm path.
 uint EncodeFloat20e4(float depth)
 {
     const float d = clamp(depth, 0.0, 1.99999988);

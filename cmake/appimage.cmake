@@ -36,12 +36,22 @@ endif()
 
 set(renut_appdir "${CMAKE_BINARY_DIR}/AppDir")
 
-# SentryWork's crash daemon goes next to renut, with the libraries it needs.
+# RexCrash's crash daemon and its crash reporter window go next to renut, with
+# the libraries they need. The reporter is taken from its own build tree
+# (_rexcrash_reporter_dir, set by RexCrash's CMakeLists): on Linux that is
+# <build dir>/rexcrashreporter, so beside renut the name is that directory,
+# not the program.
 set(renut_sentry_crash "")
 if(TARGET sentry-crash)
     set(renut_sentry_crash
         COMMAND "${CMAKE_COMMAND}" -E copy "$<TARGET_FILE:sentry-crash>" "${renut_appdir}/usr/bin/sentry-crash")
     set(renut_sentry_crash_executable --executable "${renut_appdir}/usr/bin/sentry-crash")
+endif()
+if(TARGET rexcrashreporter_project)
+    list(APPEND renut_sentry_crash
+        COMMAND "${CMAKE_COMMAND}" -E copy "${_rexcrash_reporter_dir}/rexcrashreporter"
+                "${renut_appdir}/usr/bin/rexcrashreporter")
+    list(APPEND renut_sentry_crash_executable --executable "${renut_appdir}/usr/bin/rexcrashreporter")
 endif()
 set(renut_appimage "${CMAKE_BINARY_DIR}/renut-x86_64.AppImage")
 
@@ -52,11 +62,10 @@ add_custom_command(
     COMMAND "${CMAKE_COMMAND}" -E make_directory "${renut_appdir}/usr/bin"
     COMMAND "${CMAKE_COMMAND}" -E copy "$<TARGET_FILE:renut>" "${renut_appdir}/usr/bin/renut"
     ${renut_sentry_crash}
-    # The rexglue runtime is found where the SDK installed it, and the EOS SDK
-    # next to renut (copied there after linking). linuxdeploy runs extracted,
-    # so FUSE is not needed on the build machine.
+    # The rexglue runtime is found where the SDK installed it. linuxdeploy runs
+    # extracted, so FUSE is not needed on the build machine.
     COMMAND "${CMAKE_COMMAND}" -E env
-            "LD_LIBRARY_PATH=$<TARGET_FILE_DIR:rex::runtime>:$<TARGET_FILE_DIR:renut>"
+            "LD_LIBRARY_PATH=$<TARGET_FILE_DIR:rex::base>:$<TARGET_FILE_DIR:renut>"
             APPIMAGE_EXTRACT_AND_RUN=1 ARCH=x86_64
             "LDAI_OUTPUT=${renut_appimage}" "OUTPUT=${renut_appimage}"
             "${renut_linuxdeploy}" --appdir "${renut_appdir}"

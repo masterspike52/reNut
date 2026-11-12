@@ -21,12 +21,12 @@
 #include <vector>
 
 #include <nlohmann/json.hpp>
-#include <rex/logging.h>
 
 #include "guest.h"
 #include "http.h"
 #include "live.h"
 #include "live_stats.h"
+#include "log.h"
 #include "net.h"
 
 using namespace rexglue_guide::guest;
@@ -85,7 +85,7 @@ std::vector<uint8_t> Unhex(const std::string& s) {
 
 std::string TitleId() {
   char t[9];
-  std::snprintf(t, sizeof(t), "%08X", REX_KERNEL_STATE()->title_id());
+  std::snprintf(t, sizeof(t), "%08X", RunningTitleId());
   return t;
 }
 
@@ -123,12 +123,12 @@ void PublishLocked(const Session& s) {
                {"properties", AttrsJson(false)},
                {"contexts", AttrsJson(true)}};
   const auto r = Api("POST", "/api/sessions", body);
-  if (r.status != 200) REXKRNL_WARN("RexLiveless: couldn't publish session ({} {})", r.status, r.error);
+  if (r.status != 200) RG_WARN("RexLiveless: couldn't publish session ({} {})", r.status, r.error);
 }
 
 void Complete(PPCContext& ctx, uint32_t overlapped, uint32_t result) {
   if (overlapped) {
-    REX_KERNEL_STATE()->CompleteOverlappedImmediate(overlapped, result);
+    CompleteOverlapped(overlapped, result);
     return Return(ctx, kIoPending);
   }
   Return(ctx, result);
@@ -166,7 +166,7 @@ uint32_t SessionCreate(const uint8_t* buf) {
     PublishLocked(s);
   }
   g_sessions[handle] = s;
-  REXKRNL_INFO("RexLiveless: XSessionCreate {} flags {:08X} session {}", s.host ? "host" : "join", flags, Hex(s.info, 8));
+  RG_INFO("RexLiveless: XSessionCreate {} flags {:08X} session {}", s.host ? "host" : "join", flags, Hex(s.info, 8));
   return kSuccess;
 }
 
@@ -246,7 +246,7 @@ struct ResultSpace {
       next += size;
       return p;
     }
-    return REX_KERNEL_MEMORY()->SystemHeapAlloc(size);
+    return SystemHeapAlloc(size);
   }
 };
 
@@ -285,7 +285,7 @@ uint32_t SessionSearch(const uint8_t* buf) {
   }
   Store32(out, count);
   Store32(out + 4, count ? results_ptr : 0);
-  REXKRNL_INFO("RexLiveless: XSessionSearchEx -> {} session(s)", count);
+  RG_INFO("RexLiveless: XSessionSearchEx -> {} session(s)", count);
   return kSuccess;
 }
 
@@ -311,7 +311,7 @@ uint32_t SessionSearchById(const uint8_t* buf) {
     }
   }
   if (!session.is_object()) {
-    REXKRNL_INFO("RexLiveless: XSessionSearchByID {} -> not found ({} {})", id, r.status, r.error);
+    RG_INFO("RexLiveless: XSessionSearchByID {} -> not found ({} {})", id, r.status, r.error);
     return kSuccess;
   }
   const uint32_t results_ptr = out_ptr + 8;
@@ -319,7 +319,7 @@ uint32_t SessionSearchById(const uint8_t* buf) {
   WriteSearchResult(session, results_ptr, space, nullptr, 0, nullptr, 0);
   Store32(out, 1);
   Store32(out + 4, results_ptr);
-  REXKRNL_INFO("RexLiveless: XSessionSearchByID {} -> found", id);
+  RG_INFO("RexLiveless: XSessionSearchByID {} -> found", id);
   return kSuccess;
 }
 
@@ -446,7 +446,7 @@ bool AcceptInvite(const std::string& session_id, uint64_t inviter, std::string* 
     return false;
   }
   // XN_LIVE_INVITE_ACCEPTED for user 0; the title then asks for the details.
-  REX_KERNEL_STATE()->BroadcastNotification(0x02000002, 0);
+  Broadcast(0x02000002, 0);
   return true;
 }
 
@@ -460,7 +460,7 @@ bool FillAcceptedInvite(uint32_t args_ptr) {
   std::memset(out, 0, 0x54);
   Store64(out + 0x00, live::Snapshot().me.xuid);
   Store64(out + 0x08, g_invite.inviter);
-  Store32(out + 0x10, REX_KERNEL_STATE()->title_id());
+  Store32(out + 0x10, RunningTitleId());
   std::memcpy(out + 0x14, g_invite.info, 60);
   Store32(out + 0x50, 1);  // fFromGameInvite
   return true;
@@ -477,7 +477,7 @@ void PublishQos(const uint8_t kid[8], std::vector<uint8_t> data) {
   }
   std::thread([id, data = std::move(data)] {
     const auto r = Api("POST", "/api/sessions/" + id + "/qos", {{"data", Hex(data.data(), data.size())}});
-    if (r.status != 200) REXKRNL_WARN("RexLiveless: couldn't publish QoS data for {} ({} {})", id, r.status, r.error);
+    if (r.status != 200) RG_WARN("RexLiveless: couldn't publish QoS data for {} ({} {})", id, r.status, r.error);
   }).detach();
 }
 
@@ -631,7 +631,7 @@ extern "C" REX_FUNC(__imp__XMsgStartIORequest) {
   if (app == 0xFC && message == 0x00050002 && signed_in) {
     // XInviteSend from the title. The marshaled arguments aren't decoded yet;
     // invites go out from the Guide instead.
-    REXKRNL_INFO("RexLiveless: XInviteSend buffer {:08X} length {}", ctx.r6.u32, ctx.r7.u32);
+    RG_INFO("RexLiveless: XInviteSend buffer {:08X} length {}", ctx.r6.u32, ctx.r7.u32);
     return Complete(ctx, overlapped, 0);
   }
   CallOriginal("__imp__XMsgStartIORequest", ctx, base);

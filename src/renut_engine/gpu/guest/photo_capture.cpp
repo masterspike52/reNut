@@ -1,31 +1,9 @@
-/**
- * @file    gpu/guest/photo_capture.cpp
- * @brief   N&B's frame capture for photos, native.
- *
- * sub_825160B0 (BOOL (D3DTexture *photo)) copies the frame into a CPU
- * texture: photo mode's shot (sub_82269D20, state 3) and the pause menu's
- * backdrop (sub_8255B428, sub_82514080), all into stru_82DF06C4, the
- * screen-sized D3DFMT_LIN_X8R8G8B8 texture sub_822E8660 sets up. The game
- * then shows it and saves it to the album from guest memory (sub_82516250).
- * The original waits for the GPU to be idle, resolves render target 0 (the
- * size of the device's automatic back buffer, +0x39F0) into an X8R8G8B8
- * header over scratch memory (sub_821B7FC0: dword_82DF070C), locks both and
- * untiles the resolve into the photo with XGRAPHICS::UntileSurface. The
- * renderer's resolves stay on the host GPU, so that untile copied memory
- * nothing wrote: a black photo.
- *
- * Here the render thread reads render target 0 back (ReadRenderTargetLocked,
- * after the work queued before the call) and the words go into the photo's
- * rows, which is what the untile leaves there. Left out: the scratch header
- * and its resolve's device work (fences on a header that lives for the call),
- * and the cache flushes of both ranges (sub_8263D360).
- */
 #include <algorithm>
 #include <cstring>
 #include <memory>
 #include <vector>
 
-#include <rex/hook.h>
+#include <rex/ppc/hook.h>
 #include <rex/types.h>
 
 #include "renut_engine/gpu/backend/queued.h"
@@ -36,7 +14,6 @@
 #include "renut_engine/gpu/guest/callbacks.h"
 #include "renut_engine/gpu/guest/command_buffers.h"
 #include "renut_engine/gpu/guest/guest_memory.h"
-#include "renut_engine/gpu/log.h"
 #include "renut_engine/gpu/render/draw.h"
 #include "renut_engine/gpu/render/texture_layout.h"
 
@@ -100,10 +77,8 @@ u32 PhotoCapture_hook(u32 photo) {
                                             readback->height, readback->words);
   });
   render_thread::Drain();
-  if (!readback->done) {
-    RGPU_WARN("Photo capture: render target 0 of {:08X} was not read back", device);
+  if (!readback->done)
     return 0;
-  }
 
   width = std::min(readback->width, photo_width);
   height = std::min(readback->height, photo_height);
@@ -113,8 +88,7 @@ u32 PhotoCapture_hook(u32 photo) {
                 size_t(width) * 4);
   }
   // No D3D::UnlockResource, as in the original: the photo's content check
-  // sees the new words. (An unlock would make it lock-driven, and the album's
-  // XGCopySurface into it, sub_822E9970, writes without one.)
+  // sees the new words.
   return 1;
 }
 

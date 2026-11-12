@@ -1,37 +1,6 @@
 #pragma once
-// Custom vehicle parts from .nbpatch mods: parts/<anything>.json entries, one
-// part each, read at startup (mod_loader.cpp) and served to the game by
-// game/custom_parts.cpp.
-//
-//   {
-//     "id": "turbo_engine",                 // [a-z0-9_], unique across mods
-//     "base": "propulsion_engines_large",   // shipped part to start from
-//     "name": "Turbo Engine",               // shown in the garage
-//     "count": 4,                           // how many the player owns
-//     "fields": { "0x3FC": { "f32": 120 } },// objparams overrides (big-endian)
-//     "objparams": "parts/turbo.bin"        // optional: a whole record instead
-//     "script": "parts/teleporter.lua",     // optional: a new kind of part
-//     "params": { "distance": 15 },         // the script's settings (its params)
-//     "model": "teleporter",                // optional: the part's model
-//     "attach": "teleporter"                // optional: its footprint / attach points
-//   }
-//
-// A part with a script is a class of its own, renut_<id>, deriving from its
-// base part's class (game/part_classes.h): the script runs its behaviour.
-//
-// "model" names a part model, aid_model_banjox_vehicleparts_<model> (its
-// collision is aid_havok_banjox_vehicleparts_<model>, found by the game from
-// the model's name); "attach" an aid_avatarhavokdata_banjox_vehicleblock_
-// <attach> asset. Either is a shipped part's (e.g. "gadgets_spring") or one
-// the mod brings in a bundle of its own: every bundle file a mod with parts
-// adds (Bundle/4f/<id> resident, Bundle/50/<id> stream archive;
-// tools/renut_modtool builds them) is loaded with the game's common bundle
-// (game/mod_bundles.cpp). One that isn't there keeps the base part's.
-//
-// "base" is the part's objparams name, with or without
-// "aid_objparams_banjox_vehicleblock_". Field values are one of f32, u32, i32,
-// u16, u8 (numbers) or str (a string, written with its terminator). The part's
-// own asset is aid_objparams_banjox_vehicleblock_renut_<id>.
+// Custom vehicle parts from .nbpatch mods' parts/*.json entries (id, base, name, count,
+// fields, objparams, script, params, model, attach), served by game/custom_parts.cpp.
 #include <cstdint>
 #include <filesystem>
 #include <optional>
@@ -61,19 +30,41 @@ struct CustomPart {
     JsonValue params;                // "params" (an object), or null
     std::string model;               // "banjox_vehicleparts_<model>", or empty: the base's
     std::string attach;              // "banjox_vehicleblock_<attach>", or empty: the base's
-    std::string mod;                 // the mod's name, for logs
+    std::string mod;                 // the mod's name
+    std::string garage_type;         // a garage type it shares with the parts of that name, or empty
+    bool own_record = false;         // a part of its own (renut.parts.add without a base): its record and garage items made from scratch
+    bool lua = false;                // behaviour from a RexFabric Lua mod (renut.parts.add)
+    bool base_action = false;        // its button still does the base part's action too
 };
+
+// A part with behaviour of its own (a script or Lua callbacks): a class of its own in the game.
+inline bool HasBehaviour(const CustomPart &part) {
+    return !part.script.empty() || part.lua;
+}
+
+// The part file rules, for parts made elsewhere (renut.parts.add): a valid id, and the
+// base, model and attach names as the game's assets call them.
+bool ValidPartId(const std::string &id);
+std::string PartBaseName(std::string base);
+std::string PartModelName(std::string model);
+std::string PartAttachName(std::string attach);
 
 // The parts in a package's parts/ folder; nullopt (with *error set) when one
 // is malformed.
 std::optional<std::vector<CustomPart>> ReadCustomParts(ZipReader &zip, std::string *error);
 
 // Startup, before the game runs: adds a loaded mod's parts. A part whose id an
-// earlier mod already has is skipped (logged).
+// earlier mod already has is skipped.
 void AddCustomParts(std::vector<CustomPart> parts);
 
 // Every loaded part; fixed once the game runs.
 const std::vector<CustomPart> &CustomParts();
+const CustomPart *FindCustomPart(const std::string &id);
+
+// After the mods (.nbpatch and RexFabric) have added theirs, before the game runs:
+// AddCustomParts adds nothing from then on.
+void FixCustomParts();
+bool CustomPartsFixed();
 
 // A bundle a mod with parts adds: id 0x4Fxxxxxx (Bundle/4f/xxxxxx, resident)
 // or 0x50xxxxxx (Bundle/50/xxxxxx, stream archive).
@@ -88,9 +79,8 @@ void AddModBundle(ModBundle bundle);
 // Every mod bundle, in load order; fixed once the game runs.
 const std::vector<ModBundle> &ModBundles();
 
-// A part some mod has had, remembered in <mods folder>/.renut_custom_parts.json
-// so that vehicles keeping it still load once its mod is gone: the game is
-// given its base part instead (no base: the part is left out).
+// A part some mod has had, remembered in <mods folder>/.renut_custom_parts.json so
+// vehicles using it still load (as its base part) once its mod is gone.
 struct KnownCustomPart {
     uint32_t aid = 0;
     uint32_t base_aid = 0;  // 0: made from a whole record, no base

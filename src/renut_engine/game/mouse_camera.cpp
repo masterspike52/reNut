@@ -1,43 +1,14 @@
-/**
- * @file    game/mouse_camera.cpp
- * @brief   The mouse turns the game camera, for every camera mode.
- *
- * N&B's camera (IDA): sub_822C0448(camera, input device, dt, ...) updates the
- * camera of a player once a frame; the active mode's update (a virtual call
- * through camera + 376) reads the player's input through two getters:
- * - sub_821B42B8(device): yaw input, -(right stick X) past a 0.1 deadzone,
- *   rescaled to [-1, 1], flipped with the profile's invert X (flags[7] & 0x40);
- * - sub_821B4050(device): pitch input, right stick Y likewise (invert Y,
- *   flags[7] & 0x80), remapped through sub_8222D9F0.
- * Each mode turns by input * its own rate * dt (the on-foot chase camera,
- * sub_822C2B30 -> sub_822C57D8, through a spring). sub_821B4128, run by the
- * camera update, turns a quick full push of the stick (past 0.9 and back
- * within 0.4 s) into a snap turn.
- *
- * With renut_mouse_camera, a click in the game window captures the mouse
- * (relative mode: hidden cursor, motion only; reNut's own, no SDK input
- * emulation) until Esc, a focus loss or an overlay window that needs the
- * cursor. While it is captured, player 1's camera takes the mouse motion of
- * the frame instead of the stick:
- * input = motion * sensitivity / dt,
- * so a mode turns by motion * sensitivity * its rate whatever the frame rate,
- * with no deadzone or response curve. The snap-turn check keeps reading the
- * stick. A frame without mouse motion reads the stick as before.
- *
- * The window's input comes through the SDK's rex::ui::Window, on Windows and
- * Linux alike: SDL, which owns the window, lives in rexruntime, and the
- * executable's own SDL symbols would reach a second, uninitialised copy.
- */
 #include "renut_engine/game/mouse_camera.h"
 
-#include <rex/cvar.h>
-#include <rex/hook.h>
+#include <rex/hid/input_system.h>
+#include <rex/input_keys.h>
+#include <rex/module.h>
+#include <rex/ppc/hook.h>
+#include <rex/setting.h>
 #include <rex/types.h>
 #include <rex/ui/ui_event.h>
-#include <rex/ui/virtual_key.h>
-#include <rex/ui/window.h>
-#include <rex/ui/window_listener.h>
-#include <rex/ui/windowed_app_context.h>
+#include <rex/ui/ui_system.h>
+#include <rex/utility.h>
 
 #include <atomic>
 #include <cstdint>
@@ -46,18 +17,9 @@
 
 #include <rexglue_guide/guide.h>
 
+#include "renut_engine/app/renut_settings.h"
 #include "renut_engine/game/vehicle_drivers.h"
 #include "renut_engine/gpu/overlay/overlay_ui.h"
-
-REXCVAR_DEFINE_BOOL(renut_mouse_camera, false, "Nuts&Bolts/Input",
-                    "The mouse turns the camera directly in every camera mode, with no deadzone "
-                    "or stick response curve. Click the game window to capture the mouse; Esc "
-                    "releases it.");
-REXCVAR_DEFINE_DOUBLE(renut_mouse_sensitivity, 1.0, "Nuts&Bolts/Input",
-                      "How far the camera turns per mouse movement (renut_mouse_camera).")
-    .range(0.05, 10.0);
-REXCVAR_DEFINE_BOOL(renut_mouse_invert_y, false, "Nuts&Bolts/Input",
-                    "Moving the mouse up looks down (renut_mouse_camera).");
 
 REX_EXTERN(__imp__sub_822C0448);  // camera update
 REX_EXTERN(__imp__sub_821B42B8);  // yaw input
@@ -65,6 +27,18 @@ REX_EXTERN(__imp__sub_821B4050);  // pitch input
 REX_EXTERN(__imp__sub_821B4128);  // stick snap-turn check
 
 namespace {
+
+struct MouseCameraSettings final : rex::SettingOwner {
+  MouseCameraSettings() : rex::SettingOwner(renut::settings::kScope) { renut::settings::Add(*this); }
+  REX_SETTING(bool, renut_mouse_camera, false,
+              "The mouse turns the camera directly in every camera mode, with no deadzone "
+              "or stick response curve. Click the game window to capture the mouse; Esc "
+              "releases it.");
+  REX_SETTING(f64, renut_mouse_sensitivity, 1.0,
+              "How far the camera turns per mouse movement (renut_mouse_camera).", rex::Range{0.05, 10.0});
+  REX_SETTING(bool, renut_mouse_invert_y, false, "Moving the mouse up looks down (renut_mouse_camera).");
+};
+MouseCameraSettings &g_mouse = *new MouseCameraSettings();  // never freed, registered by RenutApp::OnConfigure
 
 // Guest data.
 constexpr uint32_t kPlayerProfiles = 0x82E1B280;    // dword_82E1B280[player]
@@ -99,70 +73,80 @@ float g_motion_x = 0.0f, g_motion_y = 0.0f;
 // Whether the mouse is captured; the camera update reads it.
 std::atomic<bool> g_captured{false};
 
-// The game window's mouse, on the UI thread (where the window sends its
-// events): a left click in the focused window takes it; Esc, losing focus, an
-// overlay window that needs the cursor, or turning renut_mouse_camera off gives
-// it back. The events go on to the SDK's other listeners.
-class MouseCapture : public rex::ui::WindowInputListener, public rex::ui::WindowListener {
+// Captures the mouse on a left click in the game window (UI thread); Esc, focus
+// loss, an overlay needing the cursor or renut_mouse_camera off releases it.
+class MouseCapture : public rex::ui::IUIEventListener {
 public:
-  void Attach(rex::ui::Window *window) {
-    window_ = window;
-    window->AddInputListener(this, kZOrder);
-    window->AddListener(this);
+  void Attach(rex::ui::IUISystem &ui) {
+    ui_ = &ui;
+    input_ = REX_INTERFACE(rex::hid::IInputSystem);
+    guard_ = ui.AddEventListener(*this);
   }
 
   void Detach() {
-    if (!window_)
+    if (!ui_)
       return;
     Release();
-    window_->RemoveInputListener(this);
-    window_->RemoveListener(this);
-    window_ = nullptr;
+    guard_.Reset();
+    ui_ = nullptr;
+    input_ = nullptr;
   }
 
-  rex::ui::Window *window() const { return window_; }
+  rex::ui::IUISystem *ui() const { return ui_; }
 
-  void OnMouseDown(rex::ui::MouseEvent &e) override {
-    if (!g_captured.load(std::memory_order_relaxed) && REXCVAR_GET(renut_mouse_camera) &&
-        e.button() == rex::ui::MouseEvent::Button::kLeft && window_->HasFocus() &&
-        !renut::gpu::overlay::WantsCursor() && !rexglue_guide::IsOpen()) {
-      Capture();
+  void OnInputEvent(rex::InputEvent &e) override {
+    using Type = rex::InputEvent::Type;
+    switch (e.type) {
+    case Type::kButtonDown:
+      if (!g_captured.load(std::memory_order_relaxed) && g_mouse.renut_mouse_camera.Get() &&
+          e.button == rex::MouseButton::kLeft && ui_->IsFocused() &&
+          !renut::gpu::overlay::WantsCursor() && !rexglue_guide::IsOpen()) {
+        Capture();
+      }
+      break;
+    case Type::kMotion: {
+      if (!g_captured.load(std::memory_order_relaxed))
+        return;
+      // The Guide takes the mouse too: the cursor comes back for it.
+      if (!g_mouse.renut_mouse_camera.Get() || renut::gpu::overlay::WantsCursor() ||
+          rexglue_guide::IsOpen()) {
+        Release();
+        return;
+      }
+      std::lock_guard lock(g_motion_mutex);
+      g_motion_x += e.dx;
+      g_motion_y += e.dy;
+      break;
+    }
+    case Type::kKeyDown:
+      if (e.key == rex::VirtualKey::kEscape)
+        Release();
+      break;
+    default:
+      break;
     }
   }
 
-  void OnMouseMove(rex::ui::MouseEvent &e) override {
-    if (!g_captured.load(std::memory_order_relaxed))
-      return;
-    // The Guide takes the mouse too: the cursor comes back for it.
-    if (!REXCVAR_GET(renut_mouse_camera) || renut::gpu::overlay::WantsCursor() ||
-        rexglue_guide::IsOpen()) {
-      Release();
-      return;
+  // The UI system takes a focus change after its listeners, and a listener can't go
+  // during a delivery, so both wait for the UI thread's next task.
+  void OnUIEvent(const rex::ui::UIEvent &e) override {
+    using Type = rex::ui::UIEvent::Type;
+    if (e.GetType() == Type::kFocus) {
+      ui_->PostTask([this] {
+        if (ui_ && !ui_->IsFocused())
+          Release();
+      });
+    } else if (e.GetType() == Type::kClose) {
+      ui_->PostTask([this] { Detach(); });
     }
-    std::lock_guard lock(g_motion_mutex);
-    g_motion_x += e.dx();
-    g_motion_y += e.dy();
   }
-
-  void OnKeyDown(rex::ui::KeyEvent &e) override {
-    if (e.virtual_key() == rex::ui::VirtualKey::kEscape)
-      Release();
-  }
-
-  void OnLostFocus(rex::ui::UISetupEvent &) override { Release(); }
-  void OnClosing(rex::ui::UIEvent &) override { Detach(); }
 
 private:
-  // Above the app's own listener (0), so its key binds don't hide Esc.
-  static constexpr size_t kZOrder = 1;
-
+  // The pointer locked (relative motion), hidden; Release frees it.
   void Capture() {
-    cursor_before_ = window_->GetCursorVisibility();
-    window_->SetCursorVisibility(rex::ui::Window::CursorVisibility::kHidden);
-    if (!window_->SetRelativeMouseMode(true)) {
-      window_->SetCursorVisibility(cursor_before_);
+    if (!input_)
       return;
-    }
+    input_->SetPointerMode(rex::PointerMode::kLocked);
     {
       std::lock_guard lock(g_motion_mutex);
       g_motion_x = g_motion_y = 0.0f;
@@ -173,17 +157,18 @@ private:
   void Release() {
     if (!g_captured.exchange(false, std::memory_order_acq_rel))
       return;
-    window_->SetRelativeMouseMode(false);
-    window_->SetCursorVisibility(cursor_before_);
+    if (input_)
+      input_->SetPointerMode(rex::PointerMode::kFree);
     std::lock_guard lock(g_motion_mutex);
     g_motion_x = g_motion_y = 0.0f;
   }
 
-  rex::ui::Window *window_ = nullptr;
-  rex::ui::Window::CursorVisibility cursor_before_ = rex::ui::Window::CursorVisibility::kVisible;
+  rex::ui::IUISystem *ui_ = nullptr;
+  rex::hid::IInputSystem *input_ = nullptr;
+  rex::ScopeGuard guard_;
 };
 
-MouseCapture g_capture;
+MouseCapture &g_capture = *new MouseCapture();  // never freed: no listener removal at exit
 
 // The motion player 1's camera takes this frame, set for the camera update's
 // duration.
@@ -204,26 +189,24 @@ double MouseInput(const uint8_t *base, float motion) {
   const float dt = LoadFloat(base, kFrameDeltaSeconds);
   if (motion == 0.0f || !(dt > 0.0f))
     return 0.0;
-  return double(motion) * REXCVAR_GET(renut_mouse_sensitivity) * kMouseScale / dt;
+  return double(motion) * g_mouse.renut_mouse_sensitivity.Get() * kMouseScale / dt;
 }
 
 } // namespace
 
 namespace renut::game {
 
-void AttachMouseCamera(rex::ui::Window *window) {
-  if (!window)
-    return;
-  window->app_context().CallInUIThreadDeferred([window] {
-    if (!g_capture.window())
-      g_capture.Attach(window);
+void AttachMouseCamera(rex::ui::IUISystem &ui) {
+  ui.PostTask([&ui] {
+    if (!g_capture.ui())
+      g_capture.Attach(ui);
   });
 }
 
 void DetachMouseCamera() {
-  rex::ui::Window *window = g_capture.window();
-  if (window)
-    window->app_context().CallInUIThreadSynchronous([] { g_capture.Detach(); });
+  rex::ui::IUISystem *ui = g_capture.ui();
+  if (ui && !ui->RunSynchronous([] { g_capture.Detach(); }))
+    g_capture.Detach();
 }
 
 bool MouseCaptured() {
@@ -235,7 +218,7 @@ bool MouseCaptured() {
 // void sub_822C0448(camera, input device, double dt, ..., mode, ...)
 REX_HOOK_RAW(sub_822C0448) {
   Frame frame;
-  if (REXCVAR_GET(renut_mouse_camera) && g_captured.load(std::memory_order_acquire) &&
+  if (g_mouse.renut_mouse_camera.Get() && g_captured.load(std::memory_order_acquire) &&
       IsPlayerOnePad(base, ctx.r4.u32)) {
     std::lock_guard lock(g_motion_mutex);
     frame = {true, g_motion_x, g_motion_y};
@@ -265,7 +248,7 @@ REX_HOOK_RAW(sub_821B4050) {
     return;
   }
   const double input = -MouseInput(base, t_frame.y);
-  ctx.f1.f64 = REXCVAR_GET(renut_mouse_invert_y) ? -input : input;
+  ctx.f1.f64 = g_mouse.renut_mouse_invert_y.Get() ? -input : input;
 }
 
 // int sub_821B4128(double dt, camera, state, device): the stick snap turn;

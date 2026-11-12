@@ -1,23 +1,3 @@
-/**
- * @file    gpu/d3d/d3d_native.h
- * @brief   N&B's D3D runtime as native code: the device-state work of its D3D
- *          calls, ported from the game's own code (default.xex), without a GPU.
- *
- * Every D3D call the renderer hooks is implemented natively from N&B's
- * disassembly, here or in the hooks (gpu/d3d/hooks). The ports keep the device's
- * shadow state exactly as N&B's D3D does: the constants, the register images
- * (m_*Packet), the bound objects, the dirty masks (m_Pending) and the fences.
- * The renderer reads that state at every draw. What they leave out is what
- * only the GPU needed: command packets, ring and segment bookkeeping, cache
- * flushes, the GPU-side copies of command buffer resource lists.
- *
- * The command ring is a stub, as in reblue: m_pRing points at a scratch block
- * that KickOff rewinds. N&B code that writes packets inline (D3D's header
- * helpers compiled into the game) writes there, and nothing reads it.
- *
- * Offsets are byte offsets into the device allocation, as N&B's code uses them
- * (d3d.h names the ones the renderer reads).
- */
 #pragma once
 
 #include <bit>
@@ -156,10 +136,8 @@ constexpr u32 AutoFrontBuffer = 0x39EC;
 constexpr u32 AutoBackBuffer = 0x39F0;
 }  // namespace off
 
-// Flags (0x2ABC) bits: 0x01 the draws that follow run in each tile's pass,
-// 0x08/0x04 command buffer recording modes, 0x10/0x20 tiling, 0x80 no GPU
-// hardware. Flags1 (0x2ABD): 0x02 fences complete as they are written, 0x20
-// the device's command memory ran out.
+// Flags (0x2ABC): 0x01 tile-predicated draws, 0x04/0x08 recording, 0x10/0x20
+// tiling, 0x80 no GPU; Flags1: 0x02 immediate fences, 0x20 out of memory.
 constexpr u8 kFlagsNoHardware = 0x80;
 constexpr u8 kFlags1ImmediateFences = 0x02;
 
@@ -178,8 +156,7 @@ void Swap(u32 device_va, u32 front_buffer, u32 parameters);
 void SetFence(u32 device_va);
 
 // Resources (hooks/resource.cpp).
-// D3DDevice_CreateSurface(Width, Height, D3DFORMAT, D3DMULTISAMPLE_TYPE,
-//     const D3DSURFACE_PARAMETERS*): the new surface, or 0.
+// D3DDevice_CreateSurface: the new surface, or 0.
 u32 CreateSurface(u32 width, u32 height, u32 format, u32 multisample, u32 parameters_va);
 // D3DResource_AddRef (a texture level's first reference is one on its texture).
 u32 AddRefResource(u32 resource);

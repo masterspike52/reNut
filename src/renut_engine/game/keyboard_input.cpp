@@ -1,59 +1,14 @@
-/**
- * @file    game/keyboard_input.cpp
- * @brief   Bound keys and mouse buttons play player 1's pad, for every action.
- *
- * N&B's input (IDA): inputPollAllPads -> padApplyXInputState (0x8236CB80)
- * turns each port's XInput state into a pad record in g_padInputs[port] + 52:
- * a current index at + 0 and two 40-byte entries at + 4 + 40 * index:
- *   + 0 pressed (now & ~before), + 4 released (before & ~now),
- *   + 8 held (now & before), + 12 now: XINPUT_GAMEPAD wButtons, with
- *       0x10000 / 0x20000 for the left / right trigger past 32;
- *   + 16 / + 20 left stick x / y, + 24 / + 28 right stick (padFilterStick:
- *       -1..1, y up, length at most 1); + 32 / + 36 triggers (0..1).
- * Every record takes a new entry through padStatePush (sub_821CB628). The game
- * reads player 1's input from his port's record:
- * - in play, through his input device (inputDeviceCreatePlayerPad, type 3),
- *   whose update copies g_padInputs[player + 128]'s current entry into its own
- *   record (inputDeviceUpdatePlayerPad); the game reads the device's record,
- *   button bits inline, everywhere;
- * - before there is a player (title, menus), from the ports' records directly
- *   (inputDeviceAnyPadPressed: the port pressing Start becomes player 1's).
- *
- * With renut_keyboard, the push of player 1's port's entry (the first
- * connected port, or port 0, while there is no player 1) takes the entry with
- * the bound keys merged in: their buttons ORed into the pad's (the edges
- * recomputed from both), the movement keys as a full-strength left stick, the
- * trigger keys as full triggers. The controller keeps working alongside.
- *
- * The XUI menus read keystrokes instead (XInputGetKeystroke: sub_82247D88,
- * sub_823B7660, sub_823B6D10 -> XuiProcessInput). The keys make player 1's:
- * VK_PAD_* down and up as they are pressed and let go, and repeats while held
- * (as XInput's), the movement keys as the left stick's directions;
- * controllers.cpp hands them out before the controllers' own.
- *
- * The Guide (RexLiveless) gets the same keys as player 1's pad
- * (rexglue_guide::SetKeyboardPad), plus renut_key_guide as its Guide button.
- *
- * Keys come from the SDK's window (rex::ui::Window listeners, on the UI thread,
- * Windows and Linux alike); the binds are key names (rex::ui::ParseVirtualKey:
- * "Space", "LMB", "Shift", ...) in Nuts&Bolts/Keyboard cvars, read on the UI
- * thread, where the settings window edits them. Mouse buttons count only while
- * the mouse is captured (mouse_camera.cpp), and the click that captures it
- * doesn't.
- */
 #include "renut_engine/game/keyboard_input.h"
 
-#include "renut_engine/app/renut_logging.h"
-
-#include <rex/cvar.h>
-#include <rex/hook.h>
+#include <rex/hid/input_system.h>
+#include <rex/input_keys.h>
+#include <rex/module.h>
+#include <rex/ppc/hook.h>
+#include <rex/setting.h>
 #include <rex/types.h>
-#include <rex/ui/keybinds.h>
 #include <rex/ui/ui_event.h>
-#include <rex/ui/virtual_key.h>
-#include <rex/ui/window.h>
-#include <rex/ui/window_listener.h>
-#include <rex/ui/windowed_app_context.h>
+#include <rex/ui/ui_system.h>
+#include <rex/utility.h>
 
 #include <atomic>
 #include <bitset>
@@ -61,49 +16,60 @@
 #include <cmath>
 #include <cstdint>
 #include <cstring>
+#include <mutex>
 #include <string>
+#include <string_view>
 #include <utility>
 
+#include <rexfabric/host_input.h>
 #include <rexglue_guide/guide.h>
 
+#include "renut_engine/app/renut_settings.h"
 #include "renut_engine/game/mouse_camera.h"
 #include "renut_engine/game/vehicle_drivers.h"
 #include "renut_engine/gpu/overlay/overlay_ui.h"
 
-REXCVAR_DEFINE_BOOL(renut_keyboard, false, "Nuts&Bolts/Keyboard",
-                    "Bound keys and mouse buttons (with the mouse captured) play player 1's "
-                    "controller: every action, alongside the controller. Binds are key names: "
-                    "A-Z, 0-9, F1-F24, Space, Return, Escape, Tab, Shift, Control, Alt, "
-                    "Left/Right/Up/Down, LMB/RMB/MMB, Numpad0-9, ... Empty unbinds.");
-REXCVAR_DEFINE_STRING(renut_key_forward, "W", "Nuts&Bolts/Keyboard", "Move forward (left stick up).");
-REXCVAR_DEFINE_STRING(renut_key_back, "S", "Nuts&Bolts/Keyboard", "Move back (left stick down).");
-REXCVAR_DEFINE_STRING(renut_key_left, "A", "Nuts&Bolts/Keyboard", "Move left (left stick left).");
-REXCVAR_DEFINE_STRING(renut_key_right, "D", "Nuts&Bolts/Keyboard", "Move right (left stick right).");
-REXCVAR_DEFINE_STRING(renut_key_walk, "Control", "Nuts&Bolts/Keyboard",
-                      "Held with the movement keys: half-strength stick (walk).");
-REXCVAR_DEFINE_STRING(renut_key_a, "Space", "Nuts&Bolts/Keyboard", "Controller A (jump).");
-REXCVAR_DEFINE_STRING(renut_key_b, "RMB", "Nuts&Bolts/Keyboard", "Controller B.");
-REXCVAR_DEFINE_STRING(renut_key_x, "LMB", "Nuts&Bolts/Keyboard", "Controller X.");
-REXCVAR_DEFINE_STRING(renut_key_y, "E", "Nuts&Bolts/Keyboard", "Controller Y.");
-REXCVAR_DEFINE_STRING(renut_key_lb, "Q", "Nuts&Bolts/Keyboard", "Controller left bumper.");
-REXCVAR_DEFINE_STRING(renut_key_rb, "R", "Nuts&Bolts/Keyboard", "Controller right bumper.");
-REXCVAR_DEFINE_STRING(renut_key_lt, "Shift", "Nuts&Bolts/Keyboard", "Controller left trigger.");
-REXCVAR_DEFINE_STRING(renut_key_rt, "F", "Nuts&Bolts/Keyboard", "Controller right trigger.");
-REXCVAR_DEFINE_STRING(renut_key_start, "Escape", "Nuts&Bolts/Keyboard",
-                      "Controller Start (Escape also frees the mouse).");
-REXCVAR_DEFINE_STRING(renut_key_back_button, "Tab", "Nuts&Bolts/Keyboard", "Controller Back.");
-REXCVAR_DEFINE_STRING(renut_key_ls, "C", "Nuts&Bolts/Keyboard", "Left stick click.");
-REXCVAR_DEFINE_STRING(renut_key_rs, "V", "Nuts&Bolts/Keyboard", "Right stick click.");
-REXCVAR_DEFINE_STRING(renut_key_dpad_up, "Up", "Nuts&Bolts/Keyboard", "D-pad up.");
-REXCVAR_DEFINE_STRING(renut_key_dpad_down, "Down", "Nuts&Bolts/Keyboard", "D-pad down.");
-REXCVAR_DEFINE_STRING(renut_key_dpad_left, "Left", "Nuts&Bolts/Keyboard", "D-pad left.");
-REXCVAR_DEFINE_STRING(renut_key_dpad_right, "Right", "Nuts&Bolts/Keyboard", "D-pad right.");
-REXCVAR_DEFINE_STRING(renut_key_guide, "G", "Nuts&Bolts/Keyboard",
-                      "Controller Guide button: opens the Guide (RexLiveless) for player 1.");
-
 REX_EXTERN(__imp__sub_821CB628);  // padStatePush
 
 namespace {
+
+struct KeyboardSettings final : rex::SettingOwner {
+  KeyboardSettings() : rex::SettingOwner(renut::settings::kScope) { renut::settings::Add(*this); }
+  REX_SETTING(bool, renut_keyboard, false,
+              "Bound keys and mouse buttons (with the mouse captured) play player 1's "
+              "controller: every action, alongside the controller. Binds are key names: "
+              "A-Z, 0-9, F1-F24, Space, Return, Escape, Tab, Shift, Control, Alt, "
+              "Left/Right/Up/Down, LMB/RMB/MMB, Numpad0-9, ... Empty unbinds.");
+  REX_SETTING(std::string, renut_key_forward, "W", "Move forward (left stick up).");
+  REX_SETTING(std::string, renut_key_back, "S", "Move back (left stick down).");
+  REX_SETTING(std::string, renut_key_left, "A", "Move left (left stick left).");
+  REX_SETTING(std::string, renut_key_right, "D", "Move right (left stick right).");
+  REX_SETTING(std::string, renut_key_walk, "Control", "Held with the movement keys: half-strength stick (walk).");
+  REX_SETTING(std::string, renut_key_a, "Space", "Controller A (jump).");
+  REX_SETTING(std::string, renut_key_b, "RMB", "Controller B.");
+  REX_SETTING(std::string, renut_key_x, "LMB", "Controller X.");
+  REX_SETTING(std::string, renut_key_y, "E", "Controller Y.");
+  REX_SETTING(std::string, renut_key_lb, "Q", "Controller left bumper.");
+  REX_SETTING(std::string, renut_key_rb, "R", "Controller right bumper.");
+  REX_SETTING(std::string, renut_key_lt, "Shift", "Controller left trigger.");
+  REX_SETTING(std::string, renut_key_rt, "F", "Controller right trigger.");
+  REX_SETTING(std::string, renut_key_start, "Escape", "Controller Start (Escape also frees the mouse).");
+  REX_SETTING(std::string, renut_key_back_button, "Tab", "Controller Back.");
+  REX_SETTING(std::string, renut_key_ls, "C", "Left stick click.");
+  REX_SETTING(std::string, renut_key_rs, "V", "Right stick click.");
+  REX_SETTING(std::string, renut_key_dpad_up, "Up", "D-pad up.");
+  REX_SETTING(std::string, renut_key_dpad_down, "Down", "D-pad down.");
+  REX_SETTING(std::string, renut_key_dpad_left, "Left", "D-pad left.");
+  REX_SETTING(std::string, renut_key_dpad_right, "Right", "D-pad right.");
+  REX_SETTING(std::string, renut_key_guide, "G",
+              "Controller Guide button: opens the Guide (RexLiveless) for player 1.");
+};
+KeyboardSettings &g_keys = *new KeyboardSettings();  // never freed, registered by RenutApp::OnConfigure
+
+// A key name's virtual key (rex.input's names), kNone without the input system.
+rex::VirtualKey ParseKey(rex::hid::IInputSystem *input, std::string_view name) {
+  return input ? input->ParseVirtualKey(name) : rex::VirtualKey::kNone;
+}
 
 // Guest data.
 constexpr uint32_t kPadInputs = 0x82E0B158;       // g_padInputs[port]
@@ -128,13 +94,13 @@ constexpr uint32_t kDpadUp = 0x0001, kDpadDown = 0x0002, kDpadLeft = 0x0004,
 constexpr uint32_t kMoveForward = 1, kMoveBack = 2, kMoveLeft = 4, kMoveRight = 8, kMoveWalk = 16;
 
 struct Bind {
-  const std::string &(*key)();
+  std::string (*key)();
   uint32_t buttons;  // pad buttons
   uint32_t move;     // movement keys
 };
 
 #define RENUT_BIND(cvar, buttons, move) \
-  Bind{[]() -> const std::string & { return REXCVAR_GET(cvar); }, buttons, move}
+  Bind{[]() -> std::string { return g_keys.cvar.Get(); }, buttons, move}
 
 const Bind kBinds[] = {
     RENUT_BIND(renut_key_forward, 0, kMoveForward),
@@ -165,6 +131,20 @@ const Bind kBinds[] = {
 // What the held keys play, set on the UI thread, read by the game thread.
 std::atomic<uint32_t> g_buttons{0};
 std::atomic<uint32_t> g_move{0};
+// Every key's state by virtual key, for mods (rex.input).
+std::atomic<bool> g_key_down[256];
+// For mods: the mouse buttons (left, right, middle, side 1, side 2) whether or not the mouse is
+// captured, and the cursor over the window (0..1 across and down; -1 before it has been over it).
+std::atomic<bool> g_mouse_down[5];
+std::atomic<float> g_cursor_x{-1.0f}, g_cursor_y{-1.0f}, g_window_aspect{0.0f};
+// The mouse's motion in physical pixels since a mod last took it (rex.input.mouse_delta).
+std::atomic<int32_t> g_mouse_dx{0}, g_mouse_dy{0};
+// A mod holds the game's input (rex.input.hold_guest): player 1's pad entries reach it empty.
+std::atomic<bool> g_guest_held{false};
+// The entries held from the game, as the pad gave them, for mods (HeldPadEntry).
+std::mutex g_held_mutex;
+uint8_t g_held_entry[4][40] = {};
+uint32_t g_held_port = 4;
 
 uint32_t Load32(const uint8_t *base, uint32_t va) {
   uint32_t v;
@@ -191,74 +171,120 @@ void StoreFloat(uint8_t *base, uint32_t va, float f) {
 }
 
 // The window's keys and mouse buttons, on the UI thread.
-class KeyboardListener : public rex::ui::WindowInputListener, public rex::ui::WindowListener {
+class KeyboardListener : public rex::ui::IUIEventListener {
 public:
-  void Attach(rex::ui::Window *window) {
-    window_ = window;
-    window->AddInputListener(this, kZOrder);
-    window->AddListener(this);
-    RNUT_INFO("Keyboard: listening to the game window");
+  // Added before the mouse camera's listener, so its events come first.
+  void Attach(rex::ui::IUISystem &ui) {
+    ui_ = &ui;
+    input_ = REX_INTERFACE(rex::hid::IInputSystem);
+    guard_ = ui.AddEventListener(*this);
   }
 
   void Detach() {
-    if (!window_)
+    if (!ui_)
       return;
     Clear();
-    window_->RemoveInputListener(this);
-    window_->RemoveListener(this);
-    window_ = nullptr;
+    guard_.Reset();
+    ui_ = nullptr;
+    input_ = nullptr;
   }
 
-  rex::ui::Window *window() const { return window_; }
+  rex::ui::IUISystem *ui() const { return ui_; }
 
-  void OnKeyDown(rex::ui::KeyEvent &e) override {
-    if (!std::exchange(first_key_logged_, true)) {
-      const std::string window = renut::gpu::overlay::InputWindowName();
-      RNUT_INFO("Keyboard: first key {} (renut_keyboard {}{}{})", int(e.virtual_key()),
-                REXCVAR_GET(renut_keyboard) ? "on" : "off",
-                window.empty() ? "" : "; taken by the overlay window ", window);
+  void OnInputEvent(rex::InputEvent &e) override {
+    using Type = rex::InputEvent::Type;
+    switch (e.type) {
+    case Type::kKeyDown: Set(e.key, true); break;
+    case Type::kKeyUp: Set(e.key, false); break;
+    // Before the mouse camera's listener: the click that captures the mouse
+    // finds it free, and plays nothing.
+    case Type::kButtonDown:
+      Cursor(e);
+      ModButton(e.button, true);
+      if (renut::game::MouseCaptured())
+        Set(MouseKey(e.button), true);
+      break;
+    case Type::kButtonUp:
+      Cursor(e);
+      ModButton(e.button, false);
+      Set(MouseKey(e.button), false);
+      break;
+    case Type::kMotion:
+      Cursor(e);
+      g_mouse_dx.fetch_add(int32_t(std::lround(e.dx)), std::memory_order_relaxed);
+      g_mouse_dy.fetch_add(int32_t(std::lround(e.dy)), std::memory_order_relaxed);
+      break;
+    default: break;
     }
-    Set(e.virtual_key(), true);
   }
-  void OnKeyUp(rex::ui::KeyEvent &e) override { Set(e.virtual_key(), false); }
 
-  // Before the mouse camera's listener: the click that captures the mouse
-  // finds it free, and plays nothing.
-  void OnMouseDown(rex::ui::MouseEvent &e) override {
-    if (renut::game::MouseCaptured())
-      Set(MouseKey(e.button()), true);
+  // The UI system takes a focus change after its listeners, and a listener can't go
+  // during a delivery, so both wait for the UI thread's next task.
+  void OnUIEvent(const rex::ui::UIEvent &e) override {
+    using Type = rex::ui::UIEvent::Type;
+    if (e.GetType() == Type::kFocus) {
+      ui_->PostTask([this] {
+        if (ui_ && !ui_->IsFocused())
+          Clear();
+      });
+    } else if (e.GetType() == Type::kClose) {
+      ui_->PostTask([this] { Detach(); });
+    }
   }
-  void OnMouseUp(rex::ui::MouseEvent &e) override { Set(MouseKey(e.button()), false); }
-
-  void OnLostFocus(rex::ui::UISetupEvent &) override { Clear(); }
-  void OnClosing(rex::ui::UIEvent &) override { Detach(); }
 
 private:
-  // Above the mouse camera's (1) and the app's own (0) listeners.
-  static constexpr size_t kZOrder = 2;
-
-  static rex::ui::VirtualKey MouseKey(rex::ui::MouseEvent::Button button) {
+  static rex::VirtualKey MouseKey(rex::MouseButton button) {
     switch (button) {
-    case rex::ui::MouseEvent::Button::kLeft: return rex::ui::VirtualKey::kLButton;
-    case rex::ui::MouseEvent::Button::kRight: return rex::ui::VirtualKey::kRButton;
-    case rex::ui::MouseEvent::Button::kMiddle: return rex::ui::VirtualKey::kMButton;
-    case rex::ui::MouseEvent::Button::kX1: return rex::ui::VirtualKey::kXButton1;
-    case rex::ui::MouseEvent::Button::kX2: return rex::ui::VirtualKey::kXButton2;
-    default: return rex::ui::VirtualKey::kNone;
+    case rex::MouseButton::kLeft: return rex::VirtualKey::kLButton;
+    case rex::MouseButton::kRight: return rex::VirtualKey::kRButton;
+    case rex::MouseButton::kMiddle: return rex::VirtualKey::kMButton;
+    case rex::MouseButton::kX1: return rex::VirtualKey::kXButton1;
+    case rex::MouseButton::kX2: return rex::VirtualKey::kXButton2;
+    default: return rex::VirtualKey::kNone;
     }
   }
 
-  void Set(rex::ui::VirtualKey key, bool down) {
+  void Set(rex::VirtualKey key, bool down) {
     const size_t index = size_t(key);
-    if (key == rex::ui::VirtualKey::kNone || index >= held_.size())
+    if (key == rex::VirtualKey::kNone || index >= held_.size())
       return;
     held_[index] = down;
+    g_key_down[index].store(down, std::memory_order_relaxed);
     Update();
   }
 
   void Clear() {
     held_.reset();
+    for (std::atomic<bool> &key : g_key_down)
+      key.store(false, std::memory_order_relaxed);
+    for (std::atomic<bool> &button : g_mouse_down)
+      button.store(false, std::memory_order_relaxed);
     Update();
+  }
+
+  // Event positions and the window's size are physical pixels.
+  void Cursor(const rex::InputEvent &e) {
+    const rex::PointerState pointer = input_ ? input_->GetPointer() : rex::PointerState{};
+    const uint32_t w = pointer.window_width;
+    const uint32_t h = pointer.window_height;
+    if (!w || !h)
+      return;
+    g_cursor_x.store(float(e.x) / float(w), std::memory_order_relaxed);
+    g_cursor_y.store(float(e.y) / float(h), std::memory_order_relaxed);
+    g_window_aspect.store(float(w) / float(h), std::memory_order_relaxed);
+  }
+
+  static void ModButton(rex::MouseButton button, bool down) {
+    int index = -1;
+    switch (button) {
+    case rex::MouseButton::kLeft: index = 0; break;
+    case rex::MouseButton::kRight: index = 1; break;
+    case rex::MouseButton::kMiddle: index = 2; break;
+    case rex::MouseButton::kX1: index = 3; break;
+    case rex::MouseButton::kX2: index = 4; break;
+    default: return;
+    }
+    g_mouse_down[index].store(down, std::memory_order_relaxed);
   }
 
   // The binds' keys are looked up as they are now, so a changed bind takes
@@ -266,10 +292,10 @@ private:
   void Update() {
     uint32_t buttons = 0, move = 0;
     for (const Bind &bind : kBinds) {
-      const std::string &name = bind.key();
+      const std::string name = bind.key();
       if (name.empty())
         continue;
-      const size_t index = size_t(rex::ui::ParseVirtualKey(name));
+      const size_t index = size_t(ParseKey(input_, name));
       if (index && index < held_.size() && held_[index]) {
         buttons |= bind.buttons;
         move |= bind.move;
@@ -280,29 +306,29 @@ private:
     UpdateGuide(buttons, move);
   }
 
-  // The keys are player 1's pad in the Guide too: the Guide key opens it, and
-  // the bound buttons and movement keys drive it. Its button is the Guide's
-  // alone; the game never gets it.
+  // Feeds the keys to the Guide as player 1's pad; the Guide key opens it and
+  // never reaches the game.
   void UpdateGuide(uint32_t buttons, uint32_t move) {
-    if (!REXCVAR_GET(renut_keyboard) || renut::gpu::overlay::WantsCursor()) {
+    if (!g_keys.renut_keyboard.Get() || renut::gpu::overlay::WantsCursor()) {
       rexglue_guide::ClearKeyboardPad();
       return;
     }
     constexpr uint16_t kGuideButton = 0x0400;  // XINPUT_GAMEPAD_GUIDE
-    const std::string &guide_key = REXCVAR_GET(renut_key_guide);
-    const size_t guide = guide_key.empty() ? 0 : size_t(rex::ui::ParseVirtualKey(guide_key));
+    const std::string guide_key = g_keys.renut_key_guide.Get();
+    const size_t guide = guide_key.empty() ? 0 : size_t(ParseKey(input_, guide_key));
     const bool guide_held = guide && guide < held_.size() && held_[guide];
     const float x = float(!!(move & kMoveRight)) - float(!!(move & kMoveLeft));
     const float y = float(!!(move & kMoveForward)) - float(!!(move & kMoveBack));
     rexglue_guide::SetKeyboardPad(0, uint16_t(buttons & 0xFFFF) | (guide_held ? kGuideButton : 0), x, y);
   }
 
-  rex::ui::Window *window_ = nullptr;
+  rex::ui::IUISystem *ui_ = nullptr;
+  rex::hid::IInputSystem *input_ = nullptr;
+  rex::ScopeGuard guard_;
   std::bitset<256> held_;
-  bool first_key_logged_ = false;
 };
 
-KeyboardListener g_listener;
+KeyboardListener &g_listener = *new KeyboardListener();  // never freed: no listener removal at exit
 
 // The port the keys play: player 1's, or before there is one, the first
 // connected port (port 0 without any).
@@ -334,7 +360,7 @@ uint32_t g_previous[kPorts] = {};
 // Whether the keys play now: renut_keyboard on, and no overlay window nor the
 // Guide (RexLiveless) taking them.
 bool KeysActive() {
-  return REXCVAR_GET(renut_keyboard) && !renut::gpu::overlay::WantsCursor() &&
+  return g_keys.renut_keyboard.Get() && !renut::gpu::overlay::WantsCursor() &&
          !rexglue_guide::IsOpen();
 }
 
@@ -386,19 +412,17 @@ std::chrono::steady_clock::time_point g_keystroke_repeat[kKeystrokeKeyCount];
 
 namespace renut::game {
 
-void AttachKeyboard(rex::ui::Window *window) {
-  if (!window)
-    return;
-  window->app_context().CallInUIThreadDeferred([window] {
-    if (!g_listener.window())
-      g_listener.Attach(window);
+void AttachKeyboard(rex::ui::IUISystem &ui) {
+  ui.PostTask([&ui] {
+    if (!g_listener.ui())
+      g_listener.Attach(ui);
   });
 }
 
 void DetachKeyboard() {
-  rex::ui::Window *window = g_listener.window();
-  if (window)
-    window->app_context().CallInUIThreadSynchronous([] { g_listener.Detach(); });
+  rex::ui::IUISystem *ui = g_listener.ui();
+  if (ui && !ui->RunSynchronous([] { g_listener.Detach(); }))
+    g_listener.Detach();
 }
 
 bool NextKeystroke(uint16_t &virtual_key, uint16_t &flags) {
@@ -434,6 +458,47 @@ uint32_t KeyboardButtons() {
   return KeysActive() ? g_buttons.load(std::memory_order_relaxed) & 0xFFFF : 0;
 }
 
+bool HeldPadEntry(uint32_t port, uint8_t (&entry)[40]) {
+  if (!g_guest_held.load(std::memory_order_relaxed))
+    return false;
+  std::lock_guard lock(g_held_mutex);
+  if (port != g_held_port)
+    return false;
+  std::memcpy(entry, g_held_entry[port], sizeof(entry));
+  return true;
+}
+
+bool CursorPosition(float &x, float &y, float &aspect) {
+  x = g_cursor_x.load(std::memory_order_relaxed);
+  y = g_cursor_y.load(std::memory_order_relaxed);
+  aspect = g_window_aspect.load(std::memory_order_relaxed);
+  return x >= 0.0f && aspect > 0.0f;
+}
+
+void InstallModInput() {
+  rexfabric::HostInput input;
+  input.resolve_key = [](std::string_view name) {
+    return uint16_t(ParseKey(REX_INTERFACE(rex::hid::IInputSystem), name));
+  };
+  input.key_down = [](uint16_t key) { return key < 256 && g_key_down[key].load(std::memory_order_relaxed); };
+  input.mouse_button_down = [](int button) {
+    return button >= 0 && button < 5 && g_mouse_down[button].load(std::memory_order_relaxed);
+  };
+  input.accepts_input = [] { return !renut::gpu::overlay::WantsCursor() && !rexglue_guide::IsOpen(); };
+  input.consume_mouse_delta = [] {
+    return std::pair<int32_t, int32_t>(g_mouse_dx.exchange(0, std::memory_order_relaxed),
+                                       g_mouse_dy.exchange(0, std::memory_order_relaxed));
+  };
+  input.consume_wheel = [] { return renut::gpu::overlay::ConsumeMouseWheel(); };
+  input.set_guest_input_held = [](bool held) { g_guest_held.store(held, std::memory_order_relaxed); };
+  input.flush = [] {
+    g_mouse_dx.store(0, std::memory_order_relaxed);
+    g_mouse_dy.store(0, std::memory_order_relaxed);
+    renut::gpu::overlay::ConsumeMouseWheel();
+  };
+  rexfabric::SetHostInput(std::move(input));
+}
+
 } // namespace renut::game
 
 // BOOL padStatePush(record, entry): makes 'entry' the record's current one.
@@ -452,6 +517,20 @@ REX_HOOK_RAW(sub_821CB628) {
     __imp__sub_821CB628(ctx, base);
     return;
   }
+  // A mod holding the game's input: player 1's port pushes an empty entry, put back after (mods read it held).
+  if (g_guest_held.load(std::memory_order_relaxed) && port == KeyboardPort(base)) {
+    uint8_t held[kEntrySize];
+    std::memcpy(held, base + entry, kEntrySize);
+    {
+      std::lock_guard lock(g_held_mutex);
+      std::memcpy(g_held_entry[port], held, kEntrySize);
+      g_held_port = port;
+    }
+    std::memset(base + entry, 0, kEntrySize);
+    __imp__sub_821CB628(ctx, base);
+    std::memcpy(base + entry, held, kEntrySize);
+    return;
+  }
   // Only the keyboard's port plays the keys; keys still held when it changes
   // (player 1 joins on another port) are let go on the old one.
   const bool keyboard_port = active && port == KeyboardPort(base);
@@ -461,12 +540,6 @@ REX_HOOK_RAW(sub_821CB628) {
   if (!buttons && !(move & ~kMoveWalk) && !previous) {
     __imp__sub_821CB628(ctx, base);
     return;
-  }
-
-  static bool logged = false;
-  if (!logged) {
-    logged = true;
-    RNUT_INFO("Keyboard: keys reach pad port {}", port);
   }
 
   uint8_t saved[kEntrySize];

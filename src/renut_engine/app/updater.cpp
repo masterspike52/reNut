@@ -7,16 +7,12 @@
 #include <system_error>
 #include <thread>
 #include <vector>
-
 #include <nlohmann/json.hpp>
-#include <rex/filesystem.h>
-
+#include <rex/platform/file.h>
+#include <rex/string/text.h>
 #include "renut_engine/app/app_paths.h"
-#include "renut_engine/app/renut_logging.h"
 #include "renut_engine/mods/sha256.h"
 #include "renut_engine/mods/zip_reader.h"
-// The Guide's HTTP client (WinHTTP, or the system's libcurl), built into reNut
-// with the Guide; it follows GitHub's redirects to its file servers.
 #include "thirdparty/rexglue_guide/src/http.h"
 
 #if defined(_WIN32)
@@ -39,7 +35,6 @@ using json = nlohmann::json;
 
 constexpr const char kApiHost[] = "https://api.github.com";
 constexpr const char kLatestPath[] = "/repos/masterspike52/reNut/releases/latest";
-// The release installed, by tag, in reNut's writable folder.
 constexpr const char kInstalledFile[] = "installed_release.txt";
 constexpr int kApiTimeoutMs = 15000;
 constexpr int kDownloadTimeoutMs = 15 * 60 * 1000;
@@ -72,7 +67,6 @@ void WriteInstalled(const std::string &tag) {
     std::ofstream(InstalledPath(), std::ios::trunc) << tag << "\n";
 }
 
-// "https://host/path" into the client's endpoint and the path.
 bool SplitUrl(const std::string &url, http::Endpoint *endpoint, std::string *path) {
     if (!http::ParseUrl(url, endpoint))
         return false;
@@ -96,11 +90,9 @@ http::Response Fetch(const std::string &url, int timeout_ms) {
 struct Asset {
     std::string name;
     std::string url;
-    std::string sha256;  // lower-case hex, empty if GitHub gave none
+    std::string sha256; 
 };
 
-// This system's file of the release: every .zip on Windows (a release is
-// renut.zip; a hotfix may be only rexruntime.zip), the .AppImage on Linux.
 std::vector<Asset> PlatformAssets(const json &release) {
     std::vector<Asset> assets;
     for (const json &a : release.value("assets", json::array())) {
@@ -142,14 +134,11 @@ void SaveFile(const fs::path &path, const void *data, size_t size) {
     out.write(static_cast<const char *>(data), std::streamsize(size));
     out.close();
     if (!out)
-        throw Failure{"can't write " + rex::path_to_utf8(path)};
+        throw Failure{"can't write " + rex::string::PathToUTF8(path)};
 }
 
 #if defined(_WIN32)
 
-// The zip's files beside renut.exe: each written as <name>.new, then the one
-// there (running or not: Windows lets a running program's files be renamed)
-// moved to <name>.old and the new one into its place.
 void InstallZip(const std::string &zip_bytes, const fs::path &folder) {
     const fs::path zip_path = renut::paths::WritableFolder() / "update.zip";
     SaveFile(zip_path, zip_bytes.data(), zip_bytes.size());
@@ -161,7 +150,7 @@ void InstallZip(const std::string &zip_bytes, const fs::path &folder) {
     for (const auto &entry : zip.Entries()) {
         if (entry.name.empty() || entry.name.back() == '/')
             continue;
-        const fs::path relative = rex::to_path(entry.name).lexically_normal();
+        const fs::path relative = rex::string::to_path(entry.name).lexically_normal();
         if (relative.is_absolute() || relative.empty() || *relative.begin() == "..")
             throw Failure{"the release's zip has a file outside its folder (" + entry.name + ")"};
         const auto data = zip.Read(entry.name, &error);
@@ -184,40 +173,33 @@ void InstallZip(const std::string &zip_bytes, const fs::path &folder) {
         if (fs::exists(target, ec)) {
             fs::rename(target, old, ec);
             if (ec)
-                throw Failure{"can't move " + rex::path_to_utf8(target) + " aside (" + ec.message() + ")"};
+                throw Failure{"can't move " + rex::string::PathToUTF8(target) + " aside (" + ec.message() + ")"};
         }
         fs::rename(fresh, target, ec);
         if (ec)
-            throw Failure{"can't put " + rex::path_to_utf8(target) + " in place (" + ec.message() + ")"};
+            throw Failure{"can't put " + rex::string::PathToUTF8(target) + " in place (" + ec.message() + ")"};
     }
     fs::remove(zip_path, ec);
 }
 
 #else
 
-// The new AppImage over the running one: a rename, which leaves the running
-// copy (already mounted) as it is.
 void InstallAppImage(const std::string &bytes, const fs::path &image) {
     fs::path fresh = image;
     fresh += ".new";
     SaveFile(fresh, bytes.data(), bytes.size());
     std::error_code ec;
-    fs::permissions(fresh,
-                    fs::perms::owner_all | fs::perms::group_read | fs::perms::group_exec | fs::perms::others_read |
-                        fs::perms::others_exec,
-                    ec);
+    fs::permissions(fresh, fs::perms::owner_all | fs::perms::group_read | fs::perms::group_exec | fs::perms::others_read | fs::perms::others_exec, ec);
     fs::rename(fresh, image, ec);
     if (ec)
-        throw Failure{"can't replace " + rex::path_to_utf8(image) + " (" + ec.message() + ")"};
+        throw Failure{"can't replace " + rex::string::PathToUTF8(image) + " (" + ec.message() + ")"};
 }
 
 #endif
 
-// Where an update goes: the folder renut.exe is in, or the AppImage file.
-// Empty when there's nothing to update (Linux outside an AppImage).
 fs::path InstallTarget() {
 #if defined(_WIN32)
-    return rex::filesystem::GetExecutableFolder();
+    return rex::platform::GetExecutableFolder();
 #else
     const char *image = std::getenv("APPIMAGE");
     return image && *image ? fs::path(image) : fs::path();
@@ -251,19 +233,16 @@ void Run() {
     }
     const std::string installed = ReadInstalled();
     if (installed.empty()) {
-        // The first run of an updating reNut: it is the latest (it was just
-        // downloaded), and the next release is what it updates to.
         WriteInstalled(tag);
         Set(State::kUpToDate, name);
-        RNUT_INFO("Update: {} taken as installed", tag);
         return;
     }
+
     if (installed == tag) {
         Set(State::kUpToDate, name);
         return;
     }
 
-    RNUT_INFO("Update: {} is out (installed: {}); downloading", tag, installed);
     try {
         const std::vector<Asset> assets = PlatformAssets(release);
         if (assets.empty())
@@ -274,44 +253,37 @@ void Run() {
             files.push_back(Download(asset));
         Set(State::kInstalling, name);
 #if defined(_WIN32)
-        for (const std::string &zip : files)
-            InstallZip(zip, target);
+        for (const std::string &zip : files) InstallZip(zip, target);
 #else
         InstallAppImage(files.front(), target);
 #endif
     } catch (const Failure &f) {
-        RNUT_WARN("Update: {} not installed: {}", tag, f.what);
         Set(State::kFailed, name, f.what);
         return;
     } catch (const std::exception &e) {
-        RNUT_WARN("Update: {} not installed: {}", tag, e.what());
         Set(State::kFailed, name, e.what());
         return;
     }
     WriteInstalled(tag);
-    RNUT_INFO("Update: {} installed", tag);
     Set(State::kReady, name);
 }
 
-// What the last update left beside renut.exe: the files it replaced, now no
-// longer running.
 void DeleteOldFiles() {
 #if defined(_WIN32)
     std::error_code ec;
-    for (const auto &entry : fs::directory_iterator(rex::filesystem::GetExecutableFolder(), ec))
+    for (const auto &entry : fs::directory_iterator(rex::platform::GetExecutableFolder(), ec))
         if (entry.is_regular_file(ec) && entry.path().extension() == ".old")
             fs::remove(entry.path(), ec);
 #endif
 }
 
-} // namespace
+} 
 
 void Start() {
 #if defined(RENUT_RELEASE_BUILD)
     static std::once_flag once;
     std::call_once(once, [] {
         DeleteOldFiles();
-        // Detached: a download outlasting reNut is simply left unfinished.
         std::thread(Run).detach();
     });
 #endif
@@ -324,13 +296,12 @@ Status Get() {
 
 bool Restart() {
 #if defined(_WIN32)
-    const std::wstring exe = rex::filesystem::GetExecutablePath().wstring();
+    const std::wstring exe = rex::platform::GetExecutablePath().wstring();
     std::wstring command_line = GetCommandLineW();
     STARTUPINFOW startup{};
     startup.cb = sizeof(startup);
     PROCESS_INFORMATION process{};
-    if (!CreateProcessW(exe.c_str(), command_line.data(), nullptr, nullptr, FALSE, 0, nullptr,
-                        rex::filesystem::GetExecutableFolder().wstring().c_str(), &startup, &process))
+    if (!CreateProcessW(exe.c_str(), command_line.data(), nullptr, nullptr, FALSE, 0, nullptr, rex::platform::GetExecutableFolder().wstring().c_str(), &startup, &process))
         return false;
     CloseHandle(process.hThread);
     CloseHandle(process.hProcess);
@@ -345,4 +316,4 @@ bool Restart() {
 #endif
 }
 
-} // namespace renut::update
+} 

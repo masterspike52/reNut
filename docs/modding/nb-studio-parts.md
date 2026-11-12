@@ -160,11 +160,11 @@ version, and save. NB Studio checks the part again and packs the part and its mo
 | What you see | Why, and what to do |
 |---|---|
 | reNut stops after the Microsoft logo | The part file isn't in `renut\parts` (a patch with only the model does this). Move it there and make the patch again. Check Part Files points this out. |
-| The garage shows the standard wheel's shape | The model wasn't found. reNut's log says `... is in no loaded bundle`. Build the models (step 5), then make the patch again. |
+| The garage shows the standard wheel's shape | The model wasn't found: its bundle isn't in the patch. Build the models (step 5), then make the patch again. |
 | The ball doesn't turn | `"spins": true` is missing from `models.json`. |
 | The ball sinks into the ground | `"collisionFit": "model"` is missing from `models.json`, so the wheel still rolls on the standard wheel's small collision. |
 | Banjo tips over or spins round with the ball | Move the heavy parts (engine, fuel) lower, under the seat. |
-| The part isn't in the garage at all | Check the newest reNut log (`logs\renut_<number>.log`) for lines with `skipped` or `ERROR`; [custom-parts.md](custom-parts.md#testing-and-troubleshooting) explains them. |
+| The part isn't in the garage at all | See [custom-parts.md](custom-parts.md#testing-and-troubleshooting) for the usual causes. |
 
 ## Command line
 

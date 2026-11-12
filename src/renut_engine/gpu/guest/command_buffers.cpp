@@ -1,6 +1,3 @@
-/**
- * @file    gpu/guest/command_buffers.cpp
- */
 #include "renut_engine/gpu/guest/command_buffers.h"
 
 #include <algorithm>
@@ -37,10 +34,8 @@ constexpr u32 kPixelShaderF =
 // (SetPending_AluConstants 0x8222D0E8).
 constexpr u32 kConstantGroupBytes = 4 * 16;
 
-// What an op keeps of the device (see Op::state). The draw, clear and resolve
-// paths read nothing before the fetch constants (dirty masks, ring pointers,
-// the Set/Get*State call tables), and the float constants, two thirds of the
-// snapshot, are kept as the groups written since the device's previous op.
+// The device range an op keeps (Op::state): from the fetch constants on, with
+// float constants kept only as the groups written since the previous op.
 constexpr u32 kFetchBegin = u32(offsetof(d3d::Device, m_Constants));
 constexpr u32 kFetchBytes = kVertexShaderF - kFetchBegin;
 constexpr u32 kFloatBytes = 2 * 256 * 16;
@@ -49,11 +44,8 @@ constexpr u32 kTailBytes = d3d::kDeviceSnapshotSize - kTailBegin;
 static_assert(kPixelShaderF == kVertexShaderF + 256 * 16);
 static_assert(kTailBegin == u32(offsetof(d3d::Device, m_Constants) + offsetof(d3d::Constants, VertexShaderB)));
 
-// The rest, the fetch constants and the tail, in 64-byte chunks: an op keeps
-// the chunks that differ from the device's previous op (Op::plain_dirty, bit
-// i = chunk i), which for most draws are a few bindings and render states.
-// Replaying them was a copy of the whole of both per draw on the render
-// thread; comparing them is the recording threads' work.
+// The fetch constants and the tail in 64-byte chunks: an op keeps the chunks
+// that differ from the device's previous op (Op::plain_dirty, bit i = chunk i).
 constexpr u32 kChunkBytes = 64;
 constexpr u32 kFetchChunks = kFetchBytes / kChunkBytes;
 constexpr u32 kTailChunks = (kTailBytes + kChunkBytes - 1) / kChunkBytes;
@@ -87,19 +79,16 @@ enum class OpKind { Draw, Clear, Resolve, Run };
 
 struct Op {
   OpKind kind = OpKind::Draw;
-  // The device in the arena (CopyState): the chunks in plain_dirty, then the
-  // float constant groups in vs_dirty and ps_dirty. Replay rebuilds the whole
-  // snapshot from the previous op's (ApplyState).
+  // Arena offset of the op's state (CopyState): the chunks in plain_dirty, then
+  // the float constant groups in vs_dirty and ps_dirty.
   size_t state = kNone;
   // Chunks that differ from the device's previous op; all for a buffer's first.
   uint64_t plain_dirty = kAllChunks;
   // Float constant groups the buffer had set by this op (m_Pending[0] / [1]
   // bits); the rest are inherited from the running device.
   uint64_t vs_set = 0, ps_set = 0;
-  // Those written since the device's previous op (ReplayConstants::vs_dirty),
-  // all for a buffer's first op. Only the pending-mask consumers (the draw
-  // calls, RunCommandBuffer and EndCommandBuffer, all but the last hooked)
-  // clear them, so the others hold what the previous op of the buffer had.
+  // Groups written since the device's previous op (ReplayConstants::vs_dirty),
+  // all for a buffer's first op.
   uint64_t vs_dirty = ~uint64_t(0), ps_dirty = ~uint64_t(0);
 
   // Draw
@@ -150,31 +139,22 @@ struct DeviceRecording {
 };
 
 // A RunCommandBuffer's buffer and every buffer it runs in turn, as they were
-// when it was issued: the render thread replays it later, by when the game
-// may be recording the next frame's into the same D3DCommandBuffers.
+// when it was issued.
 using BufferSet = std::unordered_map<u32, std::shared_ptr<HostCommandBuffer>>;
 
-// Guards the three below; never taken with State().mutex (the render thread
-// replays captured buffers without it). A buffer a queued run still holds is
-// replaced, not cleared, when the game records it again (BeginRecording).
+// Guards g_buffers, g_recording_devices and g_pending_vertices; never taken
+// with State().mutex.
 std::mutex g_record_mutex;
 std::unordered_map<u32, std::shared_ptr<HostCommandBuffer>> g_buffers;
 
-// Buffers no recording or queued run holds any more, kept with their capacity:
-// a buffer recorded again is a fresh one while a run holds the old, and
-// growing a fresh arena to a frame's worth of snapshots cost the recording
-// threads more than recording. Their own lock: the last reference may drop
-// with g_record_mutex held (BeginRecording) or on the render thread.
-// Bounded by count and by the capacity they keep: one frame's worth of
-// recordings is what is worth keeping, and an arena one unusual frame grew
-// past kMaxKeptArena goes rather than holding that memory for good.
+// Released buffers kept with their capacity for reuse, under their own lock;
+// bounded by count, total bytes and per-arena size.
 constexpr size_t kMaxFreeBuffers = 256;
 constexpr size_t kMaxFreeBytes = 64u << 20;
 constexpr size_t kMaxKeptArena = 8u << 20;
 std::mutex g_free_mutex;
 std::vector<std::unique_ptr<HostCommandBuffer>> g_free_buffers;
 size_t g_free_bytes = 0;  // arena and op capacity of g_free_buffers
-std::atomic<size_t> g_live_buffers{0};
 
 size_t CapacityBytes(const HostCommandBuffer &buffer) {
   return buffer.arena.capacity() + buffer.ops.capacity() * sizeof(buffer.ops[0]);
@@ -190,7 +170,6 @@ std::shared_ptr<HostCommandBuffer> NewBuffer() {
       g_free_bytes -= CapacityBytes(*buffer);
     }
   }
-  g_live_buffers.fetch_add(1, std::memory_order_relaxed);
   if (buffer) {
     buffer->ops.clear();
     buffer->arena.clear();
@@ -198,7 +177,6 @@ std::shared_ptr<HostCommandBuffer> NewBuffer() {
     buffer = std::make_unique<HostCommandBuffer>();
   }
   return std::shared_ptr<HostCommandBuffer>(buffer.release(), [](HostCommandBuffer *retired) {
-    g_live_buffers.fetch_sub(1, std::memory_order_relaxed);
     const size_t bytes = CapacityBytes(*retired);
     {
       std::lock_guard lock(g_free_mutex);
@@ -308,13 +286,8 @@ void ApplyState(u8 *state, const u8 *from, uint64_t plain_dirty, uint64_t vs_dir
 
 void FlushDevicePending(u32 device_va);
 
-// A new op on the device's buffer, with the device's state and the constant
-// groups set so far, after the device's pending Begin*Vertices data. Consumes
-// the device's dirty masks the way the original calls do when they write the
-// state into the buffer. g_record_mutex is held for the lookups only: N&B
-// records on several threads at once, and the snapshot copy, most of the
-// work, goes into the device's own buffer, which only its recording thread
-// touches until the buffer runs.
+// A new op on the device's buffer with the device's state, consuming its dirty
+// masks as the original calls do; g_record_mutex is held for the lookups only.
 Op *NewOp(u32 device_va, OpKind kind, HostCommandBuffer **out_buffer) {
   const u32 command_buffer = RecordingBuffer(device_va);
   auto *device = GuestPtr<d3d::Device>(device_va);
@@ -405,9 +378,8 @@ u32 Predication(const u8 *state) {
 // the render thread replays. The bytes before the fetch constants stay zero.
 alignas(64) u8 g_replay_state[kMaxRunDepth][d3d::kDeviceSnapshotSize];
 
-// On the render thread. 'predication': the mask the buffer runs under
-// (SetPredication before RunCommandBuffer), which the draws' own masks narrow
-// (see SetReplayPredicationLocked).
+// Replays a captured buffer on the render thread. 'predication' is the tile mask
+// the buffer runs under, which the draws' own masks narrow.
 void Replay(const u8 *running, const BufferSet &buffers, u32 command_buffer_va, u32 depth,
             u32 predication) {
   if (depth >= kMaxRunDepth)
@@ -622,26 +594,6 @@ void ReleaseCommandBuffer(u32 command_buffer_va) {
       }
     }
   }
-}
-
-CommandBufferMemory CommandBufferMemoryUsage() {
-  CommandBufferMemory usage;
-  {
-    std::lock_guard lock(g_record_mutex);
-    for (const auto &[va, buffer] : g_buffers) {
-      if (buffer) {
-        usage.recorded_bytes += CapacityBytes(*buffer);
-        ++usage.recorded;
-      }
-    }
-  }
-  {
-    std::lock_guard lock(g_free_mutex);
-    usage.spare_bytes = g_free_bytes;
-    usage.spare = g_free_buffers.size();
-  }
-  usage.live = g_live_buffers.load(std::memory_order_relaxed);
-  return usage;
 }
 
 } // namespace renut::gpu

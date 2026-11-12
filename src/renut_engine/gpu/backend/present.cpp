@@ -1,33 +1,35 @@
-/**
- * @file    gpu/backend/present.cpp
- * @brief   End of frame: swapchain acquire, guest image scan-out, overlay,
- *          submit and present.
- */
 #include <algorithm>
 #include <chrono>
 #include <mutex>
 
 #include <plume_render_interface.h>
 
-#include <rex/cvar.h>
+#include <rex/gpu/graphics_system.h>
+#include <rex/setting.h>
 
+#include "renut_engine/app/renut_settings.h"
 #include "renut_engine/gpu/backend/backend.h"
 #include "renut_engine/gpu/backend/command_recorder.h"
-#include "renut_engine/gpu/backend/gpu_profile.h"
+#include "renut_engine/gpu/backend/frame_blur.h"
 #include "renut_engine/gpu/backend/smaa.h"
 #include "renut_engine/gpu/render/draw.h"
 #include "renut_engine/gpu/render/graphics_options.h"
-#include "renut_engine/gpu/log.h"
 #include "renut_engine/gpu/overlay/overlay_drawer.h"
 #include "renut_engine/gpu/overlay/overlay_ui.h"
 #include "renut_engine/gpu/backend/render_thread.h"
 #include "renut_engine/gpu/backend/video.h"
 #include "renut_engine/gpu/backend/video_internal.h"
 
-REXCVAR_DEFINE_BOOL(renut_vsync, true, "Nuts&Bolts/Graphics",
-                    "Show each frame at the display's refresh: no tearing, and the game runs at "
-                    "the refresh rate (frame_cap then only limits below it). Off shows frames at "
-                    "once, with tearing.");
+namespace {
+struct PresentSettings final : rex::SettingOwner {
+  PresentSettings() : rex::SettingOwner(renut::settings::kScope) { renut::settings::Add(*this); }
+  REX_SETTING(bool, renut_vsync, true,
+              "Show each frame at the display's refresh: no tearing, and the game runs at "
+              "the refresh rate (frame_cap then only limits below it). Off shows frames at "
+              "once, with tearing.");
+};
+PresentSettings &g_present_settings = *new PresentSettings();  // never freed, registered by RenutApp::OnConfigure
+} // namespace
 
 namespace renut::gpu {
 
@@ -37,12 +39,11 @@ namespace {
 // makes the change by recreating the swapchain, which needsResize asks for.
 void ApplyVsync(VideoState &s) {
   static bool applied = true;
-  const bool vsync = REXCVAR_GET(renut_vsync);
+  const bool vsync = g_present_settings.renut_vsync.Get();
   if (vsync == applied)
     return;
   s.swap_chain->setVsyncEnabled(vsync);
   applied = vsync;
-  RGPU_INFO("Vsync {}", vsync ? "on" : "off");
 }
 
 void RebuildSwapChain(VideoState &s) {
@@ -51,10 +52,8 @@ void RebuildSwapChain(VideoState &s) {
     detail::SubmitAndAdvance(s, nullptr, nullptr);
   detail::WaitAllSubmitted(s);
   s.swap_framebuffers.clear();
-  if (!s.swap_chain->resize() || !detail::BuildSwapChainTargets(s)) {
-    if (s.swap_chain->getWidth() && s.swap_chain->getHeight())
-      RGPU_ERROR("Swapchain resize failed");  // 0x0 while minimized is expected
-  }
+  if (s.swap_chain->resize())
+    detail::BuildSwapChainTargets(s);
 }
 
 // The most of the game's frame trimmed off either axis to fill the output.
@@ -65,10 +64,8 @@ struct FrameFit {
   float visible[2] = {1.0f, 1.0f};  // the share of the frame shown on each axis
 };
 
-// The frame fills the output (a window that is not the frame's shape, say a
-// maximized one) without bars: it covers it, keeping its proportions, and the
-// part that overflows is trimmed evenly from both edges. Past kMaxTrim, the
-// rest is fitted with bars.
+// Covers the output keeping the frame's proportions, trimming the overflow evenly
+// from both edges; past kMaxTrim the rest is fitted with bars.
 FrameFit FitFrame(uint32_t out_w, uint32_t out_h, uint32_t src_w, uint32_t src_h) {
   FrameFit fit;
   fit.viewport = plume::RenderViewport(0.0f, 0.0f, float(out_w), float(out_h));
@@ -92,7 +89,29 @@ FrameFit FitFrame(uint32_t out_w, uint32_t out_h, uint32_t src_w, uint32_t src_h
   return fit;
 }
 
-void RecordScanOut(VideoState &s, const PresentImage &image, uint32_t out_w, uint32_t out_h) {
+// The part of an image the output shows (scale and translate of it in the image's uv), and where it goes.
+struct ShownPart {
+  FrameFit fit;
+  float scale[2] = {1.0f, 1.0f};
+  float translate[2] = {0.0f, 0.0f};
+};
+
+ShownPart Shown(const PresentImage &image, uint32_t out_w, uint32_t out_h) {
+  const uint32_t src_w = image.source_width ? image.source_width : image.width;
+  const uint32_t src_h = image.source_height ? image.source_height : image.height;
+  ShownPart shown;
+  shown.fit = FitFrame(out_w, out_h, src_w, src_h);
+  // The frame's share of the texture, less what the fit trims from its edges.
+  const float frame_u = image.width ? float(src_w) / float(image.width) : 1.0f;
+  const float frame_v = image.height ? float(src_h) / float(image.height) : 1.0f;
+  shown.scale[0] = frame_u * shown.fit.visible[0];
+  shown.scale[1] = frame_v * shown.fit.visible[1];
+  shown.translate[0] = frame_u * (1.0f - shown.fit.visible[0]) * 0.5f;
+  shown.translate[1] = frame_v * (1.0f - shown.fit.visible[1]) * 0.5f;
+  return shown;
+}
+
+void RecordScanOut(VideoState &s, const PresentImage &image, const ShownPart &shown) {
   plume::RenderCommandList *cmd = s.command_list;
   if (image.layout && *image.layout != plume::RenderTextureLayout::SHADER_READ) {
     cmd->barriers(plume::RenderBarrierStage::GRAPHICS,
@@ -100,10 +119,7 @@ void RecordScanOut(VideoState &s, const PresentImage &image, uint32_t out_w, uin
     *image.layout = plume::RenderTextureLayout::SHADER_READ;
   }
 
-  const uint32_t src_w = image.source_width ? image.source_width : image.width;
-  const uint32_t src_h = image.source_height ? image.source_height : image.height;
-  const FrameFit fit = FitFrame(out_w, out_h, src_w, src_h);
-  const plume::RenderViewport &vp = fit.viewport;
+  const plume::RenderViewport &vp = shown.fit.viewport;
   cmd->setViewports(vp);
   cmd->setScissors(plume::RenderRect(int32_t(vp.x), int32_t(vp.y), int32_t(vp.x + vp.width),
                                      int32_t(vp.y + vp.height)));
@@ -114,13 +130,10 @@ void RecordScanOut(VideoState &s, const PresentImage &image, uint32_t out_w, uin
   cmd->setGraphicsDescriptorSet(s.sampler_set.get(), 1);
 
   UtilityPush push{};
-  // The frame's share of the texture, less what the fit trims from its edges.
-  const float frame_u = image.width ? float(src_w) / float(image.width) : 1.0f;
-  const float frame_v = image.height ? float(src_h) / float(image.height) : 1.0f;
-  push.scale[0] = frame_u * fit.visible[0];
-  push.scale[1] = frame_v * fit.visible[1];
-  push.translate[0] = frame_u * (1.0f - fit.visible[0]) * 0.5f;
-  push.translate[1] = frame_v * (1.0f - fit.visible[1]) * 0.5f;
+  push.scale[0] = shown.scale[0];
+  push.scale[1] = shown.scale[1];
+  push.translate[0] = shown.translate[0];
+  push.translate[1] = shown.translate[1];
   push.texture_index = image.descriptor;
   push.sampler_index = kLinearClampSamplerSlot;
   push.param0 = s.output_gamma;
@@ -134,10 +147,8 @@ void RecordScanOut(VideoState &s, const PresentImage &image, uint32_t out_w, uin
   SetGameFrameLocked(image.descriptor, uv);
 }
 
-// plume gives up on a present wait after 100 ms. Presents that never report
-// reaching the display (a capture or overlay layer that drops their present
-// ids) would cost that every frame, so present wait is turned off after a few
-// such waits in a row (a second's worth; slow frames alone rarely run that long).
+// Waits for the display; present wait is turned off after kMaxTimeouts 100 ms
+// timeouts in a row (presents that never report reaching the display).
 void WaitForDisplay(VideoState &s) {
   constexpr uint32_t kMaxTimeouts = 10;
   static uint32_t timeouts = 0;
@@ -147,31 +158,23 @@ void WaitForDisplay(VideoState &s) {
     timeouts = 0;
     return;
   }
-  if (++timeouts == kMaxTimeouts) {
+  if (++timeouts == kMaxTimeouts)
     s.present_wait = false;
-    RGPU_WARN("Present wait timed out {} frames in a row; frames are no longer paced on the display",
-              kMaxTimeouts);
-  }
 }
 
 // Records the back-buffer pass and presents. Caller holds s.mutex.
 void PresentLocked(VideoState &s, const PresentImage *image) {
-  // The swapchain is the render thread's again once the recording thread has
-  // presented the frame before (an acquire before that present would get the
-  // image being presented).
+  // Waits for the recording thread's previous present before using the swapchain.
   {
     render_thread::WaitScope wait;
     CommandRecorder::WaitForCall(s.present_call);
     s.present_call = 0;
-    // Then until the present two before the last is on the display, so frames
-    // are made one per refresh (and the game, at most a frame ahead, runs at
-    // that pace) rather than in bursts while presents pile up, and a present
-    // shown a refresh late doesn't hold this thread (video.cpp). The last
-    // present has been made, so the swapchain is this thread's.
+    // Then for the display, so frames are made one per refresh rather than in
+    // bursts.
     if (s.present_wait)
       WaitForDisplay(s);
   }
-  // Logs, once, why the GPU stopped if an earlier submission faulted.
+  // Notes the device lost if an earlier submission faulted.
   ReportDeviceLost(s.device.get());
   ApplyVsync(s);
   if (s.swap_chain->needsResize() || s.resize_requested.exchange(false, std::memory_order_acq_rel))
@@ -201,8 +204,6 @@ void PresentLocked(VideoState &s, const PresentImage *image) {
 
   if (!Video::EnsureCommandListLocked())
     return;
-  static const uint32_t kProfileLabel = gpu_profile::Label("present and overlays");
-  gpu_profile::Mark(s, kProfileLabel);
   plume::RenderCommandList *cmd = s.command_list;
   // SMAA's passes come before the back buffer's (their own targets).
   PresentImage scan;
@@ -213,15 +214,27 @@ void PresentLocked(VideoState &s, const PresentImage *image) {
   plume::RenderFramebuffer *back_fb = s.swap_framebuffers[image_index].get();
   const uint32_t out_w = s.swap_chain->getWidth();
   const uint32_t out_h = s.swap_chain->getHeight();
+  // The blurred copy for glass and the Guide, which are drawn over this frame, also before the back buffer's pass.
+  ShownPart shown;
+  if (has_image) {
+    shown = Shown(scan, out_w, out_h);
+    BlurFrameLocked(s, scan, shown.scale, shown.translate, shown.fit.viewport.width);
+  } else {
+    SetBlurredFrameLocked(kInvalidDescriptor);
+  }
+
+  // Glass showing the screen as drawn so far has the UI drawn where it can be copied, then put on the back buffer.
+  plume::RenderFramebuffer *screen_fb = BeginScreenLocked(s, out_w, out_h);
+  plume::RenderFramebuffer *target = screen_fb ? screen_fb : back_fb;
 
   cmd->barriers(plume::RenderBarrierStage::GRAPHICS,
                 plume::RenderTextureBarrier(back, plume::RenderTextureLayout::COLOR_WRITE));
-  cmd->setFramebuffer(back_fb);
+  cmd->setFramebuffer(target);
   // Letterbox bars (and the whole output when there is no guest image).
   cmd->clearColor(0, plume::RenderColor(0.0f, 0.0f, 0.0f, 1.0f));
 
   if (has_image)
-    RecordScanOut(s, scan, out_w, out_h);
+    RecordScanOut(s, scan, shown);
   else
     SetGameFrameLocked(kInvalidDescriptor, nullptr);
 
@@ -229,8 +242,10 @@ void PresentLocked(VideoState &s, const PresentImage *image) {
   cmd->setScissors(plume::RenderRect(0, 0, int32_t(out_w), int32_t(out_h)));
   // The SDK's own menus, then reNut's overlay over them.
   if (s.overlay_hook)
-    s.overlay_hook(cmd, back_fb, out_w, out_h);
+    s.overlay_hook(cmd, target, out_w, out_h);
   overlay::DrawLocked(cmd, out_w, out_h);
+  if (screen_fb)
+    FinishScreenLocked(s, back_fb, out_w, out_h);
 
   cmd->setFramebuffer(nullptr);
   cmd->barriers(plume::RenderBarrierStage::GRAPHICS,
@@ -281,6 +296,8 @@ void Video::Present(const PresentImage *image) {
     return;
   PresentLocked(s, image);
   s.last_guest_present_ms.store(NowMs(), std::memory_order_release);
+  if (rex::gpu::IGraphicsSystem *graphics = s.graphics.load(std::memory_order_acquire))
+    graphics->ReportFrame();
 }
 
 void Video::PresentOverlayOnly() {
@@ -299,14 +316,6 @@ void Video::PresentOverlayOnly() {
   // The last guest frame stays up while the guest stalls.
   const PresentImage image =
       s.guest_ready && s.last_front_buffer ? FrontBufferImageLocked(s.last_front_buffer) : PresentImage{};
-  if (s.guest_ready) {
-    static uint32_t logged = 0;
-    if (logged++ < 32) {
-      RGPU_WARN("Present: the game has not presented for {} ms; the UI presents {}",
-                now - s.last_guest_present_ms.load(std::memory_order_acquire),
-                image.texture ? "its last frame" : "black (no last frame)");
-    }
-  }
   PresentLocked(s, image.texture ? &image : nullptr);
 }
 

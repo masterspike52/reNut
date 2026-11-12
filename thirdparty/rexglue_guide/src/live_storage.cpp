@@ -27,17 +27,15 @@
 #include <vector>
 
 #include <nlohmann/json.hpp>
-#include <rex/logging.h>
-#include <rex/system/kernel_state.h>
-#include <rex/system/xevent.h>
-#include <rex/system/xio.h>
-#include <rex/system/xthread.h>
+#include <rex/kernel/object/kernel_thread.h>
+#include <rex/kernel/types/io.h>
 
 #include <rexglue_guide/guide.h>
 
 #include "guest.h"
 #include "http.h"
 #include "live.h"
+#include "log.h"
 
 using namespace rexglue_guide::guest;
 using json = nlohmann::json;
@@ -152,12 +150,10 @@ bool Ours(const LiveSnapshot& s, const std::string& path) {
 void Start(uint32_t overlapped) {
   uint8_t* ov = At(overlapped);
   if (!ov) return;
-  rex::system::XOverlappedSetResult(ov, kIoPending);
-  rex::system::XOverlappedSetExtendedError(ov, 0);
-  rex::system::XOverlappedSetContext(ov, rex::system::XThread::GetCurrentThreadHandle());
-  if (const auto event = rex::system::XOverlappedGetEvent(ov)) {
-    if (auto ev = REX_KERNEL_OBJECTS()->LookupObject<rex::system::XEvent>(event)) ev->Reset();
-  }
+  rex::kernel::XOverlappedSetResult(ov, kIoPending);
+  rex::kernel::XOverlappedSetExtendedError(ov, 0);
+  rex::kernel::XOverlappedSetContext(ov, rex::kernel::KernelThread::GetCurrentThreadHandle());
+  if (const auto event = rex::kernel::XOverlappedGetEvent(ov)) SignalEvent(event, false);
 }
 
 struct Outcome {
@@ -178,7 +174,7 @@ uint32_t Run(uint32_t overlapped, Work work) {
   Start(overlapped);
   std::thread([overlapped, work = std::move(work)]() mutable {
     const Outcome o = work();
-    REX_KERNEL_STATE()->CompleteOverlappedEx(overlapped, o.result, o.extended, o.length);
+    CompleteOverlapped(overlapped, o.result, o.extended, o.length);
   }).detach();
   return kIoPending;
 }
@@ -208,7 +204,7 @@ uint32_t BuildServerPath(uint32_t args_ptr) {
   }
   const std::string owner = facility == kFacilityPerTitle ? "-" : HexId(xuid, 16);
   const std::string location = info && info_size ? Hex(info, info_size) : "-";
-  const std::string path = "rxl/" + std::to_string(facility) + "/" + HexId(REX_KERNEL_STATE()->title_id(), 8) + "/" + owner +
+  const std::string path = "rxl/" + std::to_string(facility) + "/" + HexId(RunningTitleId(), 8) + "/" + owner +
                            "/" + location + "/" + name;
   const uint32_t room = Load32(length);
   Store32(length, uint32_t(path.size() + 1));
@@ -237,7 +233,7 @@ bool StorageUploadFromMemory(uint32_t user, uint32_t server_path, uint32_t size,
   // A leaderboard replay goes with its score: both fail then.
   if (path.rfind(kGameClipPrefix, 0) == 0) {
     if (const std::string why = live::LeaderboardBlocked(); !why.empty()) {
-      REXKRNL_INFO("RexLiveless: {} refused ({})", path, why);
+      RG_INFO("RexLiveless: {} refused ({})", path, why);
       *result = Run(overlapped, [] { return Failed(kFail); });
       return true;
     }
@@ -247,10 +243,10 @@ bool StorageUploadFromMemory(uint32_t user, uint32_t server_path, uint32_t size,
     const auto r = Call(s, "PUT", "/api/storage/file?path=" + UrlEncode(path) + "&build=" + UrlEncode(live::Build()), body,
                         "application/octet-stream");
     if (r.status != 200) {
-      REXKRNL_WARN("RexLiveless: couldn't upload {} ({} {}{})", path, r.status, r.error, r.status ? " " + r.body : "");
+      RG_WARN("RexLiveless: couldn't upload {} ({} {}{})", path, r.status, r.error, r.status ? " " + r.body : "");
       return Failed(kFail);
     }
-    REXKRNL_INFO("RexLiveless: uploaded {} ({} bytes)", path, body.size());
+    RG_INFO("RexLiveless: uploaded {} ({} bytes)", path, body.size());
     return Outcome{kOk, 0, uint32_t(body.size())};
   });
   return true;
@@ -269,7 +265,7 @@ bool StorageDownloadToMemory(uint32_t user, uint32_t server_path, uint32_t size,
     const auto r = Call(s, "GET", "/api/storage/file?path=" + UrlEncode(path), "", "application/json");
     if (r.status == 404) return Failed(kFileNotFound);
     if (r.status != 200 || r.body.size() < 16) {
-      REXKRNL_WARN("RexLiveless: couldn't download {} ({} {})", path, r.status, r.error);
+      RG_WARN("RexLiveless: couldn't download {} ({} {})", path, r.status, r.error);
       return Failed(kFail);
     }
     const auto* head = reinterpret_cast<const uint8_t*>(r.body.data());
@@ -283,7 +279,7 @@ bool StorageDownloadToMemory(uint32_t user, uint32_t server_path, uint32_t size,
     }
     if (bytes > size) return Failed(kTooSmall);
     if (uint8_t* dst = At(buffer)) std::memcpy(dst, r.body.data() + 16, bytes);
-    REXKRNL_INFO("RexLiveless: downloaded {} ({} bytes)", path, bytes);
+    RG_INFO("RexLiveless: downloaded {} ({} bytes)", path, bytes);
     return Outcome{kOk, 0, bytes};
   });
   return true;
@@ -311,7 +307,7 @@ bool StorageEnumerate(uint32_t user, uint32_t server_path, uint32_t start, uint3
     } catch (...) {
     }
     if (!answer.is_object()) {
-      REXKRNL_WARN("RexLiveless: couldn't list {} ({} {})", path, r.status, r.error);
+      RG_WARN("RexLiveless: couldn't list {} ({} {})", path, r.status, r.error);
       return Failed(kFail);
     }
     const json items = answer.value("items", json::array());
@@ -326,7 +322,7 @@ bool StorageEnumerate(uint32_t user, uint32_t server_path, uint32_t start, uint3
       if (items_ptr + (returned + 1) * kFileInfoSize > end || next + name_bytes > end) break;
       uint8_t* info = At(items_ptr + returned * kFileInfoSize);
       std::memset(info, 0, kFileInfoSize);
-      Store32(info + 0, REX_KERNEL_STATE()->title_id());
+      Store32(info + 0, RunningTitleId());
       Store64(info + 8, std::strtoull(item.value("owner", std::string("0")).c_str(), nullptr, 16));
       Store32(info + 29, item.value("size", 0u));  // dwStorageSize
       Store32(info + 33, item.value("size", 0u));  // dwInstalledSize

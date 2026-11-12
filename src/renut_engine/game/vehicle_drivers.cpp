@@ -1,52 +1,8 @@
-/**
- * @file    game/vehicle_drivers.cpp
- * @brief   The Remote Control: a vehicle driven by a pad of reNut's own.
- *
- * N&B (TU3, IDA): the part is whole (restored_parts.cpp gives it) but has no
- * behaviour left: its descriptor (getter sub_82618A18 -> 0x82E31890) has the
- * generic accessory tick ([7] sub_82600A18), no button slots ([18] down,
- * [19] up, as the Stereo's) and the base HUD button state ([24] 0, greyed);
- * its attach only counts vehicle + 3547, which nothing reads. (The Autopilot,
- * 0x82600EA8 -> 0x82E30FE8, is the same; scrapped by the user.)
- *
- * A vehicle reads its controls from its driver's input device:
- * sub_82201350(vehicle, any) walks its occupants (vehicle + 6376: {+ 4 next,
- * + 8 device, + 12 actor, + 16 seated}) and returns the driver's device, or 0
- * (about twenty readers: engines, wheels, steering, part buttons). A device
- * keeps its pad record at + 16 ({+ 0 the current entry's index, + 4 two
- * 40-byte entries}: + 0 pressed, + 4 released, + 8 held, + 12 now (XInput
- * buttons, + 0x10000 / 0x20000 the triggers), + 16 / + 20 the left stick,
- * + 24 / + 28 the right, + 32 / + 36 the triggers); each frame
- * inputDeviceUpdatePlayerPad (0x82272550) pushes the port's entry into the
- * player's (padStatePush sub_821CB628, hooked by keyboard_input.cpp, which
- * calls VehicleDriversPadPush). Banjo's drive state (entityStateDriveVehicle,
- * tick sub_8245A1F8) gets out on Y (its objparams' 0x8000), and the pause
- * opens on Start pressed (sub_8243C148). The camera update
- * sub_822C0448(camera, device r4, dt, ..., mode r6, ..., target r8)
- * (mouse_camera.cpp's hook calls VehicleDriversCamera) follows its target.
- *
- * reNut gives the vehicle a device of its own (a copy of the player's, its
- * pad record fed here) while the Remote Control drives it: on a press Banjo
- * gets out (a Y press), then the vehicle takes the player's pad and Banjo an
- * idle one (Start and Back kept), and player 1's camera follows the vehicle;
- * press again (or get back in) to stop.
- *
- * Propellers (vehicleBlockJetEngine, tick sub_8222E850) spin only with someone
- * in a driver's seat: sub_8223EBF0(vehicle, type) counts the occupants of its
- * seats of a type (vehicle + 4640: {type, seat}, the seat's three at + 840;
- * type 2 a driver's seat, sub_82617388), and with none the tick zeroes the
- * propeller's speed (+ 1364, + 1360) and the spin (sub_82612020) winds down,
- * after the thrust (+ 1440 ... + 1504, applied by [8] sub_8223FF30) is set: the
- * vehicle flies with its propellers still. While the tick runs for the vehicle
- * the Remote Control drives, its driver's seat counts as taken.
- */
 #include "renut_engine/game/vehicle_drivers.h"
 
-#include <rex/cvar.h>
-#include <rex/hook.h>
-#include <rex/system/function_dispatcher.h>
-#include <rex/system/kernel_state.h>
-#include <rex/system/xmemory.h>
+#include <rex/kernel/guest_memory.h>
+#include <rex/kernel/title_runtime.h>
+#include <rex/ppc/hook.h>
 #include <rex/types.h>
 
 #include <chrono>
@@ -56,6 +12,7 @@
 #include <mutex>
 
 #include "renut_engine/game/banner.h"
+#include "renut_engine/game/part_classes.h"
 
 REX_EXTERN(__imp__sub_82618A18);  // the Remote Control's descriptor getter
 REX_EXTERN(__imp__sub_82201350);  // a vehicle's driver's input device
@@ -70,9 +27,8 @@ using Clock = std::chrono::steady_clock;
 
 // Descriptor slots.
 constexpr uint32_t kSlotTick = 7, kSlotButtonDown = 18, kSlotButtonUp = 19;
-// [24] (part, vehicle): its button's HUD icon state, 0 greyed (the base
-// sub_826B9BC8, which the part kept), 2 / 3 usable; the horn's
-// (sub_82602458: 2 | the vehicle's + 6368 bit 0 clear) for it.
+// [24] (part, vehicle): the button's HUD icon state (0 greyed); the Remote
+// Control takes the horn's (sub_82602458) so it shows usable.
 constexpr uint32_t kSlotButtonState = 24;
 constexpr uint32_t kHornButtonState = 0x82602458;
 
@@ -83,15 +39,11 @@ constexpr uint32_t kEntrySize = 40;
 constexpr uint32_t kEntryPressed = 0, kEntryReleased = 4, kEntryHeld = 8, kEntryNow = 12;
 constexpr uint32_t kStart = 0x0010, kBack = 0x0020, kY = 0x8000;
 
-// The camera (sub_822C0448): + 340 a one-shot target that replaces the given
-// one (cleared each update); + 644 set when one was used, and then a target
-// over 30 units from the last looked at (+ 976) cuts the camera (+ 268 / 272).
+// The camera (sub_822C0448): + 340 a one-shot target override, + 644 set when
+// one was used (a far target then cuts the camera).
 constexpr uint32_t kCameraOverride = 340, kCameraWasOverridden = 644;
-// The avatar's camera update (sub_821CD438; camera = avatar + 3064) puts the
-// look-at point in the camera's + 448 itself before updating it: the avatar's
-// position (+ 80) raised by half his height (+ 2236 x + 612 x + 168, x 0.5),
-// Banjo's even with the vehicle the target: with him left behind, the camera
-// is pulled back to him (a flick past a distance).
+// The camera's look-at point (+ 448), which sub_821CD438 sets to the avatar's
+// position (+ 80) raised by half his height (+ 2236 x + 612 x + 168, x 0.5).
 constexpr uint32_t kCameraLookAt = 448;
 constexpr uint32_t kEntityPosition = 80;
 constexpr uint32_t kEntityHeightA = 2236, kEntityHeightB = 612, kEntityHeightC = 168;
@@ -143,9 +95,8 @@ struct Drive {
   Clock::time_point since{};
   Clock::time_point last_tick{};
   bool exit_pressed = false;  // the Y press made
-  // The Remote Control: when it started driving; a press seen while Banjo got
-  // out, or just after (the vehicle sees the button still held as a new
-  // press), waits for its release.
+  // When the Remote Control started driving; a press during or just after
+  // Banjo's exit waits for its release.
   Clock::time_point driving_since{};
   bool wait_release = false;
 };
@@ -174,7 +125,13 @@ uint32_t EntryA() {
 bool EnsureGuest() {
   if (g_guest)
     return true;
-  const uint32_t block = REX_KERNEL_MEMORY()->SystemHeapAlloc(kDeviceCopySize + 48 + 16);
+  rex::kernel::GuestMemory *memory = REX_GUEST_MEMORY();
+  if (!memory)
+    return false;
+  const uint32_t block = memory
+                             ->Allocate(kDeviceCopySize + 48 + 16, 0x20, rex::kernel::GuestProtect::kReadWrite,
+                                        rex::kernel::GuestHeap::kSystem)
+                             .value_or(0);
   if (!block)
     return false;
   g_guest = (block + 15) & ~15u;
@@ -182,7 +139,7 @@ bool EnsureGuest() {
 }
 
 void CallGuest(PPCContext &ctx, uint8_t *base, uint32_t va) {
-  if (::PPCFunc *fn = va ? REX_KERNEL_STATE()->function_dispatcher()->GetFunction(va) : nullptr)
+  if (::PPCFunc *fn = va ? renut::game::GuestFunction(va) : nullptr)
     fn(ctx, base);
 }
 
@@ -302,11 +259,10 @@ void SlotButtonUp(PPCContext &ctx, uint8_t *base) {
 void Patch(uint8_t *base, uint32_t descriptor, uint32_t &descriptor_out, uint32_t &tick_out) {
   if (!descriptor || descriptor_out)
     return;
-  auto *dispatcher = REX_KERNEL_STATE()->function_dispatcher();
   if (!g_thunk_tick) {
-    g_thunk_tick = dispatcher->AllocateThunk(SlotTick, 0);
-    g_thunk_down = dispatcher->AllocateThunk(SlotButtonDown, 0);
-    g_thunk_up = dispatcher->AllocateThunk(SlotButtonUp, 0);
+    g_thunk_tick = renut::game::AllocateGuestThunk(SlotTick);
+    g_thunk_down = renut::game::AllocateGuestThunk(SlotButtonDown);
+    g_thunk_up = renut::game::AllocateGuestThunk(SlotButtonUp);
   }
   if (!g_thunk_tick || !g_thunk_down || !g_thunk_up)
     return;
@@ -373,9 +329,8 @@ void VehicleDriversCamera(PPCContext &ctx, uint8_t *base) {
   ctx.r8.u64 = g_drive.vehicle;
   if (g_vehicle_camera_mode)
     ctx.r6.u64 = g_vehicle_camera_mode;
-  // No one-shot target over the vehicle (it would be Banjo), nor its after
-  // effect: the next update cuts the camera when the target is over 30 units
-  // from where it last looked, i.e. the vehicle far from Banjo.
+  // Clears the one-shot target (it would be Banjo) and its flag, which would
+  // cut the camera with the vehicle far from Banjo.
   if (const uint32_t camera = ctx.r3.u32) {
     Store32(base, camera + kCameraOverride, 0);
     Store32(base, camera + kCameraWasOverridden, 0);
@@ -412,11 +367,8 @@ REX_HOOK_RAW(sub_82201350) {
   __imp__sub_82201350(ctx, base);
 }
 
-// sub_82200AA0(vehicle): its driver (the seated occupant's actor, + 6376
-// nodes {+ 12 actor, + 16 seated}; else a linked vehicle's), or 0. Its
-// callers ask only once sub_82201350 gave a device, and read the driver
-// (sub_821E5420: + 3064, his camera, for camera-relative steering): a vehicle
-// the Remote Control drives, empty, has Banjo for it (a crash otherwise).
+// sub_82200AA0(vehicle): its driver, or 0; the empty vehicle the Remote
+// Control drives returns Banjo (its callers read his camera, and crash on 0).
 REX_HOOK_RAW(sub_82200AA0) {
   const uint32_t vehicle = ctx.r3.u32;
   __imp__sub_82200AA0(ctx, base);

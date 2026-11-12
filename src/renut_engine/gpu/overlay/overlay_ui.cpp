@@ -1,11 +1,11 @@
-/**
- * @file    gpu/overlay/overlay_ui.cpp
- */
 #include "renut_engine/gpu/overlay/overlay_ui.h"
 
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cmath>
+#include <cstddef>
+#include <cstdint>
 #include <cstring>
 #include <memory>
 #include <mutex>
@@ -14,11 +14,12 @@
 #include <utility>
 #include <vector>
 
+#include <zstd.h>
+
 #include "imgui.h"
 #include "imgui_internal.h"
 
 #include "renut_engine/gpu/backend/backend.h"
-#include "renut_engine/gpu/log.h"
 #include "renut_engine/gpu/backend/native_window.h"
 #include "renut_engine/gpu/backend/video.h"
 
@@ -49,10 +50,10 @@ std::vector<Dialog *> g_dialogs;
 
 ImGuiContext *g_context = nullptr;
 ImFont *g_menu_font = nullptr;  // MenuFont
+ImFont *g_launcher_font = nullptr;  // LauncherFont
 
 // Makes the overlay's context current for a scope and puts the previous one
-// back. The overlay's ImGui copy has only this context; the scope keeps it
-// correct should anything else in the executable make another.
+// back.
 class ContextScope {
 public:
   ContextScope() : previous_(ImGui::GetCurrentContext()) { ImGui::SetCurrentContext(g_context); }
@@ -143,10 +144,10 @@ void TakeTextureRequests(ImDrawData *data) {
 // The window input queued since the last build, into the overlay's ImGui.
 void ApplyQueuedInput(ImGuiIO &io);
 
-// Whether the last built frame showed a window that takes input (WantsCursor),
-// and its name (InputWindowName; UI thread).
+// Whether the last built frame showed a window that takes input (WantsCursor).
 std::atomic<bool> g_wants_cursor{false};
-std::string g_input_window;
+// The game window's wheel since ConsumeMouseWheel last took it, 120 a detent.
+std::atomic<int32_t> g_wheel{0};
 
 // A shown top-level window that takes input; display-only ones (the FPS
 // overlay, NoInputs) and ImGui's implicit fallback window don't count.
@@ -158,10 +159,8 @@ bool AnyInputWindowShown() {
         std::strncmp(window->Name, "Debug##Default", 14) == 0) {
       continue;
     }
-    g_input_window = window->Name;
     return true;
   }
-  g_input_window.clear();
   return false;
 }
 
@@ -227,9 +226,8 @@ std::atomic<bool> g_build_pending{false};
 std::atomic<bool> g_stop{true};
 std::thread g_pump;
 
-// A window message the overlay's ImGui takes, as it arrived, with the modifier
-// keys as they were then. The window procedure queues them rather than touch
-// ImGui: the window's thread need not be the UI thread.
+// A window message the overlay's ImGui takes, with the modifier keys as they
+// were; queued, as the window's thread need not be the UI thread.
 struct InputMessage {
   UINT msg;
   WPARAM wparam;
@@ -345,6 +343,8 @@ void ApplyInput(ImGuiIO &io, const InputMessage &m) {
 // Sees the game window's messages first: the overlay's input is queued for
 // the next build, then everything goes on to the SDK.
 LRESULT CALLBACK OverlayWindowProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
+  if (msg == WM_MOUSEWHEEL)
+    g_wheel.fetch_add(GET_WHEEL_DELTA_WPARAM(wparam), std::memory_order_relaxed);
   if (IsInputMessage(msg)) {
     const InputMessage m{msg, wparam, lparam, GetKeyState(VK_CONTROL) < 0,
                          GetKeyState(VK_SHIFT) < 0, GetKeyState(VK_MENU) < 0};
@@ -376,11 +376,7 @@ void BuildOnUIThread() {
 #else
 
 // --- Window input and the build pump (SDL: Linux) ----------------------------
-//
-// The SDK's window is an SDL window; an event watch sees its events as SDL
-// queues them, before the SDK handles them, as the window procedure does on
-// Windows. Without the overlay nothing of reNut's (the launcher menu
-// included) could be seen or used.
+// An event watch sees the SDL window's events before the SDK handles them.
 
 SDL_Window *g_sdl_window = nullptr;
 UIThreadRunner g_run_on_ui;
@@ -488,6 +484,8 @@ void ApplyInput(ImGuiIO &io, const InputEvent &input, float pixel_density) {
 // Sees the events first: the overlay's input is queued for the next build,
 // and every event goes on to the SDK.
 bool SDLCALL OverlayEventWatch(void *, SDL_Event *event) {
+  if (event && event->type == SDL_EVENT_MOUSE_WHEEL)
+    g_wheel.fetch_add(int32_t(std::lround(event->wheel.y * 120.0f)), std::memory_order_relaxed);
   if (event && IsInputEvent(event->type)) {
     InputEvent input{*event, {}};
     if (event->type == SDL_EVENT_TEXT_INPUT && event->text.text)
@@ -607,10 +605,8 @@ bool EnsurePipeline() {
     desc.inputElementsCount = 3;
     g_pipeline = device->createGraphicsPipeline(desc);
   }
-  if (!g_pipeline) {
-    RGPU_ERROR("Overlay pipeline creation failed");
+  if (!g_pipeline)
     g_pipeline_failed = true;
-  }
   return g_pipeline != nullptr;
 }
 
@@ -631,8 +627,8 @@ bool WantsCursor() {
   return g_wants_cursor.load(std::memory_order_relaxed);
 }
 
-std::string InputWindowName() {
-  return g_input_window;
+int32_t ConsumeMouseWheel() {
+  return g_wheel.exchange(0, std::memory_order_relaxed);
 }
 
 uint64_t AddImage(uint32_t width, uint32_t height, std::vector<uint8_t> rgba) {
@@ -663,7 +659,13 @@ ImFont *MenuFont() {
   return g_menu_font ? g_menu_font : ImGui::GetFont();
 }
 
+ImFont *LauncherFont() {
+  return g_launcher_font ? g_launcher_font : MenuFont();
+}
+
 namespace {
+
+#include "renut_engine/gpu/overlay/launcher_font_data.inc"
 
 // The overlay's ImGui context. CreateContext leaves any context that was
 // current current.
@@ -677,9 +679,8 @@ void CreateOverlayContext() {
   io.BackendRendererName = "renut";
   io.BackendFlags |= ImGuiBackendFlags_RendererHasVtxOffset | ImGuiBackendFlags_RendererHasTextures;
 #if !defined(_WIN32)
-  // ImGui has a clipboard of its own on Windows only; elsewhere it is SDL's
-  // (the friend codes' Copy and Paste, and Ctrl+C / Ctrl+V in text fields).
-  // Called while building, on the UI thread, SDL's video thread.
+  // ImGui has a clipboard of its own on Windows only; elsewhere it uses SDL's,
+  // called while building on the UI thread (SDL's video thread).
   ImGuiPlatformIO &platform = ImGui::GetPlatformIO();
   platform.Platform_SetClipboardTextFn = [](ImGuiContext *, const char *text) {
     SDL_SetClipboardText(text ? text : "");
@@ -703,6 +704,12 @@ void CreateOverlayContext() {
   config.FontDataOwnedByAtlas = false;
   g_menu_font = io.Fonts->AddFontFromMemoryTTF(const_cast<unsigned char *>(kMenuTtf), int(sizeof(kMenuTtf)),
                                                32.0f, &config);
+  // The game's own font for the launcher (launcher_font_data.inc).
+  static std::vector<uint8_t> launcher_ttf(kLauncherFontBytes);
+  if (ZSTD_decompress(launcher_ttf.data(), launcher_ttf.size(), kLauncherFontZstd,
+                      sizeof(kLauncherFontZstd)) == launcher_ttf.size())
+    g_launcher_font = io.Fonts->AddFontFromMemoryTTF(launcher_ttf.data(), int(launcher_ttf.size()), 32.0f,
+                                                     &config);
 }
 
 // A frame every 16 ms, on the UI thread; one queued at a time.

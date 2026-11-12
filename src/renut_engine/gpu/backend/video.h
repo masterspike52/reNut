@@ -1,13 +1,3 @@
-/**
- * @file    gpu/backend/video.h
- * @brief   The native renderer's device, frame ring and shared GPU state.
- *
- * Threading: the render thread (render_thread.h) records draws and presents
- * the work the game's threads queue; the UI thread draws the ImGui overlay
- * into the same command list, marshalled synchronously from Present while the
- * render thread waits, and presents the overlay alone while the game stalls.
- * Every mutation of VideoState happens under VideoState::mutex.
- */
 #pragma once
 
 #include <atomic>
@@ -21,6 +11,10 @@
 #include <plume_render_interface.h>
 
 #include "renut_engine/gpu/render/upload_ring.h"
+
+namespace rex::gpu {
+class IGraphicsSystem;
+} // namespace rex::gpu
 
 namespace renut::gpu {
 
@@ -110,9 +104,8 @@ struct VideoState {
   // command_lists[frame] without them (renut_threaded_recording off).
   std::unique_ptr<plume::RenderCommandList> command_lists[kFramesInFlight];
   CommandRecorder *recorders[kFramesInFlight] = {};  // never destroyed, like the device
-  // With recorders, the frame's submission and present run on the recording
-  // thread (CommandRecorder::RecordCall): their tokens, waited before the
-  // slot's fence and before the next acquire. 0: none outstanding.
+  // RecordCall tokens of the submissions and present run on the recording
+  // thread, waited before the slot's fence and the next acquire (0: none).
   uint64_t submit_calls[kFramesInFlight] = {};
   uint64_t present_call = 0;
   std::unique_ptr<plume::RenderCommandFence> fences[kFramesInFlight];
@@ -126,9 +119,8 @@ struct VideoState {
   // older value has to be set again.
   uint64_t list_generation = 0;
 
-  // GPU time for the FPS overlay: a timestamp pair around each command list a
-  // slot submits in its frame (memexport flushes submit mid-frame), summed
-  // once the slot's fence has been waited. Null without query pool support.
+  // GPU time for the FPS overlay: timestamp pairs around each command list a slot
+  // submits, summed after its fence. Null without query pool support.
   static constexpr uint32_t kTimedLists = 32;
   std::unique_ptr<plume::RenderQueryPool> timestamps[kFramesInFlight];
   uint32_t timed_lists[kFramesInFlight] = {};  // pairs begun in the slot's frame
@@ -183,9 +175,8 @@ struct VideoState {
 
   // Layout of the recompiled guest shaders (see pipeline.h).
   std::unique_ptr<plume::RenderPipelineLayout> draw_layout;
-  // Memexport (see draw.cpp), per slot: the buffer shader exports store to
-  // (root UAV / device address), and the readback buffer their results are
-  // copied into. A slot's results reach guest memory once its fence is waited.
+  // Memexport, per slot: the buffer shader exports store to and the readback
+  // buffer copied to guest memory once the slot's fence is waited.
   std::unique_ptr<plume::RenderBuffer> memexport_buffer[kFramesInFlight];
   uint64_t memexport_capacity[kFramesInFlight] = {};
   std::unique_ptr<plume::RenderBuffer> memexport_readback[kFramesInFlight];
@@ -195,10 +186,8 @@ struct VideoState {
   std::unique_ptr<plume::RenderBuffer> memexport_scratch[kFramesInFlight];
   uint64_t memexport_scratch_capacity[kFramesInFlight] = {};
   uint64_t memexport_scratch_used[kFramesInFlight] = {};
-  // Vertex streams built on the GPU from export windows (stream_convert_cs;
-  // draw.cpp): null when the pipeline could not be made, and draws wait for
-  // the exports instead. The set is replaced, never rewritten, when the
-  // buffers change (earlier dispatches of the slot still use it).
+  // Vertex streams built on the GPU from export windows (stream_convert_cs); null
+  // when the pipeline could not be made. The set is replaced when buffers change.
   std::unique_ptr<plume::RenderPipelineLayout> stream_convert_layout;
   std::unique_ptr<plume::RenderShader> stream_convert_cs;
   std::unique_ptr<plume::RenderPipeline> stream_convert_pipeline;
@@ -227,6 +216,8 @@ struct VideoState {
   std::vector<uint32_t> retired_texture_slots[kFramesInFlight];
 
   OverlayHook overlay_hook;
+  // Counts the guest's presents for the SDK's frame stats (the F3 overlay).
+  std::atomic<rex::gpu::IGraphicsSystem *> graphics{nullptr};
 
   std::mutex mutex;
   bool host_ready = false;   // device + swapchain + utility pipelines
@@ -256,14 +247,15 @@ public:
 
   static void SetOverlayHook(OverlayHook hook);
 
+  // Any thread: the graphics system each guest present is reported to, or nullptr.
+  static void SetGraphicsSystem(rex::gpu::IGraphicsSystem *graphics);
+
   // Guest D3DDevice_Swap: scan out 'image' (nullptr = no guest image this
   // frame) plus the overlay, submit and present.
   static void Present(const PresentImage *image);
 
-  // UI pump: presents just the overlay whenever the guest is not presenting
-  // (before it starts, and while it stalls in loads or movie decode), so the
-  // overlay stays usable. Skips the tick instead of waiting when the renderer
-  // is busy.
+  // UI pump: presents just the overlay while the guest is not presenting; skips
+  // the tick instead of waiting when the renderer is busy.
   static void PresentOverlayOnly();
 
   // The guest D3DDevice (guest VA) created by the Direct3D_CreateDevice hook.

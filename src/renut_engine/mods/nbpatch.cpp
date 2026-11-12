@@ -75,9 +75,8 @@ std::optional<PatchManifest> ReadManifest(ZipReader &zip, std::string *error) {
     return m;
 }
 
-// "NBDL", u32 version 1, u64 target length (little-endian), then ops to the end:
-//   0x01 COPY varint source offset, varint length
-//   0x02 ADD  varint length, bytes
+// "NBDL", u32 version, u64 LE target length, then ops: 0x01 COPY (varint offset,
+// varint length) and 0x02 ADD (varint length, bytes).
 std::optional<std::vector<uint8_t>> ApplyDelta(std::span<const uint8_t> source, std::span<const uint8_t> delta, std::string *error) {
     auto fail = [&](const char *what) {
         *error = what;

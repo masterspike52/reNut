@@ -25,14 +25,23 @@ set(RENUT_SOURCES
 	src/renut_engine/game/thread_slots.cpp
 	src/renut_engine/game/lod.cpp
 	src/renut_engine/game/field_of_view.cpp
+	src/renut_engine/game/time_of_day.cpp
+	src/renut_engine/game/water_reflection.cpp
 	src/renut_engine/game/mouse_camera.cpp
 	src/renut_engine/game/keyboard_input.cpp
 	src/renut_engine/game/custom_parts.cpp
 	src/renut_engine/game/part_classes.cpp
 	src/renut_engine/game/part_scripts.cpp
-	src/renut_engine/game/effect_log.cpp
+	src/renut_engine/game/part_api.cpp
+	src/renut_engine/game/custom_worlds.cpp
+	src/renut_engine/game/custom_npcs.cpp
+	src/renut_engine/game/custom_shapes.cpp
+	src/renut_engine/game/custom_materials.cpp
+	src/renut_engine/game/sound_api.cpp
+	src/renut_engine/game/menu_api.cpp
+	src/renut_engine/game/mod_data.cpp
+	src/renut_engine/game/renut_lua.cpp
 	src/renut_engine/game/mod_bundles.cpp
-	src/renut_engine/game/part_attach_log.cpp
 	src/renut_engine/game/vehicle_limits.cpp
 	src/renut_engine/game/status_dials.cpp
 	src/renut_engine/game/notes.cpp
@@ -45,9 +54,11 @@ set(RENUT_SOURCES
 	src/renut_engine/game/banner.cpp
 	src/renut_engine/game/vehicle_drivers.cpp
 	src/renut_engine/game/startup_logo.cpp
-	src/renut_engine/game/jiggy_wall_hold.cpp
-	src/renut_engine/online/trace.cpp
 	src/renut_engine/online/rexliveless.cpp
+	src/renut_engine/online/net_api.cpp
+	src/renut_engine/online/coop_challenge.cpp
+	src/renut_engine/app/renut_settings.cpp
+	src/renut_engine/app/xam_workspace.cpp
 	src/renut_engine/app/crash_dump.cpp
 	src/renut_engine/app/dlc_install.cpp
 	src/renut_engine/app/game_setup.cpp
@@ -74,14 +85,9 @@ else()
     add_executable(renut ${RENUT_SOURCES})
 endif()
 
-rexglue_setup_target(renut)
+# No Xenos GPU modules: reNut draws through its own renderer.
+rexglue_setup_target(renut EXCLUDE rexgpu-xenos-null rexgpu-xenos-vulkan rexgpu-xenos-d3d12)
 
-# The build's name on the RexLiveless leaderboards and its Sentry release.
-# Builds are "reNut dev" (renut@dev), which the server takes only from an
-# admin's account; a release build (RENUT_RELEASE: the *-dist presets, which
-# tools/release.ps1 builds after raising version.txt) is
-# "reNut <version.txt>" (renut@<version>), which the server refuses below its
-# minimum, keeping old releases off the leaderboards.
 option(RENUT_RELEASE "A release build: versioned by version.txt (else a dev build)" OFF)
 file(STRINGS "${CMAKE_SOURCE_DIR}/version.txt" RENUT_VERSION LIMIT_COUNT 1 REGEX "^[0-9]+(\\.[0-9]+)*")
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/version.txt")
@@ -99,24 +105,9 @@ else()
 endif()
 message(STATUS "reNut build: ${RENUT_BUILD}")
 target_compile_definitions(renut PRIVATE "RENUT_BUILD=\"${RENUT_BUILD}\"")
-# Only a release build updates itself from GitHub's releases (app/updater.h):
-# a dev build is never replaced by a download.
 if(RENUT_RELEASE)
     target_compile_definitions(renut PRIVATE RENUT_RELEASE_BUILD)
 endif()
-
-set(RENUT_LUA_DIR "${CMAKE_SOURCE_DIR}/thirdparty/lua-5.4.7/src")
-file(GLOB renut_lua_sources "${RENUT_LUA_DIR}/*.c")
-list(REMOVE_ITEM renut_lua_sources "${RENUT_LUA_DIR}/lua.c" "${RENUT_LUA_DIR}/luac.c")
-set_source_files_properties(${renut_lua_sources} PROPERTIES LANGUAGE CXX)
-add_library(renut_lua STATIC ${renut_lua_sources})
-target_include_directories(renut_lua PUBLIC "${RENUT_LUA_DIR}")
-if(MSVC)
-    target_compile_options(renut_lua PRIVATE /W0 /TP)
-else()
-    target_compile_options(renut_lua PRIVATE -w -x c++)
-endif()
-target_link_libraries(renut PRIVATE renut_lua)
 
 enable_language(C)
 add_library(renut_miniaudio STATIC "${CMAKE_SOURCE_DIR}/thirdparty/miniaudio/miniaudio_impl.c")
@@ -134,12 +125,22 @@ target_link_libraries(renut PRIVATE renut_miniaudio)
 include(thirdparty/rexglue_guide/CMakeLists.txt)
 rexglue_guide_attach(renut)
 
-# The launcher menu's pictures (ui/launcher_menu.cpp includes each as a byte
-# list): the menu's, and the workshop's (the same without the photos, where
-# the workshop pins its own). Made as the Guide makes its assets' includes;
-# the menu's text uses the Guide's Selawik.
+if(NOT REXFABRIC_SDK_TEMPLATES AND rexglue_DIR)
+    set(renut_sdk_root "${rexglue_DIR}")
+    foreach(level RANGE 1 6)
+        cmake_path(GET renut_sdk_root PARENT_PATH renut_sdk_root)
+    endforeach()
+    set(REXFABRIC_SDK_TEMPLATES "${renut_sdk_root}/resources/templates" CACHE PATH
+        "The rexglue-sdk's resources/templates folder, matching the SDK the project builds with" FORCE)
+endif()
+include(thirdparty/RexGlass/CMakeLists.txt)
+rexglass_attach(renut)
+include(thirdparty/RexFabric/CMakeLists.txt)
+rexfabric_attach(renut WITH_GUIDE WITH_NODE_EDITOR)
+rexfabric_template_fragment(codegen/pch_h BEFORE "#define REX_SHIM_HEAP" FILE ${CMAKE_SOURCE_DIR}/config/templates/pch_image_size.inja)
 set(renut_asset_dir "${CMAKE_BINARY_DIR}/renut_assets")
-foreach(picture launcher_background workshop_background)
+foreach(picture launcher_background workshop_background launcher_logo launcher_gear_top
+                launcher_gear_middle launcher_gear_corner)
     set(source "${CMAKE_SOURCE_DIR}/icon/${picture}.png")
     set(inc "${renut_asset_dir}/${picture}.png.inc")
     set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${source}")
@@ -150,25 +151,19 @@ foreach(picture launcher_background workshop_background)
     endif()
 endforeach()
 target_include_directories(renut PRIVATE "${renut_asset_dir}")
-
-
-include(thirdparty/sentrywork/CMakeLists.txt)
-sentrywork_attach(renut
+include(thirdparty/RexCrash/CMakeLists.txt)
+rexcrash_attach(renut
     DSN "https://953e4dacb8e759c2f49cc6dd5ba22a57@o4512343007952896.ingest.us.sentry.io/4512343096360960"
-    RELEASE "${RENUT_SENTRY_RELEASE}" ENVIRONMENT "${RENUT_SENTRY_ENVIRONMENT}"
-    ORG madlad-inc PROJECT renut)
+    RELEASE "${RENUT_SENTRY_RELEASE}")
+target_compile_definitions(renut PRIVATE "RENUT_SENTRY_ENVIRONMENT=\"${RENUT_SENTRY_ENVIRONMENT}\"")
+include(cmake/sentry_symbols.cmake)
+renut_sentry_symbols(renut ORG madlad-inc PROJECT renut)
 
 
 include(src/renut_engine/gpu/gpu.cmake)
 renut_gpu_setup(renut)
 
-# The launcher menu's music, Mumbo's Mountain, is the game's own, so it is
-# never kept in the repository: the build takes it from the game's assets
-# (RENUT_ASSETS_DIR, as the shader dump does) with tools/make_launcher_music.py
-# and ffmpeg, into the build directory, and compiles it in
-# (cmake/embed_string.cmake; ui/launcher_menu.cpp includes it). Or it takes
-# one already made (RENUT_LAUNCHER_MUSIC: tools/release.ps1 gives the Linux
-# build the Windows build's, so WSL needs no ffmpeg).
+
 set(RENUT_LAUNCHER_MUSIC "" CACHE FILEPATH
     "An already-made launcher music (launcher_music.ogg); empty: made from the game's assets with ffmpeg")
 set(renut_music_inc "${renut_asset_dir}/launcher_music.ogg.inc")
@@ -211,6 +206,13 @@ endif()
 target_sources(renut PRIVATE "${renut_music_inc}")
 set_source_files_properties("${renut_music_inc}" PROPERTIES HEADER_FILE_ONLY ON GENERATED ON)
 set_source_files_properties(src/renut_engine/ui/launcher_menu.cpp PROPERTIES OBJECT_DEPENDS "${renut_music_inc}")
+
+# The renut Lua API's definitions beside the executable (lua_api), which RexFabric's node editor makes nodes from.
+add_custom_command(TARGET renut POST_BUILD
+    COMMAND "${CMAKE_COMMAND}" -E make_directory "$<TARGET_FILE_DIR:renut>/lua_api"
+    COMMAND "${CMAKE_COMMAND}" -E copy_if_different "${CMAKE_SOURCE_DIR}/docs/lua-mods/meta/renut.lua"
+            "$<TARGET_FILE_DIR:renut>/lua_api/renut.lua"
+    VERBATIM)
 
 
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")

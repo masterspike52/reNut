@@ -1,6 +1,3 @@
-/**
- * @file    gpu/render/settings_icon.cpp
- */
 #include "renut_engine/gpu/render/settings_icon.h"
 
 #include <cstddef>
@@ -10,8 +7,6 @@
 
 #include <xxhash.h>
 #include <zstd.h>
-
-#include "renut_engine/gpu/log.h"
 
 namespace renut::gpu {
 
@@ -33,10 +28,8 @@ const std::vector<uint8_t> &Icon() {
   std::call_once(once, [] {
     icon.resize(kSettingsIconBytes);
     const size_t n = ZSTD_decompress(icon.data(), icon.size(), kSettingsIconZstd, sizeof(kSettingsIconZstd));
-    if (ZSTD_isError(n) || n != icon.size()) {
-      RGPU_ERROR("Settings icon: decompressing failed");
+    if (ZSTD_isError(n) || n != icon.size())
       icon.clear();
-    }
   });
   return icon;
 }

@@ -9,8 +9,6 @@
 #include <cfloat>
 #include <cmath>
 
-#include <rex/ui/immediate_drawer.h>
-
 namespace rexglue_guide::ui {
 namespace {
 
@@ -90,12 +88,13 @@ ImU32 WithAlpha(ImU32 col, float alpha) {
 }
 
 ImVec2 Measure(ImFont* font, float size, std::string_view text) {
-  font = Pick(font ? font : ImGui::GetFont(), size);
+  // Never ImGui::GetFont(): that is the host's default (e.g. a recomp's own UI font).
+  font = Pick(font ? font : Regular(), size);
   return font->CalcTextSizeA(size, FLT_MAX, 0.0f, text.data(), text.data() + text.size());
 }
 
 void Text(ImDrawList* dl, ImFont* font, float size, ImVec2 pos, ImU32 col, std::string_view text) {
-  font = Pick(font ? font : ImGui::GetFont(), size);
+  font = Pick(font ? font : Regular(), size);
   dl->AddText(font, size, ImVec2(std::floor(pos.x), std::floor(pos.y)), col, text.data(),
               text.data() + text.size());
 }
@@ -324,8 +323,22 @@ void PlatformBadge(ImDrawList* dl, Textures& textures, std::string_view platform
   }
 }
 
-Textures::Textures(rex::ui::ImmediateDrawer* drawer) : drawer_(drawer) {}
-Textures::~Textures() = default;
+Textures::Textures(CreateTexture create, DestroyTexture destroy)
+    : create_(std::move(create)), destroy_(std::move(destroy)) {}
+
+Textures::~Textures() {
+  for (auto& [key, texture] : textures_) Free(texture);
+  for (auto& [frames, texture] : retired_) Free(texture);
+}
+
+ImTextureID Textures::Make(const uint8_t* rgba, int width, int height) {
+  if (!create_ || width <= 0 || height <= 0) return ImTextureID_Invalid;
+  return create_(uint32_t(width), uint32_t(height), rgba);
+}
+
+void Textures::Free(ImTextureID texture) {
+  if (texture != ImTextureID_Invalid && destroy_) destroy_(texture);
+}
 
 namespace {
 
@@ -395,8 +408,9 @@ int FitFor(float drawn) {
 
 ImTextureID Textures::Load(const std::string& key, std::span<const uint8_t> png, bool tile, int fit) {
   auto it = textures_.find(key);
-  if (it != textures_.end()) return reinterpret_cast<ImTextureID>(it->second.get());
+  if (it != textures_.end()) return it->second;
   auto& slot = textures_[key];
+  slot = ImTextureID_Invalid;
   int w = 0, h = 0;
   auto pixels = image::Decode(png.data(), png.size(), &w, &h);
   if (fit > 0 && !pixels.empty() && std::max(w, h) > fit) {
@@ -406,31 +420,32 @@ ImTextureID Textures::Load(const std::string& key, std::span<const uint8_t> png,
     h = out_h;
   }
   if (tile && !pixels.empty()) ApplyTileStyle(pixels, w, h);
-  if (drawer_ && !pixels.empty()) {
-    slot = drawer_->CreateTexture(uint32_t(w), uint32_t(h),
-                                  rex::ui::ImmediateTextureFilter::kLinear, false, pixels.data());
-  }
-  return reinterpret_cast<ImTextureID>(slot.get());
+  if (!pixels.empty()) slot = Make(pixels.data(), w, h);
+  return slot;
 }
 
 ImTextureID Textures::Rgba(const std::string& key, const uint8_t* rgba, int width, int height) {
   Drop(key);
-  if (!drawer_ || width <= 0 || height <= 0) return 0;
+  if (!create_ || width <= 0 || height <= 0) return 0;
   auto& slot = textures_[key];
-  slot = drawer_->CreateTexture(uint32_t(width), uint32_t(height), rex::ui::ImmediateTextureFilter::kLinear, false, rgba);
-  return reinterpret_cast<ImTextureID>(slot.get());
+  slot = Make(rgba, width, height);
+  return slot;
 }
 
 void Textures::Drop(const std::string& key) {
   auto it = textures_.find(key);
   if (it == textures_.end()) return;
-  if (it->second) retired_.push_back({kRetireFrames, std::move(it->second)});
+  if (it->second != ImTextureID_Invalid) retired_.push_back({kRetireFrames, it->second});
   textures_.erase(it);
 }
 
 void Textures::EndFrame() {
   for (auto& r : retired_) --r.first;
-  std::erase_if(retired_, [](const auto& r) { return r.first <= 0; });
+  std::erase_if(retired_, [this](const auto& r) {
+    if (r.first > 0) return false;
+    Free(r.second);
+    return true;
+  });
 }
 
 ImTextureID Textures::KeyIcon(std::string_view name) {

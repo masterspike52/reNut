@@ -1,4 +1,10 @@
 [[midasm_hook]]
+address = 0x82284CD8
+name = "ModelPool_size"
+registers = ["r3"]
+after_instruction = true
+
+[[midasm_hook]]
 address = 0x822969D0
 name = "StopNSwap_hook"
 registers = ["r22"]
@@ -178,6 +184,18 @@ after_instruction = false
 jump_address_on_true = 0x8238DE40
 
 [[midasm_hook]]
+address = 0x821CEF74
+name = "WaterReflection_query"
+registers = ["r3", "r29", "r30", "r31"]
+after_instruction = false
+
+[[midasm_hook]]
+address = 0x8237FB68
+name = "WaterReflection_height"
+registers = ["r30"]
+after_instruction = false
+
+[[midasm_hook]]
 address = 0x82C08DB4
 name = "title_server_cache_key"
 registers = ["r10", "r11"]
@@ -203,3 +221,22 @@ name = "storage_enumerate"
 registers = ["r3", "r4", "r5", "r6", "r7", "r8", "r9"]
 after_instruction = false
 return_on_true = true
+
+[[midasm_hook]]
+address = 0x8239AF80
+name = "script_player_missing"
+registers = ["r11", "r27"]
+after_instruction = false
+jump_address_on_true = 0x8239B5C4
+
+[[midasm_hook]]
+address = 0x824FD1FC
+name = "rex_coopChallengeStartSlot"
+registers = ["r11", "r15"]
+after_instruction = false
+
+[[midasm_hook]]
+address = 0x824FD29C
+name = "rex_coopChallengeStartOffset"
+registers = ["r5"]
+after_instruction = true

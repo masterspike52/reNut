@@ -5,7 +5,7 @@
 includes = [
 "config/renut_funcs.toml",
 "config/renut_hooks.toml",
-"config/renut_gpu_funcs.toml"
+"config/renut_gpu_funcs.toml",
 ]
 
 

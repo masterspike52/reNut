@@ -1,18 +1,3 @@
-/**
- * @file    gpu/d3d/hooks/device.cpp
- * @brief   Device lifecycle hooks: creation and release, the command ring,
- *          fences, command buffer recording and Swap.
- *
- * The command ring is a stub, as in reblue: m_pRing points at a scratch block
- * that KickOff simply rewinds, and none of the hooked D3D calls writes packets
- * (d3d_native.h). The renderer consumes D3D's API-level state instead (the
- * device's constant/packet shadows and the hooked state-setting and draw calls).
- *
- * The renderer runs on its own thread (render_thread.h). KickOff and Swap
- * queue the end of a batch of work and its fence, which completes once the
- * render thread has read the batch's data; D3D's fence waits wait for that
- * (BlockOnFence_hook), and Swap waits when the game gets a frame too far ahead.
- */
 #include <algorithm>
 #include <array>
 #include <atomic>
@@ -26,11 +11,12 @@
 #include <utility>
 #include <vector>
 
-#include <rex/hook.h>
-#include <rex/kernel/xboxkrnl/video.h>
-#include <rex/ppc.h>
-#include <rex/system/xvideo.h>
+#include <rex/kernel/title_runtime.h>
+#include <rex/module.h>
+#include <rex/ppc/hook.h>
+#include <rex/title.h>
 #include <rex/types.h>
+#include <rex/ui/ui_system.h>
 
 #include "renut_engine/perf/frame_stats.h"
 #include "renut_engine/gpu/guest/callbacks.h"
@@ -40,8 +26,6 @@
 #include "renut_engine/gpu/render/draw.h"
 #include "renut_engine/gpu/guest/guest_memory.h"
 #include "renut_engine/gpu/guest/guest_records.h"
-#include "renut_engine/gpu/log.h"
-#include "renut_engine/gpu/backend/memory_report.h"
 #include "renut_engine/gpu/backend/queued.h"
 #include "renut_engine/gpu/backend/render_thread.h"
 #include "renut_engine/gpu/render/surfaces.h"
@@ -60,25 +44,20 @@ REX_IMPORT(__imp__VdGetCurrentDisplayGamma, VdGetCurrentDisplayGamma, void(u32, 
 
 namespace {
 
-// Scratch space packets go to: the inline writers in N&B's own code (D3D's
-// header helpers), which reserve against m_pRingGuarantee. Large enough for
-// the biggest single reservation; the guarantee margin is what inline writers
-// assume is free without calling KickOff.
+// Scratch block N&B's inline packet writers write into, and the free margin
+// they assume behind m_pRingGuarantee; nothing reads it.
 constexpr u32 kRingSinkSize = 4u << 20;
 constexpr u32 kRingSinkGuaranteeMargin = 256u << 10;
 // Scratch handed out for inline data (RingBufferDeviceAllocate), reused in a
 // circle: nothing reads it either.
 constexpr u32 kRingDataSize = 1u << 20;
 
-// CDevice-private state Direct3D_CreateDevice (0x8264DF28) sets up, as byte
-// offsets into the device allocation.
-// Byte whose 0x80 bit marks a device without GPU hardware (its device-type-2
-// path sets it); D3D's code skips hardware work for it.
+// CDevice-private state Direct3D_CreateDevice (0x8264DF28) sets up.
+// Byte whose 0x80 bit marks a device without GPU hardware.
 constexpr u32 kDeviceOffsetFlags = 10940;
 constexpr u8 kDeviceFlagNoHardware = 0x80;
 // Byte whose 0x2 bit makes CDevice::SetFence (0x82278528) write each fence's
-// completion value itself instead of waiting for the GPU to. The title device
-// runs without it once created: its fences complete on the render thread.
+// completion value itself instead of waiting for the GPU.
 constexpr u32 kDeviceOffsetFlags2 = 10941;
 constexpr u8 kDeviceFlagImmediateFences = 0x02;
 // Pointer to the completed-fence word IsFencePending / BlockOnFence read.
@@ -110,8 +89,7 @@ u32 g_ring_data = 0;
 std::atomic<u32> g_ring_data_offset{0};
 
 // Device blocks of released devices, for the next Direct3D_CreateDevice (the
-// records heap never frees physical blocks). N&B creates and releases a pair
-// of no-hardware devices around every section it loads.
+// records heap never frees physical blocks).
 std::mutex g_free_devices_mutex;
 std::vector<u32> g_free_devices;
 
@@ -127,11 +105,8 @@ u32 LoadGuestU32(u32 va) {
 // The newest fence queued for completion (the title device's).
 std::atomic<u32> g_queued_fence{0};
 
-// What CDevice::SetFence (0x82278528) does at a KickOff: the current fence
-// covers the work issued so far, and the device moves on to the next. The
-// fence completes when the render thread has read that work's data (and
-// written its memexport results): until then the game must not reuse it.
-// Without completing no resource tagged with a fence would stop being busy.
+// CDevice::SetFence (0x82278528) at a KickOff: the current fence covers the
+// work so far and completes once the render thread has read its data.
 void KickFence(u8 *bytes) {
   const u32 fence = *reinterpret_cast<const be_u32 *>(bytes + d3d::kDeviceOffsetFenceTag);
   const u32 completion = *reinterpret_cast<const be_u32 *>(bytes + kDeviceOffsetFenceCompletion);
@@ -148,9 +123,7 @@ bool FencePending(const u8 *bytes, u32 fence) {
   return word && tag - fence < tag - u32(*word);
 }
 
-// ---------------------------------------------------------------------------
 // Device initialisation (N&B's D3D, natively)
-// ---------------------------------------------------------------------------
 
 // D3D::XenonGpu_Initialize: the register image's power-on values, everything
 // dirty. (Its register writes go into the ring.)
@@ -221,8 +194,7 @@ void InitializeApiState(native::Device d) {
 }
 
 // sub_8265F688: the scaler parameters (D3DPRESENT_PARAMETERS +0x60) the
-// device keeps. N&B's code then derives the default scaling for the video
-// mode and passes it to VdCallGraphicsNotificationRoutines: the display's.
+// device keeps.
 void SetScalerParameters(native::Device d, const be_u32 *scaler) {
   u32 copy[14] = {};
   for (u32 i = 0; i < 6; ++i)
@@ -236,10 +208,8 @@ void SetScalerParameters(native::Device d, const be_u32 *scaler) {
 void SetGammaRamp(native::Device d, const u16 *ramp);
 void SetPWLGamma(native::Device d, const u16 *pwl);
 
-// BOOL D3D::InitializePresentationParameters(CDevice*, D3DPRESENT_PARAMETERS*)
-// [0x82659AA8]: the video mode, the automatic back/depth buffers and the
-// presentation state. N&B's parameters (sub_823ED9E8) disable the automatic
-// front buffer and depth buffer and ask for the back buffer.
+// D3D::InitializePresentationParameters [0x82659AA8]: the video mode, the
+// automatic back/depth buffers and the presentation state.
 bool InitializePresentationParameters(native::Device d, u32 parameters_va) {
   const auto *p = GuestPtr<const be_u32>(parameters_va);
   if (!p)
@@ -260,15 +230,15 @@ bool InitializePresentationParameters(native::Device d, u32 parameters_va) {
   else if (front_format == 0x182801B6u)
     front_format = 0x18280136u;
 
-  rex::system::X_VIDEO_MODE mode{};
-  rex::kernel::xboxkrnl::VdQueryVideoMode(&mode);
-  d.SetW(0x5428, u32(mode.display_width));
-  d.SetW(0x5430, u32(mode.display_width));
+  // The video mode the title was launched with (what VdQueryVideoMode reports).
+  const rex::ui::IUISystem *ui = REX_INTERFACE(rex::ui::IUISystem);
+  const rex::VideoMode mode = ui ? ui->GetVideoMode() : rex::VideoMode{};
+  d.SetW(0x5428, u32(mode.width));
+  d.SetW(0x5430, u32(mode.width));
   d.SetW(0x5434, u32(i64(float(mode.refresh_rate) + 0.5f)));
-  d.SetW(0x542C, u32(mode.display_height));
+  d.SetW(0x542C, u32(mode.height));
 
-  if (!p[15])  // DisableAutoFrontBuffer
-    RGPU_ERROR("InitializePresentationParameters: an automatic front buffer is not supported");
+  // An automatic front buffer (DisableAutoFrontBuffer, p[15], clear) isn't supported.
   if (!p[14]) {  // DisableAutoBackBuffer
     const u32 surface = native::CreateSurface(width, height, back_format, multisample, 0);
     if (!surface)
@@ -317,9 +287,8 @@ bool InitializePresentationParameters(native::Device d, u32 parameters_va) {
   return true;
 }
 
-// The hardware path (D3D__InitializeHardwareDevice 0x82659F30) minus the GPU:
-// the device becomes the one D3D internals find through VdGlobalDevice, and
-// gets the presentation state and per-device fields they read.
+// D3D__InitializeHardwareDevice (0x82659F30) minus the GPU: makes the device
+// VdGlobalDevice and sets the presentation state and fields D3D reads.
 bool InitializeTitleDevice(native::Device d, u32 present_parameters) {
   RtlInitializeCriticalSection(d.va + kDeviceOffsetCriticalSection0);
   RtlInitializeCriticalSection(d.va + kDeviceOffsetCriticalSection1);
@@ -340,22 +309,18 @@ bool InitializeTitleDevice(native::Device d, u32 present_parameters) {
   return !present_parameters || InitializePresentationParameters(d, present_parameters);
 }
 
-// D3D's CDevice teardown (0x8265A198) for our devices: they carry the
-// no-hardware flag, which skips everything but unbinding. The side buffer is
-// part of our device block, and N&B never gives a device a query block.
+// D3D's CDevice teardown (0x8265A198) for our no-hardware devices: everything
+// but unbinding is skipped.
 void UninitializeDevice(native::Device d) {
   if (d.W(native::off::Ring))
     native::UnsetAll(d);
 }
 
-// HRESULT Direct3D_CreateDevice(UINT Adapter, D3DDEVTYPE DeviceType, void *pUnused,
-//     DWORD BehaviorFlags, D3DPRESENT_PARAMETERS *pPresentParameters,
-//     IDirect3DDevice9 **ppReturnedDeviceInterface)   [0x8264DF28]
-// N&B creates two: type 1 (the title's rendering device) and type 2 (D3D's
-// own no-hardware device, which N&B keeps alongside).
+// Direct3D_CreateDevice [0x8264DF28]; N&B creates a type 1 title device and a
+// type 2 no-hardware device.
 u32 Direct3D_CreateDevice_hook(u32 /*adapter*/, u32 device_type, u32 /*unused*/,
                                u32 behavior_flags, u32 present_parameters,
-                               mapped_u32 out_device) {
+                               MappedU32 out_device) {
   if (out_device)
     *out_device = 0u;
 
@@ -385,10 +350,8 @@ u32 Direct3D_CreateDevice_hook(u32 /*adapter*/, u32 device_type, u32 /*unused*/,
     g_ring_sink = records::AllocPhysicalBlock(kRingSinkSize);
   if (!g_ring_data)
     g_ring_data = records::AllocPhysicalBlock(kRingDataSize);
-  if (!device_va || !g_ring_sink || !g_ring_data) {
-    RGPU_ERROR("Direct3D_CreateDevice: guest allocation failed");
+  if (!device_va || !g_ring_sink || !g_ring_data)
     return kE_OUTOFMEMORY;
-  }
   std::memset(GuestPtr<u8>(device_va), 0, kBlockSize);
   std::memset(GuestPtr<u8>(g_ring_sink), 0, kRingSinkSize);
 
@@ -422,10 +385,8 @@ u32 Direct3D_CreateDevice_hook(u32 /*adapter*/, u32 device_type, u32 /*unused*/,
   native::RewindRing(d);
 
   XenonGpuInitialize(d);
-  if (title_device && !InitializeTitleDevice(d, present_parameters)) {
-    RGPU_ERROR("Direct3D_CreateDevice: InitializePresentationParameters failed");
+  if (title_device && !InitializeTitleDevice(d, present_parameters))
     return kE_OUTOFMEMORY;
-  }
   InitializeApiState(d);
   if (title_device)
     native::ResetAllState(d);
@@ -439,14 +400,11 @@ u32 Direct3D_CreateDevice_hook(u32 /*adapter*/, u32 device_type, u32 /*unused*/,
     *out_device = device_va;
   if (title_device)
     Video::SetGuestDevice(device_va);
-  RGPU_INFO("Guest D3D device (type {}) created at {:#010x}", device_type, device_va);
   return 0;  // S_OK
 }
 
-// ULONG D3DDevice_Release(D3DDevice*) [0x8264E080]
-// As the original, but on the last release the device block goes back to our
-// free list instead of N&B's heap (the original frees the side buffer and the
-// raw allocation Direct3D_CreateDevice kept at device - 4).
+// D3DDevice_Release [0x8264E080]; on the last release the device block goes
+// back to our free list instead of N&B's heap.
 u32 D3DDevice_Release_hook(u32 device_va) {
   auto *device = GuestPtr<d3d::Device>(device_va);
   if (!device)
@@ -459,7 +417,6 @@ u32 D3DDevice_Release_hook(u32 device_va) {
   FlushDeferredVertices(device_va);
   UninitializeDevice(native::DeviceAt(device_va));
   device->m_ReferenceCount = 0u;
-  RGPU_INFO("Guest D3D device at {:#010x} released", device_va);
   // The title device stays the renderer's until another replaces it.
   if (device_va != Video::GuestDevice()) {
     std::lock_guard lock(g_free_devices_mutex);
@@ -468,11 +425,8 @@ u32 D3DDevice_Release_hook(u32 device_va) {
   return 0;
 }
 
-// The GPU starts on the kicked draws: the guest buffers and textures they read
-// are read then (FlushVertexFillsLocked, FlushTextureFillsLocked), before the
-// fence tells the game it may reuse them. Memexport results reach guest memory later, once the GPU has finished
-// the frame (detail::CompleteMemExportsLocked); draws that read them sooner
-// wait for them (DrawStateLocked).
+// Reads the guest buffers and textures the kicked draws use, before the fence
+// tells the game it may reuse them.
 void KickDevice(d3d::Device *device, u32 device_va) {
   FlushDeferredVertices(device_va);
   render_thread::Queue([] {
@@ -482,11 +436,8 @@ void KickDevice(d3d::Device *device, u32 device_va) {
   KickFence(reinterpret_cast<u8 *>(device));
 }
 
-// PRING CDevice::KickOff() [0x82210AB0]: hand the ring to the GPU. Nothing
-// consumes it here, so rewind it and return the new write pointer. A device
-// recording a command buffer (N&B records on worker threads with no-hardware
-// devices) would chain its segment into the buffer; its draws are recorded on
-// the host (command_buffers.h), so it only rewinds.
+// CDevice::KickOff [0x82210AB0]: kicks the device's work unless it records a
+// command buffer, then rewinds the ring and returns its write pointer.
 u32 KickOff_hook(u32 device_va) {
   auto *device = GuestPtr<d3d::Device>(device_va);
   if (!device)
@@ -541,7 +492,7 @@ u32 RingData(u32 bytes, u32 alignment) {
 
 // void *D3D::RingBufferDeviceAllocate(CDevice*, DWORD Flags, DWORD *pSize,
 //     DWORD Alignment) [0x8222D3E0]
-u32 RingBufferDeviceAllocate_hook(u32 /*device*/, u32 /*flags*/, mapped_u32 size, u32 alignment) {
+u32 RingBufferDeviceAllocate_hook(u32 /*device*/, u32 /*flags*/, MappedU32 size, u32 alignment) {
   return size ? RingData(u32(*size), alignment) : 0;
 }
 
@@ -551,20 +502,14 @@ u32 AllocateInlineData_hook(u32 /*device*/, u32 dwords, u32 alignment) {
   return RingData(dwords * 4, alignment);
 }
 
-// HRESULT D3DDevice_SetRingBufferParameters(D3DDevice*,
-//     const D3DRING_BUFFER_PARAMETERS*) [0x82657508]: would replace the ring
-// (and our sink) with a freshly allocated one.
+// D3DDevice_SetRingBufferParameters [0x82657508]: would replace the ring (and
+// our sink), so it does nothing.
 u32 D3DDevice_SetRingBufferParameters_hook(u32 /*device*/, u32 /*parameters*/) {
   return 0;  // S_OK
 }
 
-// void CDevice::BlockOnFence(DWORD Fence, CBlocker::Type, BOOL NoKick)
-// [0x8228F558]: every fence wait (D3DDevice_BlockOnFence, resource locks and
-// destruction, InvalidateConstants). As the original: kick the fence if no
-// KickOff has covered it yet, then wait for it, here for the render thread to
-// complete it (KickFence).
-// The original polls through CBlocker::Check, which after 5 s without
-// progress dumps the GPU's registers and traps.
+// CDevice::BlockOnFence [0x8228F558], every fence wait: kicks the fence if no
+// KickOff covered it, then waits for the render thread to complete it.
 u32 BlockOnFence_hook(u32 device_va, u32 fence, u32 /*type*/, u32 /*no_kick*/) {
   auto *bytes = GuestPtr<u8>(device_va);
   if (!bytes || !FencePending(bytes, fence))
@@ -595,10 +540,8 @@ u32 BlockOnFence_hook(u32 device_va, u32 fence, u32 /*type*/, u32 /*no_kick*/) {
   return 0;
 }
 
-// BOOL D3DDevice_IsFencePending(DWORD Fence) [0x8228F650]: on the device D3D
-// finds through VdGlobalDevice; the current fence is kicked first. Games
-// poll it, and the fence may be waiting for callbacks only a guest thread can
-// run.
+// D3DDevice_IsFencePending [0x8228F650] on the VdGlobalDevice device; runs ready
+// guest callbacks and kicks the current fence first.
 u32 IsFencePending_hook(u32 fence) {
   RunReadyCallbacks();
   if (!fence)
@@ -612,16 +555,13 @@ u32 IsFencePending_hook(u32 fence) {
   return FencePending(bytes, fence) ? 1 : 0;
 }
 
-// BOOL CBlocker::Check() [0x8264DCD0]: one poll of a D3D wait for the GPU
-// (ring space, fence markers, streaming). Fence waits no longer come here
-// (BlockOnFence_hook); nothing on the host advances the others.
+// CBlocker::Check [0x8264DCD0]: one poll of a D3D wait for the GPU; nothing on
+// the host advances the waits that still come here.
 u32 CBlocker_Check_hook(u32 /*blocker*/) {
   return 0;
 }
 
-// ---------------------------------------------------------------------------
 // Command buffers
-// ---------------------------------------------------------------------------
 
 // D3DCommandBuffer fields.
 constexpr u32 kBufferFence = 0x08;
@@ -665,12 +605,8 @@ void ConfigureForOnePassZPass(native::Device d, bool flag, u32 tile_count, u32 w
   d.SetQ(native::off::PredicatedPending2, predicated);
 }
 
-// HRESULT D3DDevice_BeginCommandBuffer(D3DDevice*, D3DCommandBuffer*, DWORD Flags,
-//     const D3DTAGCOLLECTION *pInheritTags, const D3DRECT *pTilingRects,
-//     DWORD TileCount) [0x82640818] (TU3's build dropped the unused
-// pPersistTags before pTilingRects)
-// The device records into the buffer: the draws on the host (command_buffers.h),
-// so the buffer's segments and the reset of their allocator are left out.
+// D3DDevice_BeginCommandBuffer [0x82640818] (TU3 has no pPersistTags): the
+// device's draws are recorded on the host (command_buffers.h).
 u32 D3DDevice_BeginCommandBuffer_hook(u32 device_va, u32 command_buffer, u32 flags,
                                       u32 inherit_tags, u32 tiling_rects, u32 tile_count) {
   // A Begin*Vertices draw recorded into the previous buffer.
@@ -784,10 +720,8 @@ u32 D3DDevice_BeginCommandBuffer_hook(u32 device_va, u32 command_buffer, u32 fla
   return 0;
 }
 
-// HRESULT D3DDevice_EndCommandBuffer(D3DDevice*) [0x82640DE8]
-// The state left dirty would be written into the buffer (Flags bit 5 at
-// Begin); then everything is unbound, and the device is pointed at its side
-// buffer until the next Begin.
+// D3DDevice_EndCommandBuffer [0x82640DE8]: unbinds everything and leaves the
+// device writing nowhere until the next Begin.
 u32 D3DDevice_EndCommandBuffer_hook(u32 device_va) {
   FlushDeferredVertices(device_va);
   native::Device d = native::DeviceAt(device_va);
@@ -821,10 +755,8 @@ u32 D3DDevice_EndCommandBuffer_hook(u32 device_va) {
   return out_of_memory ? kE_OUTOFMEMORY : 0;
 }
 
-// void D3DDevice_RunCommandBuffer(D3DDevice*, D3DCommandBuffer*,
-//     DWORD PredicationSelect) [0x82222888]
-// Replaces the original, which would send the buffer's packets to the GPU
-// (and on a no-hardware device append to a buffer being recorded).
+// D3DDevice_RunCommandBuffer [0x82222888]: queues the recorded buffer for the
+// render thread, or records the run into a buffer being recorded.
 void D3DDevice_RunCommandBuffer_hook(u32 device_va, u32 command_buffer,
                                      u32 /*predication_select*/) {
   if (!command_buffer)
@@ -837,18 +769,14 @@ void D3DDevice_RunCommandBuffer_hook(u32 device_va, u32 command_buffer,
   }
 }
 
-// void D3DDevice_Swap(D3DDevice *pDevice, D3DBaseTexture *pFrontBuffer,
-//     const D3DVIDEO_SCALER_PARAMETERS *pParameters) [0x82287590]
-// The frame goes to the render thread, which presents it; the game thread
-// goes on with the next one, waiting only when it is more than
-// render_thread::kMaxFramesAhead ahead.
+// D3DDevice_Swap [0x82287590]: the render thread presents the frame; the game
+// thread waits only when more than render_thread::kMaxFramesAhead ahead.
 void D3DDevice_Swap_hook(u32 device_va, u32 front_buffer, u32 /*parameters*/) {
   renut::frame_stats::OnGameFrame();
   FlushDeferredVertices(device_va);
 
-  // What the original does after handing the frame to the video hardware:
-  // count the swap, record the frame's fence tag, and end the frame with a
-  // KickOff, whose fence completes once the render thread gets there.
+  // As the original after handing over the frame: count the swap, record the
+  // frame's fence tag and end the frame with a KickOff.
   auto *device = GuestPtr<u8>(device_va);
   if (device) {
     auto word = [device](u32 offset) -> be_u32 & {
@@ -867,25 +795,13 @@ void D3DDevice_Swap_hook(u32 device_va, u32 front_buffer, u32 /*parameters*/) {
     {
       std::lock_guard lock(State().mutex);
       image = FrontBufferImageLocked(front_buffer);
-      if (image.texture) {
+      // Without one, Present shows black for this frame.
+      if (image.texture)
         State().last_front_buffer = front_buffer;
-      } else {
-        // Present shows black for this frame.
-        static uint32_t logged = 0;
-        if (logged++ < 32) {
-          const HostTexture *t = FindHostTextureLocked(front_buffer);
-          RGPU_WARN("Swap: front buffer {:08X} has {}: this frame is presented black",
-                    front_buffer,
-                    !t            ? "no host texture"
-                    : !t->texture ? "a host texture that was not made"
-                                  : "no bindless slot");
-        }
-      }
       AdvanceTextureFrameLocked();
       AdvanceStreamCacheFrameLocked();
       LatchResolutionScaleLocked();
     }
-    MaybeReportMemory();
     // The front buffer is the texture the game resolved the frame into.
     Video::Present(image.texture ? &image : nullptr);
   });
@@ -897,14 +813,8 @@ void D3DDevice_Swap_hook(u32 device_va, u32 front_buffer, u32 /*parameters*/) {
   }
 }
 
-// void D3DDevice_InsertCallback(D3DDevice*, D3DCALLBACKTYPE, D3DCALLBACK pCallback,
-//                               DWORD Context) [0x821FB688]
-// The GPU would call pCallback(Context) on reaching this point in the ring,
-// and the caller may reuse whatever the preceding work reads once it runs: it
-// runs once the render thread has read that work's data (callbacks.h). N&B's
-// callers: EndTiling (D3D's WorkerDpc) and the XMV renderer
-// (CCalVideoRenderer::Render 0x82A0D9E8, which counts frames in flight until
-// IXMediaXmvPlayer_Resume and frees itself after the last).
+// D3DDevice_InsertCallback [0x821FB688]: pCallback(Context) runs once the
+// render thread has read the preceding work's data (callbacks.h).
 void D3DDevice_InsertCallback_hook(u32 device, u32 /*type*/, u32 callback, u32 context) {
   if (!callback)
     return;
@@ -913,9 +823,7 @@ void D3DDevice_InsertCallback_hook(u32 device, u32 /*type*/, u32 callback, u32 c
   InsertCallback(callback, context);
 }
 
-// ---------------------------------------------------------------------------
 // Device queries, thread ownership, presentation state
-// ---------------------------------------------------------------------------
 
 constexpr u32 kDeviceOffsetReferenceCount = 0x3C;
 constexpr u32 kDeviceOffsetOwnerThread = 0x2A88;
@@ -958,7 +866,7 @@ void D3DDevice_GetDeviceCaps_hook(u32 /*device*/, u32 caps_va) {
 
 // void D3DDevice_GetDisplayMode(D3DDevice*, UINT iSwapChain, D3DDISPLAYMODE*)
 // [0x82658960]: width, height, refresh rate, format.
-void D3DDevice_GetDisplayMode_hook(u32 device_va, u32 /*swap_chain*/, mapped_u32 mode) {
+void D3DDevice_GetDisplayMode_hook(u32 device_va, u32 /*swap_chain*/, MappedU32 mode) {
   const native::Device d = native::DeviceAt(device_va);
   if (!d || !mode)
     return;
@@ -975,9 +883,8 @@ void D3DDevice_BlockOnFence_hook(u32 fence) {
     native::BlockOnFence(native::GlobalDevice(), fence);
 }
 
-// void D3D::SynchronizeToPresentationInterval(CDevice*, BOOL) [0x8228A748]:
-// its swap callback (SwapCallback) and the waits around it go into the ring;
-// the swap is then pending.
+// D3D::SynchronizeToPresentationInterval [0x8228A748]: its swap callback goes
+// into the ring, so only the swap is marked pending.
 void D3D_SynchronizeToPresentationInterval_hook(u32 device_va, u32 /*immediate*/) {
   native::Device d = native::DeviceAt(device_va);
   if (!d)
@@ -988,7 +895,7 @@ void D3D_SynchronizeToPresentationInterval_hook(u32 device_va, u32 /*immediate*/
 
 // void D3DResource_GetDevice(D3DResource*, D3DDevice**) [0x82654D50]: the
 // device D3D finds through VdGlobalDevice, referenced.
-void D3DResource_GetDevice_hook(u32 /*resource*/, mapped_u32 out_device) {
+void D3DResource_GetDevice_hook(u32 /*resource*/, MappedU32 out_device) {
   const u32 device = native::GlobalDevice();
   if (device)
     D3DDevice_AddRef_hook(device);
@@ -1001,10 +908,8 @@ u32 D3D_IsFusion_hook() {
   return LoadGuestU32(kFusionVa) != 0 ? 1 : 0;
 }
 
-// D3D's gamma tables (sub_82659140, _Gamma_sRGB 0x82659090): 1024 entries
-// taking a 10-bit value through the display's gamma (VdGetCurrentDisplayGamma).
-// Inverse goes from the display's curve to linear. D3D caches the table per
-// display gamma (unk_82FB2558); it is computed per call here.
+// D3D's gamma table (sub_82659140, _Gamma_sRGB 0x82659090): 1024 entries that
+// take a 10-bit value through the display's gamma, or back with inverse.
 float Fmsubs(float a, float b, float c) {
   return std::fmaf(a, b, -c);
 }
@@ -1027,7 +932,7 @@ std::array<u16, 1024> GammaTable(bool inverse) {
   // Guest words for the kernel's outputs.
   static const u32 scratch = [] {
     void *host = records::AllocRaw(8);
-    return host ? REX_KERNEL_MEMORY()->HostToGuestVirtual(host) : 0u;
+    return host ? REX_RUNTIME()->GetMembase().HostToGuestVirtual(host) : 0u;
   }();
   u32 type = 0;
   float gamma = 0.0f;
@@ -1187,9 +1092,7 @@ void Swap(u32 device_va, u32 front_buffer, u32 parameters) {
 }
 
 // CDevice::SetFence (0x82278528): with immediate fences the device writes the
-// completion itself (unless +0x541C is set); otherwise the fence completes on
-// the render thread, as a KickOff's. A device recording a command buffer
-// would put it into the buffer, which runs on the host.
+// completion itself; otherwise the fence completes on the render thread.
 void SetFence(u32 device_va) {
   auto *bytes = GuestPtr<u8>(device_va);
   if (!bytes)

@@ -1,23 +1,17 @@
-#include <rex/ppc.h>
-#include "renut_engine/app/renut_logging.h"
-#include <rex/hook.h>
-#include <rex/cvar.h>
-#include <rex/system/kernel_state.h>
+#include <rex/console_command.h>
+#include <rex/kernel/title_runtime.h>
+#include <rex/ppc/hook.h>
+#include <rex/result.h>
+#include <rex/types.h>
 
+#include <string_view>
 
-#if defined(_MSC_VER)
-#include <stdlib.h>
-#define REX_BSWAP32(x) _byteswap_ulong(x)
-#else
-#define REX_BSWAP32(x) __builtin_bswap32(x)
-#endif
+#include "renut_engine/app/renut_settings.h"
 
-REX_EXTERN(gameFlagsSetFlag_82332728);
+REX_EXTERN(__imp__rex_gameFlagsSetFlag);
 
-// The players' profiles (game flags among them), one per player: what
-// sub_82212D18 returns and the game passes to gameFlagsSetFlag (e.g.
-// sceneScript2GroupsExecute). The Stop 'n' Swop scan (sub_82296968) uses
-// player 1's at its object + 0x7C.
+// The players' profiles (game flags among them), as returned by sub_82212D18
+// and passed to gameFlagsSetFlag.
 static constexpr uint32_t kPlayerProfiles = 0x82E1B280;
 
 // One unlock: the profile byte the game sets, then its two game flags.
@@ -27,40 +21,51 @@ struct Unlock {
     uint32_t event;
 };
 
-// What sub_82296630 does for the content it finds, in its order: the seven
-// crates (+ 260..266) and the seven unlocks the title update added
-// (+ 267..273).
+// The seven Stop 'n' Swop crates (profile + 260..266) that stopNSwapApplyUnlocks
+// unlocks from a Banjo-Kazooie save, in its order.
 static constexpr Unlock kUnlocks[] = {
     {260, 0x10E, 0x703}, {261, 0x110, 0x705}, {262, 0x10D, 0x702},
     {263, 0x10C, 0x701}, {264, 0x10B, 0x700}, {265, 0x10F, 0x704},
-    {266, 0x111, 0x706}, {267, 125, 1261},    {268, 126, 1262},
-    {269, 127, 1263},    {270, 128, 1264},    {271, 129, 1265},
-    {272, 130, 1266},    {273, 131, 1267},
+    {266, 0x111, 0x706},
 };
 
-// Unlocks every Stop 'n' Swop item as sub_82296630 does. The profile is read
-// when the command runs: the scan's object, kept before, is freed once the
-// scan ends.
+// Unlocks every Stop 'n' Swop crate as stopNSwapApplyUnlocks does, using player 1's
+// profile at the time the command runs.
 static void StopNSwap()
 {
     // The guest arena's host address changes from run to run: translate.
-    auto* memory = REX_KERNEL_MEMORY();
+    const rex::memory::GuestMembase memory = REX_RUNTIME()->GetMembase();
     const uint32_t flags_ptr =
-        REX_BSWAP32(*memory->TranslateVirtual<uint32_t*>(kPlayerProfiles));
-    if (!flags_ptr) {
-        RNUT_WARN("StopNSwap: no player profile yet (load a save first)");
+        rex::byte_swap(*memory.TranslateVirtual<uint32_t*>(kPlayerProfiles));
+    // No player profile yet (no save loaded).
+    if (!flags_ptr)
         return;
-    }
 
+    // Off a guest thread (the console's) the game flags can't be set, only the bytes.
+    const bool guest_thread = rex::ppc::GetBoundThread().ctx != nullptr;
     for (const Unlock& unlock : kUnlocks) {
-        *memory->TranslateVirtual<uint8_t*>(flags_ptr + unlock.offset) = 1;
-        rex::ppc::GuestToHostFunction<void>(__imp__rex_gameFlagsSetFlag_82332728, flags_ptr, 1, unlock.flag, 1);
-        rex::ppc::GuestToHostFunction<void>(__imp__rex_gameFlagsSetFlag_82332728, flags_ptr, 0, unlock.event, 1);
+        *memory.TranslateVirtual<uint8_t*>(flags_ptr + unlock.offset) = 1;
+        if (!guest_thread)
+            continue;
+        rex::ppc::HostToGuestCall<void>(__imp__rex_gameFlagsSetFlag, flags_ptr, 1u, unlock.flag, 1u);
+        rex::ppc::HostToGuestCall<void>(__imp__rex_gameFlagsSetFlag, flags_ptr, 0u, unlock.event, 1u);
     }
 }
 
+namespace {
 
-REXCVAR_DEFINE_COMMAND(StopNSwap, StopNSwap, "Nuts&Bolts/Events", "Triggers StopNSwop");
+struct StopNSwapSettings final : rex::SettingOwner {
+    StopNSwapSettings() : rex::SettingOwner(renut::settings::kScope) { renut::settings::Add(*this); }
+    REX_COMMAND(StopNSwap,
+        "Unlocks Stop 'n' Swop: the seven crates Banjo-Kazooie's Stop 'n' Swop items open.",
+        [](std::string_view) {
+            ::StopNSwap();
+            return rex::Ok();
+        });
+};
+[[maybe_unused]] StopNSwapSettings &g_stop_n_swap =*new StopNSwapSettings();  // never freed, registered by RenutApp::OnConfigure
+
+}  // namespace
 
 // config/renut_hooks.toml still attaches this at 0x822969D0; the command no
 // longer needs the scan's object.

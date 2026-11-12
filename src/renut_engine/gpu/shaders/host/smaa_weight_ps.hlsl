@@ -1,6 +1,5 @@
-// SMAA pass 2 (smaa_common.hlsli): blending weights from the edges
-// (textureIndex), with SMAA's area and search textures (their slots in param0
-// and param1, as uint bits).
+// SMAA pass 2: blending weights from the edges (textureIndex), with the area and
+// search textures' slots in param0 and param1 (as uint bits).
 #include "smaa_common.hlsli"
 
 float4 main(SmaaInput input) : SV_Target0

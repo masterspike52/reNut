@@ -24,15 +24,17 @@
 #include <thread>
 #include <vector>
 
-#include <nlohmann/json.hpp>
-#include <rex/logging.h>
-#include <rex/system/kernel_state.h>
-#include <rex/system/util/xdbf_utils.h>
-#include <rex/system/xenumerator.h>
+#include <memory>
 
+#include <nlohmann/json.hpp>
+#include <rex/filesystem/xdbf.h>
+#include <rex/kernel/title_runtime.h>
+
+#include "enumerator.h"
 #include "guest.h"
 #include "http.h"
 #include "live.h"
+#include "log.h"
 
 using namespace rexglue_guide::guest;
 using json = nlohmann::json;
@@ -81,9 +83,10 @@ std::vector<Leaderboard> g_named;                 // views with a display name
 // string id, u32).
 void LoadSchema() {
   constexpr uint64_t kXvc2 = 0x58564332;
-  const auto xdbf = REX_KERNEL_STATE()->title_xdbf();
-  if (!xdbf.is_valid()) return;
-  const auto block = xdbf.GetEntry(rex::system::util::XdbfSection::kMetadata, kXvc2);
+  rex::kernel::TitleRuntime* runtime = REX_RUNTIME();
+  const auto xdbf = runtime ? runtime->GetTitleXDBF() : nullptr;
+  if (!xdbf || !xdbf->IsValid()) return;
+  const auto block = xdbf->GetEntry(rex::filesystem::XDBFSection::kMetadata, kXvc2);
   if (!block || block.size < 14 || Load32(block.buffer) != kXvc2) return;
   const uint8_t* p = block.buffer;
   const uint8_t* end = block.buffer + block.size;
@@ -116,13 +119,13 @@ void LoadSchema() {
     // views a game labels itself can be "..." (most of TiP's): only names with
     // a letter or digit in them (any non-ASCII counts) are listed. Admins can
     // name the others on the server.
-    std::string name = xdbf.GetStringTableEntry(xdbf.default_language(), Load16(p + 10));
+    std::string name = xdbf->GetStringTableEntry(xdbf->GetDefaultLanguage(), Load16(p + 10));
     const bool readable = std::any_of(name.begin(), name.end(), [](char c) {
       return std::isalnum(static_cast<unsigned char>(c)) || static_cast<unsigned char>(c) >= 0x80;
     });
     if ((id & 0xFFFF0000) != 0xFFFF0000 && readable && name[0] != '<') g_named.push_back({id, std::move(name)});
   }
-  REXKRNL_INFO("RexLiveless: {} leaderboard view(s) in the title's SPA", g_schema.size());
+  RG_INFO("RexLiveless: {} leaderboard view(s) in the title's SPA", g_schema.size());
 }
 
 const std::vector<Field>* ViewColumns(uint32_t view_id) {
@@ -141,7 +144,7 @@ const char* Aggregation(const Field& f) {
   }
   static std::once_flag logged;
   std::call_once(logged, [&] {
-    REXKRNL_WARN("RexLiveless: unknown stats aggregation {:04X} (property {:08X})", f.aggregation, f.property);
+    RG_WARN("RexLiveless: unknown stats aggregation {:04X} (property {:08X})", f.aggregation, f.property);
   });
   return f.attr == kColumnRating ? "max" : "last";
 }
@@ -181,7 +184,7 @@ http::Response Api(const std::string& path, const json& body) {
 json Read(json query) {
   const auto r = Api("/api/leaderboards/read", query);
   if (r.status != 200) {
-    REXKRNL_WARN("RexLiveless: couldn't read leaderboards ({} {})", r.status, r.error);
+    RG_WARN("RexLiveless: couldn't read leaderboards ({} {})", r.status, r.error);
     return json::array();
   }
   try {
@@ -222,11 +225,11 @@ uint32_t WriteStats(const uint8_t* buf) {
   const uint64_t xuid = Load64(buf + 8);
   if (xuid != s.me.xuid) {
     // Only the signed-in player's own stats go to the server.
-    REXKRNL_INFO("RexLiveless: XSessionWriteStats for {:016X} skipped (not this player)", xuid);
+    RG_INFO("RexLiveless: XSessionWriteStats for {:016X} skipped (not this player)", xuid);
     return kSuccess;
   }
   if (const std::string why = live::LeaderboardBlocked(); !why.empty()) {
-    REXKRNL_INFO("RexLiveless: XSessionWriteStats refused ({})", why);
+    RG_INFO("RexLiveless: XSessionWriteStats refused ({})", why);
     return kFunctionFailed;
   }
   const uint32_t num_views = Load32(buf + 16);
@@ -238,7 +241,7 @@ uint32_t WriteStats(const uint8_t* buf) {
     const uint8_t* props = At(Load32(view + 8));
     const auto* columns = ViewColumns(view_id);
     if (!columns || !props) {
-      REXKRNL_INFO("RexLiveless: stats view {:08X} isn't in the title's SPA; not written", view_id);
+      RG_INFO("RexLiveless: stats view {:08X} isn't in the title's SPA; not written", view_id);
       continue;
     }
     json list = json::array();
@@ -258,7 +261,7 @@ uint32_t WriteStats(const uint8_t* buf) {
     if (!list.empty()) out.push_back({{"id", view_id}, {"columns", std::move(list)}});
   }
   if (out.empty()) return kSuccess;
-  json body = {{"title_id", HexId(REX_KERNEL_STATE()->title_id(), 8)}, {"build", live::Build()}, {"views", std::move(out)}};
+  json body = {{"title_id", HexId(RunningTitleId(), 8)}, {"build", live::Build()}, {"views", std::move(out)}};
   std::thread([body = std::move(body)] {
     const auto r = Api("/api/leaderboards/write", body);
     if (r.status == 200) return;
@@ -270,7 +273,7 @@ uint32_t WriteStats(const uint8_t* buf) {
     } catch (...) {
     }
     // r.error is only set when there was no response; a refusal's reason is in the body.
-    REXKRNL_WARN("RexLiveless: couldn't write stats ({} {})", r.status, r.status ? why : r.error);
+    RG_WARN("RexLiveless: couldn't write stats ({} {})", r.status, r.status ? why : r.error);
     if (!why.empty()) {
       live::Post([why](Backend& b) {
         if (b.on_notification) b.on_notification({.text = why});
@@ -321,7 +324,7 @@ struct Space {
       next += size;
       return p;
     }
-    return REX_KERNEL_MEMORY()->SystemHeapAlloc(size);
+    return SystemHeapAlloc(size);
   }
 };
 
@@ -478,7 +481,7 @@ uint32_t ReadStats(const uint8_t* buf) {
     views.push_back({{"total", view.value("total", 0u)}, {"rows", std::move(rows)}});
   }
   WriteResults(out_ptr, out_size, specs, views);
-  REXKRNL_INFO("RexLiveless: XUserReadStats {} view(s), {} player(s)", specs.size(), players.size());
+  RG_INFO("RexLiveless: XUserReadStats {} view(s), {} player(s)", specs.size(), players.size());
   return kSuccess;
 }
 
@@ -486,10 +489,10 @@ namespace {
 
 // A stats enumerator: one XEnumerate returns the whole XUSER_STATS_READ_RESULTS
 // (every view asked for), read from the server when it's called.
-class StatsEnumerator : public rex::system::XEnumerator {
+class StatsEnumerator : public enumerator::Enumerator {
  public:
-  StatsEnumerator(rex::system::KernelState* kernel, uint32_t size, json query, std::vector<Spec> specs)
-      : XEnumerator(kernel, 1, size), size_(size), query_(std::move(query)), specs_(std::move(specs)) {}
+  StatsEnumerator(uint32_t size, json query, std::vector<Spec> specs)
+      : Enumerator(1, size), size_(size), query_(std::move(query)), specs_(std::move(specs)) {}
 
   uint32_t WriteItems(uint32_t buffer_ptr, uint8_t* buffer_data, uint32_t* written_count) override {
     if (done_) return kNoMoreFiles;
@@ -526,7 +529,7 @@ BoardRow ParseRow(const json& r) {
 }
 
 void ReadBoard(uint32_t view_id) {
-  const std::string title = HexId(REX_KERNEL_STATE()->title_id(), 8);
+  const std::string title = HexId(RunningTitleId(), 8);
   Board board;
   board.loading = false;
   const json top = Read({{"title_id", title}, {"views", json::array({view_id})}, {"by", "rank"}, {"start", 1}, {"count", kBoardRows}});
@@ -603,10 +606,10 @@ extern "C" REX_FUNC(__imp__XamUserCreateStatsEnumerator) {
     size += num_rows * (kRowSize + uint32_t(spec.columns.size()) * kColumnSize + strings);
   }
 
-  auto e = rex::system::object_ref<StatsEnumerator>(
-      new StatsEnumerator(REX_KERNEL_STATE(), size, std::move(query), std::move(specs)));
-  if (XFAILED(e->Initialize(0, 0xFB, 0, 0, 0))) return Return(ctx, 0x80004005);
+  const uint32_t handle = rexglue_guide::enumerator::Create(
+      std::make_unique<StatsEnumerator>(size, std::move(query), std::move(specs)), 0, 0xFB, 0, 0, 0);
+  if (!handle) return Return(ctx, 0x80004005);
   if (size_out) Store32(size_out, size);
-  Store32(handle_out, e->handle());
+  Store32(handle_out, handle);
   Return(ctx, kSuccess);
 }

@@ -1,11 +1,6 @@
-/**
- * @file    gpu/render/pipeline.cpp
- */
 #include "renut_engine/gpu/render/pipeline.h"
 
 #include <algorithm>
-#include <atomic>
-#include <chrono>
 #include <condition_variable>
 #include <cstring>
 #include <ctime>
@@ -21,9 +16,10 @@
 #include <utility>
 #include <vector>
 
+#include <format>
+
 #include <plume_render_interface_builders.h>
-#include <rex/cvar.h>
-#include <rex/logging/api.h>
+#include <rex/setting.h>
 #include <xxhash.h>
 
 #if defined(_WIN32)
@@ -37,24 +33,24 @@
 #endif
 
 #include "renut_engine/app/app_paths.h"
+#include "renut_engine/app/renut_settings.h"
 #include "renut_engine/gpu/backend/backend.h"
 #include "renut_engine/gpu/render/format.h"
-#include "renut_engine/gpu/log.h"
+#include "renut_engine/gpu/render/graphics_options.h"
 #include "renut_engine/gpu/guest/guest_memory.h"
 #include "renut_engine/gpu/guest/resources.h"
 #include "renut_engine/gpu/render/shader_library.h"
 
-REXCVAR_DEFINE_BOOL(renut_pipeline_capture, false, "Nuts&Bolts/Debug",
-                    "Writes each pipeline a draw had to build itself (none of the built-in "
-                    "list's) to pipeline_capture_<date>.txt next to renut, for "
-                    "tools/pipeline_cache.py to add to the built-in list");
-
-REXCVAR_DEFINE_BOOL(renut_async_pipelines, true, "Nuts&Bolts/Performance",
-                    "While the jiggy wall is shut (going into or out of a world), a draw whose "
-                    "pipeline is not built yet is left out while the worker threads build it, and "
-                    "the wall stays shut, still animating, until they are done, instead of the "
-                    "game stopping while the pipelines are built. Off: the game waits for every "
-                    "pipeline.");
+namespace {
+struct PipelineSettings final : rex::SettingOwner {
+  PipelineSettings() : rex::SettingOwner(renut::settings::kScope) { renut::settings::Add(*this); }
+  REX_SETTING(bool, renut_pipeline_capture, false,
+              "Writes each pipeline a draw had to build itself (none of the built-in "
+              "list's) to pipeline_capture_<date>.txt next to renut, for "
+              "tools/pipeline_cache.py to add to the built-in list");
+};
+PipelineSettings &g_pipeline_settings = *new PipelineSettings();  // never freed, registered by RenutApp::OnConfigure
+} // namespace
 
 namespace renut::gpu {
 
@@ -72,9 +68,8 @@ std::unordered_map<uint64_t, std::vector<CachedPipeline>> g_pipelines;
 PipelineKey g_last_key{};
 plume::RenderPipeline *g_last_pipeline = nullptr;
 
-// Built pipelines by key hash, with their keys, in front of g_pipelines: the
-// map's bucket, node and vector were three cache misses a draw before the key
-// compare (pipelines are never erased). Two ways to a set, the newer first.
+// Built pipelines by key hash, with their keys: a two-way cache in front of
+// g_pipelines, the newer way first.
 struct PipelineMemo {
   uint64_t hash = 0;
   plume::RenderPipeline *pipeline = nullptr;
@@ -138,35 +133,6 @@ plume::RenderBlendDesc BlendDesc(u32 control, u32 write_mask) {
   desc.renderTargetWriteMask = uint8_t(write_mask & 0xF);
   return desc;
 }
-
-void CreatePipeline(plume::RenderDevice *device, const plume::RenderGraphicsPipelineDesc &desc,
-                    std::unique_ptr<plume::RenderPipeline> *out) {
-  *out = device->createGraphicsPipeline(desc);
-}
-
-#if defined(_WIN32)
-// A driver's shader compiler that faults on a pipeline takes the process
-// down; the log then names the pipeline (the crash dump goes on as before).
-LONG LogPipelineFault(const PipelineKey &key, DWORD code) {
-  const auto *vs = static_cast<const ShaderCacheEntry *>(key.vertex_shader);
-  const auto *ps = static_cast<const ShaderCacheEntry *>(key.pixel_shader);
-  RGPU_ERROR("The driver faulted ({:08X}) compiling pipeline vs_{:016x} ps_{:016x} ({} samples, "
-             "color format {}, depth format {})",
-             uint32_t(code), vs ? vs->hash : 0, ps ? ps->hash : 0, key.samples,
-             uint32_t(key.color_formats[0]), uint32_t(key.depth_format));
-  rex::FlushLogging();
-  return EXCEPTION_CONTINUE_SEARCH;
-}
-
-// No objects with destructors in here: __try forbids unwinding them.
-void CreatePipelineLogged(plume::RenderDevice *device, const plume::RenderGraphicsPipelineDesc &desc,
-                          const PipelineKey &key, std::unique_ptr<plume::RenderPipeline> *out) {
-  __try {
-    CreatePipeline(device, desc, out);
-  } __except (LogPipelineFault(key, GetExceptionCode())) {
-  }
-}
-#endif
 
 // Any thread: reads only what device creation set up.
 std::unique_ptr<plume::RenderPipeline> Build(const PipelineKey &key, const PipelineInputs &inputs) {
@@ -246,29 +212,19 @@ std::unique_ptr<plume::RenderPipeline> Build(const PipelineKey &key, const Pipel
   desc.inputElements = layout.input_elements.data();
   desc.inputElementsCount = uint32_t(layout.input_elements.size());
 
-  std::unique_ptr<plume::RenderPipeline> pipeline;
-#if defined(_WIN32)
-  CreatePipelineLogged(s.device.get(), desc, key, &pipeline);
-#else
-  CreatePipeline(s.device.get(), desc, &pipeline);
-#endif
+  std::unique_ptr<plume::RenderPipeline> pipeline = s.device->createGraphicsPipeline(desc);
   if (GraphicsPipelineCreated(pipeline.get())) {
     // Names the guest shaders in captures.
     const auto *vs = static_cast<const ShaderCacheEntry *>(key.vertex_shader);
     const auto *ps = static_cast<const ShaderCacheEntry *>(key.pixel_shader);
-    pipeline->setName(fmt::format("vs_{:016x} ps_{:016x}", vs ? vs->hash : 0, ps ? ps->hash : 0));
+    pipeline->setName(std::format("vs_{:016x} ps_{:016x}", vs ? vs->hash : 0, ps ? ps->hash : 0));
     return pipeline;
   }
   return nullptr;
 }
 
-// ---------------------------------------------------------------------------
-// The built-in pipeline list
-// ---------------------------------------------------------------------------
-//
-// pipeline_cache_data.inc, made by tools/pipeline_cache.py from pipeline
-// captures (below): the pipelines with their shaders as cache hashes, and the
-// vertex layouts they share. Each array ends in an empty entry.
+// The built-in pipeline list: pipeline_cache_data.inc, made by
+// tools/pipeline_cache.py from pipeline captures; each array ends empty.
 
 struct BuiltInElement {
   const char *name;
@@ -313,14 +269,8 @@ struct BuiltInPipeline {
 
 #include "renut_engine/gpu/render/pipeline_cache_data.inc"
 
-// ---------------------------------------------------------------------------
-// Pipeline captures
-// ---------------------------------------------------------------------------
-//
-// With renut_pipeline_capture on, each pipeline a draw builds itself (none of
-// the built-in list's) goes to a file of this session, a line each of
-// name=value fields: the shaders as cache hashes, the layout written out, the
-// rest of the key. tools/pipeline_cache.py adds them to the built-in list.
+// Pipeline captures: with renut_pipeline_capture on, each pipeline a draw builds
+// goes to this session's file as a line of name=value fields.
 
 std::filesystem::path CapturePath() {
   const std::time_t now = std::time(nullptr);
@@ -342,19 +292,19 @@ std::string CaptureLine(const PipelineKey &key, const HostVertexLayout &layout) 
   std::string strides, elements;
   for (u32 s = 0; s < kMaxVertexStreams; ++s) {
     used |= layout.streams[s].used ? 1u << s : 0u;
-    strides += fmt::format("{}{}", s ? "," : "", layout.streams[s].host_stride);
+    strides += std::format("{}{}", s ? "," : "", layout.streams[s].host_stride);
   }
   for (const plume::RenderInputElement &e : layout.input_elements) {
-    elements += fmt::format("{}{}:{}:{}:{}:{}:{}", elements.empty() ? "" : ",",
+    elements += std::format("{}{}:{}:{}:{}:{}:{}", elements.empty() ? "" : ",",
                             e.semanticName ? e.semanticName : "", e.semanticIndex, e.location,
                             u32(e.format), e.slotIndex, e.alignedByteOffset);
   }
   auto four = [](const auto &values) {
-    return fmt::format("{},{},{},{}", u32(values[0]), u32(values[1]), u32(values[2]),
+    return std::format("{},{},{},{}", u32(values[0]), u32(values[1]), u32(values[2]),
                        u32(values[3]));
   };
   static_assert(d3d::kMaxRenderTargets == 4);
-  return fmt::format(
+  return std::format(
       "vs=0x{:016X} ps=0x{:016X} layout=0x{:016X} used=0x{:04X} strides={} elements={} "
       "topology={} color_formats={} depth_format={} color_count={} samples={} blend_control={} "
       "color_mask={} depth_control={} stencil_ref_mask={} stencil_ref_mask_bf={} mode_control={} "
@@ -375,17 +325,15 @@ struct PipelineCapture {
   bool failed = false;
 
   void Add(const PipelineKey &key, const HostVertexLayout &layout) {
-    if (failed || !REXCVAR_GET(renut_pipeline_capture))
+    if (failed || !g_pipeline_settings.renut_pipeline_capture.Get())
       return;
     if (!out.is_open()) {
       const std::filesystem::path path = CapturePath();
       out.open(path, std::ios::binary | std::ios::trunc);
       if (!out) {
         failed = true;
-        RGPU_WARN("Pipeline capture {} cannot be written", path.string());
         return;
       }
-      RGPU_INFO("Pipeline capture: the pipelines draws build themselves go to {}", path.string());
       out << "# reNut pipeline capture 1 (tools/pipeline_cache.py)\n";
     }
     out << CaptureLine(key, layout) << '\n';
@@ -394,18 +342,15 @@ struct PipelineCapture {
 };
 PipelineCapture g_capture;
 
-// A listed pipeline, as the worker threads build it; or, with
-// renut_async_pipelines, one a draw asked for (TakeAsync).
+// A listed pipeline, as the worker threads build it.
 struct Job {
   PipelineKey key{};
   uint64_t hash = 0;
-  const HostVertexLayout *layout = nullptr;  // g_built_in_layouts, or own_layout
-  std::unique_ptr<HostVertexLayout> own_layout;  // a draw's job: its declaration's, copied
+  const HostVertexLayout *layout = nullptr;  // g_built_in_layouts
   enum class Stage { Pending, Building, Done } stage = Stage::Pending;
   std::unique_ptr<plume::RenderPipeline> pipeline;  // Done: nullptr if taken or failed
   // Its shaders the game has not made yet (PipelineShaderLoaded); queued at 0.
   u32 shaders_missing = 0;
-  bool asked = false;  // a draw waits for it: queued at the front once
 };
 
 // The built-in list's layouts, made at the start.
@@ -462,6 +407,7 @@ std::vector<std::unique_ptr<Job>> BuiltInJobs() {
     key.per_instance_streams = p.per_instance_streams;
     key.rectangle_list = p.rectangle_list;
     key.point_sprite = p.point_sprite;
+    SanitizePipelineKey(key);
     job->layout = &g_built_in_layouts[p.layout];
     job->hash = HashKey(key);
     if (seen.insert(job->hash).second)
@@ -470,23 +416,19 @@ std::vector<std::unique_ptr<Job>> BuiltInJobs() {
   return jobs;
 }
 
-// ---------------------------------------------------------------------------
-// Building the listed pipelines ahead
-// ---------------------------------------------------------------------------
-//
-// A listed pipeline is built once the game has made both of its shaders (a
-// level's shaders come with its load), not at the start: the list holds every
-// level's, and the driver keeps each built pipeline's shaders and code in host
-// memory. What is built stays built.
+// Building the listed pipelines ahead: each is kept once the game has made both of
+// its shaders (a level's come with its load); until then, idle workers warm it.
 
 struct Prebuild {
   std::mutex mutex;
   std::condition_variable work;  // a job queued, or stopping
   std::condition_variable done;  // a job reached Done, or a worker ended
   std::vector<std::unique_ptr<Job>> jobs;
-  size_t listed = 0;             // of jobs, the built-in list's (the rest draws asked for)
   std::unordered_map<uint64_t, std::vector<Job *>> by_hash;
   std::deque<Job *> queue;       // shaders all made; may have been claimed since
+  // The rest, built when the queue is empty and dropped: the driver's disk cache
+  // then has them, and their real builds later take well under a millisecond.
+  std::deque<Job *> warm;
   // The shaders the game has made, and the jobs waiting for each of the others.
   std::unordered_set<const ShaderCacheEntry *> loaded;
   std::unordered_map<const ShaderCacheEntry *, std::vector<Job *>> waiting;
@@ -508,31 +450,65 @@ plume::RenderShader *PrebuildShader(const ShaderCacheEntry *entry) {
   return slot.get();
 }
 
-// The jiggy wall is held shut for the workers (BoostPipelineBuilds): the game
-// waits on them, so they run at normal priority meanwhile.
-std::atomic<bool> g_prebuild_boost{false};
+// Requires g_prebuild.mutex, held by 'lock'. Builds the next warm job with its
+// own shaders, keeping the pipeline only if the game made its shaders meanwhile.
+void Warm(std::unique_lock<std::mutex> &lock) {
+  Job &job = *g_prebuild.warm.front();
+  g_prebuild.warm.pop_front();
+  if (job.stage != Job::Stage::Pending || job.shaders_missing == 0 ||
+      !(SampleCountsInUse() & job.key.samples))
+    return;  // queued for real or claimed since, or a sample count not in use
+  job.stage = Job::Stage::Building;
+  ++g_prebuild.building;
+  lock.unlock();
+  const auto *vs_entry = static_cast<const ShaderCacheEntry *>(job.key.vertex_shader);
+  const auto *ps_entry = static_cast<const ShaderCacheEntry *>(job.key.pixel_shader);
+  std::unique_ptr<plume::RenderShader> vs = CreateCachedShader(State().device.get(), *vs_entry);
+  std::unique_ptr<plume::RenderShader> ps =
+      ps_entry ? CreateCachedShader(State().device.get(), *ps_entry) : nullptr;
+  std::unique_ptr<plume::RenderPipeline> pipeline =
+      vs && (!ps_entry || ps) ? Build(job.key, {vs.get(), ps.get(), job.layout}) : nullptr;
+  lock.lock();
+  if (job.shaders_missing == 0) {
+    job.pipeline = std::move(pipeline);
+    job.stage = Job::Stage::Done;
+  } else {
+    job.stage = Job::Stage::Pending;
+  }
+  if (--g_prebuild.building == 0 && g_prebuild.queue.empty())
+    g_prebuild.shaders.clear();
+  g_prebuild.done.notify_all();
+  lock.unlock();
+  pipeline.reset();
+  lock.lock();
+}
 
 void PrebuildWorker() {
 #if defined(_WIN32)
+  // Lowest, as reblue's: idle cores build at full speed, but a load's convoy of
+  // builds never preempts the render thread.
   SetThreadDescription(GetCurrentThread(), L"renut pipeline prebuild");
-  SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
-  bool boosted = false;
+  SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_LOWEST);
 #endif
   std::unique_lock lock(g_prebuild.mutex);
   for (;;) {
-    g_prebuild.work.wait(lock, [] { return g_prebuild.stop || !g_prebuild.queue.empty(); });
+    g_prebuild.work.wait(lock, [] {
+      return g_prebuild.stop || !g_prebuild.queue.empty() || !g_prebuild.warm.empty();
+    });
     if (g_prebuild.stop)
       break;
+    if (g_prebuild.queue.empty()) {
+      Warm(lock);
+      continue;
+    }
     Job &job = *g_prebuild.queue.front();
     g_prebuild.queue.pop_front();
     if (job.stage != Job::Stage::Pending)
       continue;  // the render thread claimed it (TakePrebuilt)
-#if defined(_WIN32)
-    if (const bool boost = g_prebuild_boost.load(std::memory_order_relaxed); boost != boosted) {
-      boosted = boost;
-      SetThreadPriority(GetCurrentThread(), boost ? THREAD_PRIORITY_NORMAL : THREAD_PRIORITY_BELOW_NORMAL);
-    }
-#endif
+    // As reblue's: only the sample counts renut_msaa can give a target are built;
+    // a draw needing another builds its own.
+    if (!(SampleCountsInUse() & job.key.samples))
+      continue;
     job.stage = Job::Stage::Building;
     ++g_prebuild.building;
     PipelineInputs inputs;
@@ -568,9 +544,8 @@ void QueueOrWait(Job &job) {
     g_prebuild.queue.push_back(&job);
 }
 
-// The listed pipeline for the key, when the list has it: built by a worker
-// (waited for when one is building it), or nullptr with 'claimed' set when no
-// worker has started it, which the caller then builds itself. Render thread.
+// The listed pipeline for the key, built by a worker (waited for if building),
+// or nullptr with 'claimed' set when the caller must build it. Render thread.
 plume::RenderPipeline *TakePrebuilt(const PipelineKey &key, uint64_t hash,
                                     std::unique_ptr<plume::RenderPipeline> &out, bool &claimed) {
   claimed = false;
@@ -585,107 +560,38 @@ plume::RenderPipeline *TakePrebuilt(const PipelineKey &key, uint64_t hash,
   }
   if (!job)
     return nullptr;
+  // A warm build hands the job back as Pending when it keeps nothing.
+  g_prebuild.done.wait(lock, [job] { return job->stage != Job::Stage::Building; });
   if (job->stage == Job::Stage::Pending) {
     job->stage = Job::Stage::Done;  // the render thread's now
     claimed = true;
     return nullptr;
   }
-  g_prebuild.done.wait(lock, [job] { return job->stage == Job::Stage::Done; });
   out = std::move(job->pipeline);
   return out.get();
 }
 
-// The jiggy wall, N&B's transition into and out of a world (IDA, TU3):
-// sub_82558DC0 begins one (requests + 1), its end takes the request away, and
-// sub_82559010, each frame, closes the wall over the screen while there are
-// requests (noting them in 'shown') and opens it again once there are none
-// ('shown' back to 0). A world's shaders come with its load, behind the wall,
-// and its pipelines with them (PipelineShaderLoaded): the first frames after
-// the load wanted hundreds of pipelines at once, and the game stopped,
-// animations and all, until the render thread had built them one by one.
-// Now, while the wall closes, stays shut or is held shut for the workers
-// (game/jiggy_wall_hold.cpp, PipelineBuildsPending), a draw whose pipeline is
-// not built yet is left out; once it opens, every pipeline is waited for again.
-constexpr u32 kJiggyWallRequests = 0x82E19EE0;  // dword_82E19EE0
-constexpr u32 kJiggyWallShown = 0x82E19EE4;     // dword_82E19EE4
-
-bool JiggyWallShut() {
-  auto word = [](u32 va) {
-    const auto *p = GuestPtr<const u32>(va);
-    return p ? rex::byte_swap(*p) : 0u;
-  };
-  return word(kJiggyWallRequests) || word(kJiggyWallShown);
-}
-
-u32 g_deferred_draws = 0;  // draws left out since the wall went up
-// When a draw was last left out (steady clock, ms): PipelineBuildsPending.
-std::atomic<int64_t> g_last_deferred_ms{0};
-
-int64_t SteadyMs() {
-  return std::chrono::duration_cast<std::chrono::milliseconds>(
-             std::chrono::steady_clock::now().time_since_epoch())
-      .count();
-}
-
-// Whether a draw may be left out for a pipeline the workers build
-// (renut_async_pipelines). Render thread.
-bool AsyncPipelinesNow() {
-  static bool active = false;
-  const bool async = REXCVAR_GET(renut_async_pipelines) && JiggyWallShut();
-  if (active && !async && g_deferred_draws) {
-    RGPU_INFO("Pipelines: {} draws waited a frame or more for pipelines the workers built, "
-              "behind the jiggy wall", g_deferred_draws);
-    g_deferred_draws = 0;
-  }
-  active = async;
-  return async;
-}
-
-// AsyncPipelinesNow: the pipeline for the key once a worker has built it.
-// Until then nullptr with 'ready' false, and the job goes to the front of the
-// workers' queue: the list's, or one made here for a pipeline the list lacks
-// (recorded for the capture). 'ready' true with nullptr: the caller builds it
-// as before (no workers, a shader outside the cache, or a failed build).
-// Render thread.
-plume::RenderPipeline *TakeAsync(const PipelineKey &key, uint64_t hash, const HostVertexLayout &layout,
-                                 std::unique_ptr<plume::RenderPipeline> &out, bool &ready) {
-  ready = true;
-  std::unique_lock lock(g_prebuild.mutex);
-  if (g_prebuild.workers == 0 || g_prebuild.stop || !key.vertex_shader)
-    return nullptr;
-  std::vector<Job *> &same_hash = g_prebuild.by_hash[hash];
-  Job *job = nullptr;
-  for (Job *j : same_hash) {
-    if (std::memcmp(&j->key, &key, sizeof(key)) == 0)
-      job = j;
-  }
-  if (!job) {
-    auto made = std::make_unique<Job>();
-    made->key = key;
-    made->hash = hash;
-    made->own_layout = std::make_unique<HostVertexLayout>(layout);
-    made->layout = made->own_layout.get();
-    job = made.get();
-    same_hash.push_back(job);
-    g_prebuild.jobs.push_back(std::move(made));
-    g_capture.Add(key, layout);
-  }
-  if (job->stage == Job::Stage::Done) {
-    out = std::move(job->pipeline);
-    return out.get();
-  }
-  ready = false;
-  ++g_deferred_draws;
-  g_last_deferred_ms.store(SteadyMs(), std::memory_order_relaxed);
-  if (job->stage == Job::Stage::Pending && !job->asked) {
-    job->asked = true;
-    g_prebuild.queue.push_front(job);
-    g_prebuild.work.notify_one();
-  }
-  return nullptr;
-}
-
 } // namespace
+
+void SanitizePipelineKey(PipelineKey &key) {
+  for (u32 i = key.color_count; i < d3d::kMaxRenderTargets; ++i)
+    key.blend_control[i] = 0;
+  key.color_mask &= key.color_count ? (1u << (key.color_count * 4)) - 1 : 0u;
+  // Build reads only the front face's reference and masks.
+  key.stencil_ref_mask_bf = 0;
+  u32 &dc = key.depth_control;
+  if (!(dc & 1)) {
+    dc &= 0x7Eu;  // stencil off: its functions, ops and masks are unused
+    key.stencil_ref_mask = 0;
+  } else if (!(dc & 0x80)) {
+    dc &= 0x000FFFFFu;  // one-sided: the back face copies the front
+  }
+  if (!(dc & 2)) {
+    dc &= ~0x74u;  // depth test off: no depth function, writes or bias
+    key.depth_bias = 0;
+    key.depth_bias_clamp = 0.0f;
+  }
+}
 
 bool BuildDrawLayout(VideoState &s) {
   plume::RenderDescriptorSetBuilder textures;
@@ -719,11 +625,7 @@ bool BuildDrawLayout(VideoState &s) {
   }
   layout.end();
   s.draw_layout = layout.create(s.device.get());
-  if (!s.draw_layout) {
-    RGPU_ERROR("Draw pipeline layout creation failed");
-    return false;
-  }
-  return true;
+  return s.draw_layout != nullptr;
 }
 
 plume::RenderPipeline *GetPipelineLocked(const PipelineKey &key, const PipelineInputs &inputs) {
@@ -750,35 +652,16 @@ plume::RenderPipeline *GetPipelineLocked(const PipelineKey &key, const PipelineI
       return cached.pipeline.get();
     }
   }
+  // As reblue's: a pipeline the workers have not built yet is built here.
   std::unique_ptr<plume::RenderPipeline> pipeline;
   bool claimed = false;
-  if (inputs.may_wait_a_frame && AsyncPipelinesNow()) {
-    bool ready = true;
-    TakeAsync(key, hash, *inputs.layout, pipeline, ready);
-    if (!ready)
-      return nullptr;  // the draw is left out this time; nothing is kept for the key
-    claimed = pipeline != nullptr;  // a job's: captured when it was made, if at all
-  }
-  if (!pipeline && !TakePrebuilt(key, hash, pipeline, claimed)) {
+  if (!TakePrebuilt(key, hash, pipeline, claimed)) {
     pipeline = Build(key, inputs);
     if (pipeline && !claimed)
       g_capture.Add(key, *inputs.layout);
   }
-  if (!pipeline) {
-    static uint32_t logged = 0;
-    if (!ReportDeviceLost(State().device.get()) && logged++ < 32) {
-      const auto *vs = static_cast<const ShaderCacheEntry *>(key.vertex_shader);
-      const auto *ps = static_cast<const ShaderCacheEntry *>(key.pixel_shader);
-      RGPU_ERROR("Pipeline creation failed (key {:016X}): VS {:016X} (spec constants {:X}), "
-                 "PS {:016X} (spec constants {:X}), {} targets [{} {} {} {}], depth format {}, "
-                 "{} samples, {} input elements, topology {}",
-                 hash, vs ? vs->hash : 0, vs ? vs->specConstantsMask : 0, ps ? ps->hash : 0,
-                 ps ? ps->specConstantsMask : 0, key.color_count, u32(key.color_formats[0]),
-                 u32(key.color_formats[1]), u32(key.color_formats[2]), u32(key.color_formats[3]),
-                 u32(key.depth_format), key.samples, inputs.layout->input_elements.size(),
-                 u32(key.topology));
-    }
-  }
+  if (!pipeline)
+    ReportDeviceLost(State().device.get());
   bucket.push_back({key, std::move(pipeline)});
   plume::RenderPipeline *result = bucket.back().pipeline.get();
   if (result) {
@@ -791,20 +674,22 @@ plume::RenderPipeline *GetPipelineLocked(const PipelineKey &key, const PipelineI
 
 void StartPipelinePrebuild() {
   std::vector<std::unique_ptr<Job>> jobs = BuiltInJobs();
-  RGPU_INFO("Pipelines: {} of the built-in list's {} are built ahead as the game makes their "
-            "shaders", jobs.size(), std::size(kBuiltInPipelines) - 1);
   if (jobs.empty())
     return;
   std::lock_guard lock(g_prebuild.mutex);
   g_prebuild.jobs = std::move(jobs);
-  g_prebuild.listed = g_prebuild.jobs.size();
   for (const auto &job : g_prebuild.jobs) {
     g_prebuild.by_hash[job->hash].push_back(job.get());
     QueueOrWait(*job);
+    if (job->shaders_missing)
+      g_prebuild.warm.push_back(job.get());
   }
-  // Leave the render and game threads their cores.
-  const u32 cores = std::max(1u, std::thread::hardware_concurrency());
-  const u32 workers = std::clamp(cores / 2, 1u, 4u);
+  // reblue's pool: two thirds of the hardware threads, leaving the game three.
+  const u32 cores = std::thread::hardware_concurrency();
+  u32 workers = cores > 3 ? cores * 2 / 3 : 2u;
+  if (cores > 5 && workers > cores - 3)
+    workers = cores - 3;
+  workers = std::max(workers, 2u);
   g_prebuild.workers = workers;
   for (u32 i = 0; i < workers; ++i)
     std::thread(PrebuildWorker).detach();
@@ -838,45 +723,6 @@ void PipelineShaderLoaded(const ShaderCacheEntry *entry) {
   g_prebuild.waiting.erase(it);
   if (queued)
     g_prebuild.work.notify_all();
-}
-
-void BoostPipelineBuilds(bool boost) {
-  g_prebuild_boost.store(boost, std::memory_order_relaxed);
-}
-
-bool PipelineBuildsPending() {
-  // A draw left out this recently still waits for its pipeline.
-  constexpr int64_t kRecentDeferMs = 250;
-  if (!REXCVAR_GET(renut_async_pipelines))
-    return false;
-  const int64_t last = g_last_deferred_ms.load(std::memory_order_relaxed);
-  if (last && SteadyMs() - last < kRecentDeferMs)
-    return true;
-  std::lock_guard lock(g_prebuild.mutex);
-  if (g_prebuild.workers == 0 || g_prebuild.stop)
-    return false;
-  if (g_prebuild.building)
-    return true;
-  for (const Job *job : g_prebuild.queue) {
-    if (job->stage == Job::Stage::Pending)
-      return true;
-  }
-  return false;
-}
-
-PipelineCounts PipelineCountsLocked() {
-  PipelineCounts counts;
-  for (const auto &[hash, bucket] : g_pipelines) {
-    for (const CachedPipeline &cached : bucket)
-      counts.built += cached.pipeline ? 1 : 0;
-  }
-  std::lock_guard lock(g_prebuild.mutex);
-  counts.listed = g_prebuild.listed;
-  for (const auto &job : g_prebuild.jobs) {
-    counts.prebuilt_unused += job->pipeline ? 1 : 0;
-    counts.waiting += job->stage == Job::Stage::Pending && job->shaders_missing ? 1 : 0;
-  }
-  return counts;
 }
 
 } // namespace renut::gpu

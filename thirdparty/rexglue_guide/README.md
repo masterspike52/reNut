@@ -47,59 +47,59 @@ The sources have to compile into the executable itself. The Guide defines `__imp
 ```cpp
 #include <rexglue_guide/guide.h>
 
-class MyGameApp : public rex::ReXApp {
-  // The Guide's fonts (Selawik) go into the SDK's font atlas.
-  void OnConfigureFonts(ImFontAtlas* atlas) override {
-    rex::ReXApp::OnConfigureFonts(atlas);
-    rexglue_guide::ConfigureFonts(atlas);
+class MyGameApp : public rex::app::TitleApp {
+  // The Guide's settings (scope "guide") and log category.
+  rex::Result<void> OnConfigure(rex::SettingsRegistry& settings) override {
+    REX_TRY_VOID(TitleApp::OnConfigure(settings));
+    return rexglue_guide::Configure(settings);
   }
 
-  // Create your own dialogs first, then the Guide, so it draws on top of them.
-  void OnCreateDialogs(rex::ui::ImGuiDrawer* drawer) override {
-    rex::ReXApp::OnCreateDialogs(drawer);
+  rex::Result<void> OnInit() override {
+    REX_TRY_VOID(TitleApp::OnInit());
+    // The Guide's fonts (Selawik) go into the UI system's font atlas.
+    rexglue_guide::ConfigureFonts(&GetUI().GetFonts());
 
     rexglue_guide::AddCredit("Your Name", "Programming"); //This can be repeated to add many credits
 
-    rexglue_guide::Install(this, drawer, {
+    // Add your own dialogs first, then the Guide, so it draws on top of them.
+    rexglue_guide::Install(GetUI(), {
         .title_name = "My Game",
-        .on_quit = [this] { if (auto* w = window()) w->RequestClose(); },
-        .immediate_drawer = immediate_drawer(),  // required: icons, gamerpics, pictures
+        .on_quit = [] { rex::app::RequestShutdown(0); },
+        // required: icons, gamerpics, pictures (ImTextureIDs your renderer resolves)
+        .create_texture = MyRenderer::CreateImGuiTexture,
+        .destroy_texture = MyRenderer::DestroyImGuiTexture,
     });
+    return rex::Ok();
   }
 
   void OnShutdown() override {
     rexglue_guide::Shutdown();
-    rex::ReXApp::OnShutdown();
+    TitleApp::OnShutdown();
   }
-
-  // While the Guide (or its sign-in screen) is up, the game shouldn't act on input.
-  bool WantsUIInputMode() const override { return rexglue_guide::IsOpen(); }
 };
 ```
 
-`immediate_drawer` must be set, or the Guide has no way to upload its icons and pictures and they
-come out blank.
+`create_texture` and `destroy_texture` must be set, or the Guide has no way to upload its icons
+and pictures and they come out blank.
 
-If your app already uses `WantsUIInputMode` for its own UI, combine them
-(`return my_ui_open || rexglue_guide::IsOpen();`), or hold game input yourself while
-`rexglue_guide::IsOpen()` is true.
+While `rexglue_guide::IsOpen()` is true, hold game input yourself.
 
 That's all that's required. On first launch the Guide shows its sign-in screen; players create a
 RexLiveless profile or sign in to an existing one, and are remembered after that.
 
 ## Opening the Guide
 
-- **F10**: the `bind_guide` key bind (rebindable with the SDK's key binds, I was going to use Enter but figured that would probably conflict more then F10).
-- **The controller's Guide button**: turn on the runtime's `guide_button` cvar so the button
+- **F10**: the `guide.bind` setting (old name `bind_guide`; I was going to use Enter but figured that would probably conflict more then F10).
+- **The controller's Guide button**: turn on the runtime's `hid.guide_button` setting so the button
   reaches the game's input reads; the Guide sees it there. The Guide opens for the player whose
   controller pressed it.
 - **The title:** calls functions like `XShowGamerCardUI` that open the Guide on that player's gamer card.
 
-The Guide's **System Settings > Config** page lists the game's settings (rexglue cvars) by category, like the F4 settings overlay: toggles, choices, sliders for ranged numbers, and the on-screen keyboard for the rest. Pass `config_file` so changes are saved.
+The Guide's **System Settings > Config** page lists the game's settings (the settings registry) by scope, like the settings overlay: toggles, choices, sliders for ranged numbers, and the on-screen keyboard for the rest. Pass `config_file` so changes are saved.
 
 ## Config reference
 
-All fields of `rexglue_guide::Config` are optional except `immediate_drawer`.
+All fields of `rexglue_guide::Config` are optional except `create_texture` and `destroy_texture`.
 
 | Field | What it does |
 |---|---|
@@ -107,12 +107,12 @@ All fields of `rexglue_guide::Config` are optional except `immediate_drawer`.
 | `data_dir` | Where accounts and preferences are kept. Default `<exe dir>/guide`. |
 | `on_quit` | Adds **Quit Game** to the Settings blade; called when chosen. |
 | `ready_for_sign_in` | The sign-in screen waits until this returns true (e.g. while a launcher menu is open). |
-| `immediate_drawer` | Your app's `immediate_drawer()`. **Required.** |
+| `create_texture` / `destroy_texture` | Make an RGBA8 texture as an `ImTextureID` of the UI system's ImGui, and free one. **Required.** |
 | `show_keyboard` | Use your app's own on-screen keyboard for the Guide's text entry instead of the Guide's. Call `done` exactly once, from any thread, with the text or `std::nullopt` if cancelled. |
 | `player_for_controller` | Maps a controller (the user index the title reads it with) to a player 0-3, or -1 for none. Default: the same index. |
-| `game_frame` | Your renderer's last presented game frame as an `ImmediateTexture` of `immediate_drawer` (and its on-screen UV rect). When set, the Guide blurs the live game behind it, as on the console; otherwise it only darkens it. |
-| `config_file` | Where **System Settings > Config** saves the game's settings (cvars), the same file your F4 settings overlay saves to. Unset, changes made there last until the game closes. |
-| `show_setting` | Which settings Config lists, by cvar name (for example to leave out ones your app hides). Unset: every setting except console commands. |
+| `game_frame` | Your renderer's last presented game frame as an `ImTextureID` of the UI system's ImGui (and its on-screen UV rect). When set, the Guide blurs the live game behind it, as on the console; otherwise it only darkens it. |
+| `config_file` | Where **System Settings > Config** saves the game's settings, the same file your settings overlay saves to. Unset, changes made there last until the game closes. |
+| `show_setting` | Which settings Config lists, by full name (for example to leave out ones your app hides). Unset: every setting. |
 
 ### Optional extras
 
@@ -124,7 +124,7 @@ All fields of `rexglue_guide::Config` are optional except `immediate_drawer`.
 
 // The live game blurred behind the Guide. `uv` is the part of the texture on screen;
 // leave it at {0, 0, 1, 1} if the texture covers the whole window.
-.game_frame = [](float uv[4]) -> rex::ui::ImmediateTexture* { return MyRenderer::LastFrameTexture(); },
+.game_frame = [](float uv[4]) -> ImTextureID { return MyRenderer::LastFrameTexture(); },
 ```
 
 Other functions in `guide.h`:

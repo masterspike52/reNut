@@ -1,14 +1,5 @@
-// Reads a render target back for the CPU (ReadRenderTargetLocked in draw.cpp):
-// what a color resolve into an X8R8G8B8 texture leaves in guest memory, one
-// thread per guest pixel. A guest pixel is the average of the host texels its
-// edges cover at the target's render scale (RenderScale::Coord rounding), and
-// is stored as the guest's big-endian word 0xFFRRGGBB, row after row.
-//   set 0 : bindless Texture2D table (t0, space0), a single-sampled copy of
-//           the target
-//   set 1 : RWByteAddressBuffer      (u0, space1), the words
-//   push  : TargetReadbackPush       (b0, space2)
-// Must match BuildTargetReadbackPipeline in video.cpp and TargetReadbackPush
-// in video.h.
+// Reads a render target back for the CPU as X8R8G8B8 guest words (0xFFRRGGBB), each
+// guest pixel the average of the host texels it covers. Must match video.h's push.
 
 struct TargetReadbackPush
 {

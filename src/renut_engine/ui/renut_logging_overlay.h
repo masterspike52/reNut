@@ -1,48 +1,55 @@
-// renut_log_overlay.h
 #pragma once
-#include <rex/logging.h>
+#include <rex/logging/log_category.h>
+#include <rex/logging/logger.h>
+#include <rex/utility.h>
 #include "imgui.h"
 #include "renut_engine/app/renut_logging.h"
 #include "renut_engine/gpu/overlay/overlay_ui.h"
 
-#include <spdlog/sinks/base_sink.h>
 #include <deque>
+#include <memory>
 #include <mutex>
 #include <string>
 
-// ── Ring-buffer spdlog sink ───────────────────────────────────────────────────
+// ── Ring-buffer log sink ──────────────────────────────────────────────────────
 
 struct RenuLogEntry {
-    spdlog::level::level_enum level;
-    std::string               message;
+    rex::log::Level level;
+    std::string     message;
 };
 
-class RenuLogOverlaySink : public spdlog::sinks::base_sink<std::mutex> {
+class RenuLogOverlaySink final : public rex::log::ILogSink {
 public:
     static constexpr std::size_t kMaxEntries = 200;
 
-    std::deque<RenuLogEntry> entries;
-
     void clear() {
         std::lock_guard lock(mutex_);
-        entries.clear();
+        entries_.clear();
     }
 
     template<typename Fn>
     void with_entries(Fn&& fn) {
         std::lock_guard lock(mutex_);
-        fn(entries);
+        fn(entries_);
     }
 
-protected:
-    void sink_it_(const spdlog::details::log_msg& msg) override {
-        spdlog::memory_buf_t buf;
-        formatter_->format(msg, buf);
-        if (entries.size() >= kMaxEntries)
-            entries.pop_front();
-        entries.push_back({ msg.level, std::string(buf.data(), buf.size()) });
+    // reNut's own category only, as the old per-category sink took.
+    void Write(const rex::log::Message& message) override {
+        if (message.category != rex::log::renut_hooks.GetName())
+            return;
+        std::string line = rex::log::FormatLine(
+            message, {.timestamp = rex::log::TimestampStyle::kDateTime, .category = true, .color = false});
+        std::lock_guard lock(mutex_);
+        if (entries_.size() >= kMaxEntries)
+            entries_.pop_front();
+        entries_.push_back({message.level, std::move(line)});
     }
-    void flush_() override {}
+
+    void Flush() override {}
+
+private:
+    std::mutex               mutex_;
+    std::deque<RenuLogEntry> entries_;
 };
 
 // ── Overlay dialog ────────────────────────────────────────────────────────────
@@ -50,13 +57,9 @@ protected:
 class RenuLogOverlayDialog : public renut::gpu::overlay::Dialog {
 public:
     RenuLogOverlayDialog()
-        : sink_(std::make_shared<RenuLogOverlaySink>())
+        : sink_(std::make_unique<RenuLogOverlaySink>()),
+          guard_(REX_LOGGER().AddSink(*sink_))
     {
-        rex::AddSink(renut::log::Input, sink_);
-    }
-
-    ~RenuLogOverlayDialog() {
-        rex::RemoveSink(renut::log::Input, sink_);
     }
 
     void Draw() override {
@@ -87,7 +90,7 @@ public:
         ImGui::SameLine();
         ImGui::SetNextItemWidth(120.0f);
         ImGui::Combo("Min level", &min_level_idx_,
-            "Trace\0Debug\0Info\0Warn\0Error\0Critical\0\0");
+            "Trace\0Dev\0Debug\0Info\0Warn\0Error\0Critical\0\0");
         ImGui::Separator();
 
         // ── Log lines ────────────────────────────────────────────────────────
@@ -112,27 +115,29 @@ public:
     }
 
 private:
-    static ImVec4 LevelColor(spdlog::level::level_enum level) {
+    static ImVec4 LevelColor(rex::log::Level level) {
         switch (level) {
-        case spdlog::level::trace:    return ImVec4(0.6f, 0.6f, 0.6f, 1.0f);
-        case spdlog::level::debug:    return ImVec4(0.4f, 0.8f, 1.0f, 1.0f);
-        case spdlog::level::info:     return ImVec4(1.0f, 1.0f, 1.0f, 1.0f);
-        case spdlog::level::warn:     return ImVec4(1.0f, 0.85f, 0.0f, 1.0f);
-        case spdlog::level::err:      return ImVec4(1.0f, 0.25f, 0.25f, 1.0f);
-        case spdlog::level::critical: return ImVec4(1.0f, 0.0f, 0.5f, 1.0f);
-        default:                      return ImVec4(1.0f, 1.0f, 1.0f, 1.0f);
+        case rex::log::Level::kTrace:    return ImVec4(0.6f, 0.6f, 0.6f, 1.0f);
+        case rex::log::Level::kDev:      return ImVec4(0.6f, 0.6f, 0.6f, 1.0f);
+        case rex::log::Level::kDebug:    return ImVec4(0.4f, 0.8f, 1.0f, 1.0f);
+        case rex::log::Level::kInfo:     return ImVec4(1.0f, 1.0f, 1.0f, 1.0f);
+        case rex::log::Level::kWarn:     return ImVec4(1.0f, 0.85f, 0.0f, 1.0f);
+        case rex::log::Level::kError:    return ImVec4(1.0f, 0.25f, 0.25f, 1.0f);
+        case rex::log::Level::kCritical: return ImVec4(1.0f, 0.0f, 0.5f, 1.0f);
+        default:                         return ImVec4(1.0f, 1.0f, 1.0f, 1.0f);
         }
     }
 
-    static const char* LevelTag(spdlog::level::level_enum level) {
+    static const char* LevelTag(rex::log::Level level) {
         switch (level) {
-        case spdlog::level::trace:    return "TRACE";
-        case spdlog::level::debug:    return "DEBUG";
-        case spdlog::level::info:     return " INFO";
-        case spdlog::level::warn:     return " WARN";
-        case spdlog::level::err:      return "ERROR";
-        case spdlog::level::critical: return " CRIT";
-        default:                      return "  ???";
+        case rex::log::Level::kTrace:    return "TRACE";
+        case rex::log::Level::kDev:      return "  DEV";
+        case rex::log::Level::kDebug:    return "DEBUG";
+        case rex::log::Level::kInfo:     return " INFO";
+        case rex::log::Level::kWarn:     return " WARN";
+        case rex::log::Level::kError:    return "ERROR";
+        case rex::log::Level::kCritical: return " CRIT";
+        default:                         return "  ???";
         }
     }
 
@@ -140,5 +145,7 @@ private:
     bool auto_scroll_ = true;
     int  min_level_idx_ = 0;
 
-    std::shared_ptr<RenuLogOverlaySink> sink_;
+    // The guard after the sink, so it goes first.
+    std::unique_ptr<RenuLogOverlaySink> sink_;
+    rex::ScopeGuard                     guard_;
 };

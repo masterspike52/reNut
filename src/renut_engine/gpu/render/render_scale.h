@@ -1,7 +1,3 @@
-/**
- * @file    gpu/render/render_scale.h
- * @brief   Render resolution: host pixels per guest pixel.
- */
 #pragma once
 
 #include <algorithm>
@@ -10,14 +6,8 @@
 
 namespace renut::gpu {
 
-// Host pixels per guest pixel of a render target, and of what resolves from
-// it, as one of a fixed set of ratios: the render resolutions
-// (renut_resolution: 1x, 480p, 1080p, 1440p, 4K) and the targets that render
-// finer than the rest (graphics_options.h: shadow maps at 4x, ambient
-// occlusion at twice the resolution: 4/3, 6x). Code 0 is 1x, the scale of all
-// content that is not rendered (guest textures). Shaders get the code in the
-// descriptor index (kResolutionScaleShift) and have the same factors
-// (renutTextureScale in shader_common.h).
+// Host pixels per guest pixel of a render target and its resolves, as a code
+// into fixed ratios (0 is 1x), passed to shaders via kResolutionScaleShift.
 struct RenderScale {
   static constexpr uint32_t kCount = 8;
   static constexpr uint32_t kNumerators[kCount] = {1, 2, 3, 2, 3, 4, 6, 4};

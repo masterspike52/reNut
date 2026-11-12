@@ -1,8 +1,13 @@
 #pragma once
-#include <rex/cvar.h>
+#include <rex/console_command.h>
+#include <rex/setting.h>
+#include <rex/settings_registry.h>
 #include "imgui.h"
+#include "renut_engine/app/renut_settings.h"
+#include "renut_engine/game/graphics_menu.h"
 #include "renut_engine/gpu/overlay/overlay_ui.h"
 #include "renut_engine/online/online.h"
+#include <rexfabric/rexfabric.h>
 
 #include <algorithm>
 #include <cctype>
@@ -14,10 +19,8 @@
 #include <utility>
 #include <vector>
 
-// reNut's own settings (F4): the cvars under "Nuts&Bolts/", one tab per
-// category. Changes apply as they are made; Save to config writes them to the
-// config file. The SDK's settings window (every cvar) moves from F4 to F8
-// (RenutApp::OnCreateDialogs).
+// reNut's own settings (F4): the "Nuts&Bolts/" settings, a tab per category, applied
+// live and saved with Save to config (the SDK's settings window moves to F8).
 class RenutSettingsDialog : public renut::gpu::overlay::Dialog {
 public:
     static constexpr const char* kCategoryPrefix = "Nuts&Bolts/";
@@ -51,11 +54,52 @@ public:
     }
 
 private:
-    // reNut's categories, in registry order, without the prefix.
-    static std::vector<std::string> Categories() {
+    // A setting or command shown: its full name, its old name (labels) and its category.
+    struct Entry {
+        std::string full;
+        std::string name;
+        std::string category;
+    };
+
+    // reNut's own ("renut.<old name>"), then those Lua mods added ("mods.<name>", "Nuts&Bolts/Mod: <mod>").
+    static std::vector<Entry> Entries() {
+        std::vector<Entry> entries;
+        for (const auto& entry : renut::graphics_menu::CategorizedSettings())
+            entries.push_back({std::string(renut::settings::kScope) + "." + entry.name, entry.name, entry.category});
+        for (const rexfabric::ModSetting& setting : rexfabric::ModSettings()) {
+            const size_t dot = setting.name.find('.');
+            entries.push_back({setting.name, dot == std::string::npos ? setting.name : setting.name.substr(dot + 1),
+                               setting.category});
+        }
+        return entries;
+    }
+
+    static rex::SettingBase* FindSetting(const std::string& full) {
+        auto found = REX_SETTINGS().Find(full);
+        return found ? *found : nullptr;
+    }
+
+    static rex::ConsoleCommand* FindCommand(const std::string& full) {
+        const std::string scope = full.substr(0, full.rfind('.'));
+        for (rex::ConsoleCommand* command : REX_SETTINGS().EnumerateCommands(scope))
+            if (command->GetName() == full)
+                return command;
+        return nullptr;
+    }
+
+    static bool Registered(const Entry& entry) {
+        return FindSetting(entry.full) || FindCommand(entry.full);
+    }
+
+    static bool IsRenut(const Entry& entry) {
+        return entry.category.rfind(kCategoryPrefix, 0) == 0;
+    }
+
+    // reNut's categories with a registered setting, without the prefix.
+    static std::vector<std::string> Categories(const std::vector<Entry>& entries) {
         std::vector<std::string> categories;
-        for (const auto& entry : rex::cvar::GetRegistry()) {
-            if (!IsRenut(entry))
+        for (const Entry& entry : entries) {
+            if (!IsRenut(entry) || !Registered(entry))
                 continue;
             std::string category = entry.category.substr(std::char_traits<char>::length(kCategoryPrefix));
             if (std::find(categories.begin(), categories.end(), category) == categories.end())
@@ -63,10 +107,6 @@ private:
         }
         std::sort(categories.begin(), categories.end());
         return categories;
-    }
-
-    static bool IsRenut(const rex::cvar::FlagEntry& entry) {
-        return entry.category.rfind(kCategoryPrefix, 0) == 0;
     }
 
     static std::string Lower(std::string s) {
@@ -102,12 +142,13 @@ private:
     void DrawTabs() {
         if (!ImGui::BeginTabBar("##categories"))
             return;
-        for (const std::string& category : Categories()) {
+        const std::vector<Entry> entries = Entries();
+        for (const std::string& category : Categories(entries)) {
             if (!ImGui::BeginTabItem(category.c_str()))
                 continue;
             ImGui::BeginChild("##flags", ImVec2(0, -ImGui::GetFrameHeightWithSpacing()));
             const std::string full = kCategoryPrefix + category;
-            for (auto& entry : rex::cvar::GetRegistry()) {
+            for (const Entry& entry : entries) {
                 if (entry.category == full)
                     DrawFlag(entry);
             }
@@ -120,16 +161,21 @@ private:
     void DrawSearch() {
         const std::string search = Lower(search_);
         ImGui::BeginChild("##flags", ImVec2(0, -ImGui::GetFrameHeightWithSpacing()));
-        for (auto& entry : rex::cvar::GetRegistry()) {
-            if (IsRenut(entry) && (Lower(entry.name).find(search) != std::string::npos ||
-                                   Lower(entry.description).find(search) != std::string::npos))
+        for (const Entry& entry : Entries()) {
+            if (!IsRenut(entry))
+                continue;
+            const rex::SettingBase* setting = FindSetting(entry.full);
+            const rex::ConsoleCommand* command = setting ? nullptr : FindCommand(entry.full);
+            const std::string help = setting ? setting->GetHelp() : command ? command->GetHelp() : std::string();
+            if ((setting || command) && (Lower(entry.name).find(search) != std::string::npos ||
+                                         Lower(help).find(search) != std::string::npos))
                 DrawFlag(entry);
         }
         ImGui::EndChild();
     }
 
-    void Set(const rex::cvar::FlagEntry& entry, const std::string& value) {
-        if (rex::cvar::SetFlagByName(entry.name, value)) {
+    void Set(const std::string& full, const std::string& value) {
+        if (REX_SETTINGS().SetText(full, value)) {
             unsaved_ = true;
             saved_ = false;
         }
@@ -144,7 +190,7 @@ private:
         if (unsaved_)
             ImGui::PopStyleColor(2);
         if (save) {
-            rex::cvar::SaveConfig(config_path_);
+            (void)REX_SETTINGS().Save(config_path_);
             unsaved_ = false;
             saved_ = true;
         }
@@ -160,77 +206,90 @@ private:
         ImGui::TextDisabled("  Every setting, the SDK's too: F8");
     }
 
-    void DrawFlag(rex::cvar::FlagEntry& entry) {
-        using rex::cvar::FlagType;
-        using rex::cvar::Lifecycle;
-        ImGui::PushID(entry.name.c_str());
+    void DrawFlag(const Entry& entry) {
+        using rex::SettingType;
+        const std::string& full = entry.full;
+        const std::string& name = entry.name;
+        rex::SettingBase* setting = FindSetting(full);
+        rex::ConsoleCommand* command = setting ? nullptr : FindCommand(full);
+        if (!setting && !command)
+            return;
+        ImGui::PushID(full.c_str());
         // Allowing cheats in a session is the host's: greyed out in a session
-        // someone else hosts (online/session_cheats.cpp refuses it there too).
-        const bool not_host = entry.name == "renut_host_cheats" && !renut::online::CanAllowSessionCheats();
-        const bool read_only = entry.lifecycle == Lifecycle::kInitOnly || not_host;
+        // someone else hosts.
+        const bool not_host = name == "renut_host_cheats" && !renut::online::CanAllowSessionCheats();
+        const bool read_only = (setting && setting->IsFrozen()) || not_host;
         if (read_only)
             ImGui::BeginDisabled();
 
-        const std::string label = Label(entry.name);
+        const std::string label = Label(name);
+        const std::string help = setting ? setting->GetHelp() : command->GetHelp();
         ImGui::AlignTextToFramePadding();
         ImGui::TextUnformatted(label.c_str());
         if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
-            ImGui::SetTooltip("%s\n\n%s%s", entry.name.c_str(), entry.description.c_str(),
+            ImGui::SetTooltip("%s\n\n%s%s", full.c_str(), help.c_str(),
                               not_host ? "\n\nOnly the session's host can change this." : "");
-        if (entry.lifecycle == Lifecycle::kRequiresRestart) {
+        if (setting && setting->GetConstraints().life == rex::SettingLife::kRestart) {
             ImGui::SameLine();
             ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.3f, 1.0f), "(restart)");
         }
         ImGui::SameLine(ImGui::GetContentRegionAvail().x * 0.45f);
         ImGui::SetNextItemWidth(-1.0f);
 
-        const std::string value = entry.getter ? entry.getter() : std::string();
-        const auto& allowed = entry.constraints.allowed_values;
-        switch (entry.type) {
-        case FlagType::Boolean: {
+        if (command) {
+            if (ImGui::Button("Run"))
+                (void)command->Run("");
+            if (read_only)
+                ImGui::EndDisabled();
+            ImGui::PopID();
+            return;
+        }
+
+        const std::string value = setting->GetText();
+        const rex::SettingConstraints& constraints = setting->GetConstraints();
+        const auto& allowed = constraints.allowed;
+        switch (setting->GetType()) {
+        case SettingType::kBool: {
             bool v = value == "true" || value == "1";
             if (ImGui::Checkbox("##v", &v))
-                Set(entry, v ? "true" : "false");
+                Set(full, v ? "true" : "false");
             break;
         }
-        case FlagType::Int32:
-        case FlagType::Int64:
-        case FlagType::Uint32:
-        case FlagType::Uint64: {
+        case SettingType::kI32:
+        case SettingType::kI64:
+        case SettingType::kU32:
+        case SettingType::kU64: {
             int v = std::atoi(value.c_str());
             if (ImGui::InputInt("##v", &v, 1, 10, ImGuiInputTextFlags_EnterReturnsTrue)) {
-                if (entry.constraints.min)
-                    v = std::max(v, int(*entry.constraints.min));
-                if (entry.constraints.max)
-                    v = std::min(v, int(*entry.constraints.max));
-                Set(entry, std::to_string(v));
+                if (constraints.min)
+                    v = std::max(v, int(*constraints.min));
+                if (constraints.max)
+                    v = std::min(v, int(*constraints.max));
+                Set(full, std::to_string(v));
             }
             break;
         }
-        case FlagType::Double: {
+        case SettingType::kF64: {
             double v = std::atof(value.c_str());
             if (ImGui::InputDouble("##v", &v, 0.0, 0.0, "%.3f",
                                    ImGuiInputTextFlags_EnterReturnsTrue)) {
-                if (entry.constraints.min)
-                    v = std::max(v, *entry.constraints.min);
-                if (entry.constraints.max)
-                    v = std::min(v, *entry.constraints.max);
-                Set(entry, std::to_string(v));
+                if (constraints.min)
+                    v = std::max(v, *constraints.min);
+                if (constraints.max)
+                    v = std::min(v, *constraints.max);
+                Set(full, std::to_string(v));
             }
             break;
         }
-        case FlagType::Command:
-            if (ImGui::Button("Run") && entry.command_callback)
-                entry.command_callback("");
-            break;
-        case FlagType::String:
+        case SettingType::kString:
+        case SettingType::kPath:
         default:
             if (!allowed.empty()) {
                 if (ImGui::BeginCombo("##v", value.c_str())) {
                     for (const std::string& option : allowed) {
                         const bool selected = option == value;
                         if (ImGui::Selectable(option.c_str(), selected) && !selected)
-                            Set(entry, option);
+                            Set(full, option);
                         if (selected)
                             ImGui::SetItemDefaultFocus();
                     }
@@ -241,7 +300,7 @@ private:
                 std::snprintf(buffer, sizeof(buffer), "%s", value.c_str());
                 if (ImGui::InputText("##v", buffer, sizeof(buffer),
                                      ImGuiInputTextFlags_EnterReturnsTrue))
-                    Set(entry, buffer);
+                    Set(full, buffer);
             }
             break;
         }

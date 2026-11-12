@@ -105,8 +105,9 @@ void GuideDialog::HandleInput(const NavInput& in, float dt) {
   else if (result.back) Pop();
 }
 
-ListInput GuideDialog::HandleList(const NavInput& in, ListView& v, Page& page, bool mouse) {
+ListInput GuideDialog::HandleList(const NavInput& nav, ListView& v, Page& page, bool mouse) {
   const ImGuiIO& io = ImGui::GetIO();
+  NavInput in = nav;  // less what a Bar or Lists row takes
   const int count = int(v.rows.size());
   auto selectable = [&](int i) { return i >= 0 && i < count && v.rows[size_t(i)].Selectable(); };
   if (count > 0) {
@@ -118,6 +119,10 @@ ListInput GuideDialog::HandleList(const NavInput& in, ListView& v, Page& page, b
     }
     for (int i = sel; !selectable(sel) && i >= 0; --i) {
       if (selectable(i)) sel = i;
+    }
+    if (selectable(sel) && v.rows[size_t(sel)].Inner()) {
+      const Row& row = v.rows[size_t(sel)];
+      InnerInput(in, row, page.inner[row.key]);
     }
     const int was = sel;
     if (in.up) {
@@ -187,7 +192,13 @@ ListInput GuideDialog::HandleList(const NavInput& in, ListView& v, Page& page, b
     page.scroll_goal = page.scroll = t * v.scroll_bar.max;
     return {};
   }
-  // Mouse over rows.
+  // Inside Bar and Lists rows, then over rows.
+  bool wheel_taken = false;
+  if (mouse) {
+    const InnerMouse inner = InnerMouseInput(v, page);
+    if (inner.clicked) return {};
+    wheel_taken = inner.wheel;
+  }
   for (size_t i = 0; mouse && i < v.row_hits.size() && i < v.rows.size(); ++i) {
     if (!selectable(int(i)) || !ImGui::IsMouseHoveringRect(v.row_hits[i].first, v.row_hits[i].second, false)) continue;
     if (io.MouseDelta.x != 0 || io.MouseDelta.y != 0) {
@@ -201,7 +212,7 @@ ListInput GuideDialog::HandleList(const NavInput& in, ListView& v, Page& page, b
       return {};
     }
   }
-  if (mouse && io.MouseWheel != 0.0f && count > 0) {
+  if (mouse && io.MouseWheel != 0.0f && count > 0 && !wheel_taken) {
     HoldScroll(page);
     page.scroll_goal -= io.MouseWheel * Px(112);  // two rows a notch
   }

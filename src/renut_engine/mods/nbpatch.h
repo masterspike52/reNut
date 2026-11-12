@@ -1,9 +1,6 @@
 #pragma once
-// .nbpatch packages from NB Studio (NB.Core/Project/PatchPackage.cs): a zip
-// with patch.json and one entry per changed game file, either an NBDL binary
-// delta against the expanded original ("delta") or the whole file ("new").
-// "xexmods" entries and ExeMods are word patches to default.xex; world edits
-// (Ops, format 3) are NB Studio commands replayed on the game's bundles.
+// NB Studio .nbpatch packages: a zip with patch.json and one entry per changed game
+// file, an NBDL delta against the expanded original ("delta") or the whole file ("new").
 
 #include <cstdint>
 #include <optional>

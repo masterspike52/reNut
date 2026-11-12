@@ -1,13 +1,8 @@
-/**
- * @file    gpu/render/upload_ring.cpp
- */
 #include "renut_engine/gpu/render/upload_ring.h"
 
 #include <algorithm>
 #include <cstring>
 #include <string>
-
-#include "renut_engine/gpu/log.h"
 
 namespace renut::gpu {
 
@@ -22,21 +17,16 @@ bool UploadRing::Init(plume::RenderDevice *device, const char *name) {
 
 bool UploadRing::AddChunk(uint64_t min_size) {
   const uint64_t size = std::max(kChunkSize, min_size);
-  // Guest shaders on Vulkan read their constants with vk::RawBufferLoad from
-  // these allocations: CONSTANT is what gives plume's Vulkan buffer a device
-  // address (see AddressableBufferFlags).
+  // CONSTANT gives plume's Vulkan buffer the device address guest shaders read
+  // their constants through (vk::RawBufferLoad).
   auto buffer = device_->createBuffer(plume::RenderBufferDesc::UploadBuffer(
       size, plume::RenderBufferFlag::CONSTANT | plume::RenderBufferFlag::VERTEX |
                 plume::RenderBufferFlag::INDEX | plume::RenderBufferFlag::DEVICE_ADDRESSABLE));
-  if (!buffer) {
-    RGPU_ERROR("Upload ring '{}': createBuffer({} bytes) failed", name_, size);
+  if (!buffer)
     return false;
-  }
   void *mapped = buffer->map();
-  if (!mapped) {
-    RGPU_ERROR("Upload ring '{}': map failed", name_);
+  if (!mapped)
     return false;
-  }
   buffer->setName(std::string(name_) + " #" + std::to_string(chunks_.size()));
   Chunk chunk;
   chunk.address = buffer->getDeviceAddress();
@@ -58,13 +48,6 @@ void UploadRing::Reset() {
   }
   current_ = 0;
   offset_ = 0;
-}
-
-uint64_t UploadRing::Bytes() const {
-  uint64_t bytes = 0;
-  for (const Chunk &chunk : chunks_)
-    bytes += chunk.size;
-  return bytes;
 }
 
 UploadAllocation UploadRing::Allocate(uint64_t size, uint64_t alignment) {

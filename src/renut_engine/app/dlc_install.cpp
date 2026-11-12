@@ -8,19 +8,10 @@
 #include <string>
 #include <system_error>
 #include <vector>
-
-#include <rex/cvar.h>
-#include <rex/filesystem.h>
-#include <rex/runtime.h>
-#include <rex/system/kernel_state.h>
-#include <rex/system/xam/content_manager.h>
-
+#include <rex/kernel/title_runtime.h>
+#include <rex/string/text.h>
+#include <rex/xam/content_manager.h>
 #include "renut_engine/app/app_paths.h"
-#include "renut_engine/app/renut_logging.h"
-
-REXCVAR_DEFINE_STRING(renut_dlc_folder, "dlc", "Nuts&Bolts/DLC",
-    "Folder of DLC packages (Xbox Live content files) reNut installs when the game starts, relative to "
-    "reNut's folder.");
 
 namespace renut::dlc {
 
@@ -28,9 +19,8 @@ namespace {
 
 namespace fs = std::filesystem;
 
-// An Xbox 360 package's header (big-endian): the magic, then at 0x344 the
-// content type, 0x354 the media ID, 0x360 the title ID and 0x411 the display
-// name (UTF-16).
+
+constexpr const char kPackageFolder[] = "dlc";
 constexpr size_t kHeaderBytes = 0x500;
 constexpr size_t kContentTypeOffset = 0x344;
 constexpr size_t kMediaIdOffset = 0x354;
@@ -38,12 +28,8 @@ constexpr size_t kTitleIdOffset = 0x360;
 constexpr size_t kDisplayNameOffset = 0x411;
 constexpr size_t kDisplayNameChars = 64;
 constexpr uint32_t kContentTypeMarketplace = 2;
-// Where an installed package's header goes in the user data folder: the
-// default profile's content, by title and content type.
 constexpr const char kProfileFolder[] = "0000000000000000";
 constexpr const char kContentTypeFolder[] = "00000002";
-// Packages installed before, by file name and size, so an unchanged one is
-// not installed again when the user data folder isn't known.
 constexpr const char kInstalledList[] = "installed.txt";
 
 fs::path g_user_data_root;
@@ -58,7 +44,6 @@ std::string HexTitle(uint32_t title_id) {
     return s;
 }
 
-// The header the install writes for 'file_name', if the user data folder is known.
 fs::path InstalledHeader(uint32_t title_id, const std::string &file_name) {
     if (g_user_data_root.empty())
         return {};
@@ -79,7 +64,7 @@ std::string ListEntry(const std::string &file_name, uintmax_t size) {
     return file_name + " " + std::to_string(size);
 }
 
-} // namespace
+} 
 
 bool ReadPackageInfo(const fs::path &path, PackageInfo &out) {
     std::ifstream f(path, std::ios::binary);
@@ -104,19 +89,14 @@ bool ReadPackageInfo(const fs::path &path, PackageInfo &out) {
 }
 
 fs::path PackageFolder() {
-    fs::path folder = rex::to_path(REXCVAR_GET(renut_dlc_folder));
-    if (folder.is_relative())
-        folder = renut::paths::WritableFolder() / folder;
-    return folder;
+    return renut::paths::WritableFolder() / kPackageFolder;
 }
 
 void SetUserDataRoot(const fs::path &root) {
     g_user_data_root = root;
 }
 
-void InstallPackages(rex::Runtime *runtime) {
-    if (!runtime || !runtime->kernel_state())
-        return;
+void InstallPackages(rex::kernel::TitleRuntime &title) {
     const fs::path folder = PackageFolder();
     std::error_code ec;
     fs::create_directories(folder, ec);
@@ -129,48 +109,28 @@ void InstallPackages(rex::Runtime *runtime) {
     if (files.empty())
         return;
 
-    const uint32_t title_id = runtime->kernel_state()->title_id();
+    const uint32_t title_id = title.GetTitleID();
     const fs::path list_path = folder / kInstalledList;
     std::vector<std::string> installed = ReadInstalledList(list_path);
     bool list_changed = false;
-    int newly = 0, present = 0;
 
     for (const fs::path &path : files) {
-        const std::string file_name = rex::path_to_utf8(path.filename());
+        const std::string file_name = rex::string::PathToUTF8(path.filename());
         PackageInfo package;
-        if (!ReadPackageInfo(path, package)) {
-            RNUT_WARN("DLC: {} is not an Xbox 360 package; left alone", file_name);
+        // Not an Xbox 360 package, another game's, or not DLC: left alone.
+        if (!ReadPackageInfo(path, package) || package.title_id != title_id ||
+            package.content_type != kContentTypeMarketplace)
             continue;
-        }
-        if (package.title_id != title_id) {
-            RNUT_WARN("DLC: {} ({}) is for another game (title {:08X}); left alone", file_name, package.name,
-                      package.title_id);
-            continue;
-        }
-        if (package.content_type != kContentTypeMarketplace) {
-            RNUT_WARN("DLC: {} ({}) is not DLC (content type {:X}); left alone", file_name, package.name,
-                      package.content_type);
-            continue;
-        }
         const uintmax_t size = fs::file_size(path, ec);
         const std::string entry = ListEntry(file_name, size);
         const fs::path header = InstalledHeader(title_id, file_name);
         const bool listed = std::find(installed.begin(), installed.end(), entry) != installed.end();
         const bool header_there = !header.empty() && fs::exists(header, ec);
-        if (header_there || (header.empty() && listed)) {
-            ++present;
+        if (header_there || (header.empty() && listed))
             continue;
-        }
 
-        RNUT_INFO("DLC: installing {} ({})...", package.name, file_name);
-        const std::string utf8 = rex::path_to_utf8(path);
-        const auto result = runtime->kernel_state()->content_manager()->InstallContent(utf8.c_str());
-        if (result != 0) {
-            RNUT_ERROR("DLC: {} ({}) did not install (error {:08X})", package.name, file_name, unsigned(result));
+        if (!title.GetContentManager().InstallContent(path))
             continue;
-        }
-        RNUT_INFO("DLC: {} installed", package.name);
-        ++newly;
         if (!listed) {
             installed.push_back(entry);
             list_changed = true;
@@ -182,8 +142,6 @@ void InstallPackages(rex::Runtime *runtime) {
         for (const std::string &line : installed)
             f << line << "\n";
     }
-    if (newly || present)
-        RNUT_INFO("DLC: {} package(s) installed now, {} already installed", newly, present);
 }
 
-} // namespace renut::dlc
+} 

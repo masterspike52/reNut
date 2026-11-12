@@ -1,8 +1,5 @@
-// renut_ssao: the AO over the scene (see ambient_occlusion.hlsli), drawn into
-// the scene's color target with a multiplying blend (dest * source). The AO
-// texture may be smaller than the scene: its four texels around the pixel are
-// weighted as bilinear filtering weighs them and by how near their view depth
-// is to the pixel's, so the AO keeps to the surfaces it belongs to.
+// renut_ssao: multiplies the AO into the scene's color target, upsampling it with
+// bilinear weights scaled by view-depth similarity.
 #include "ambient_occlusion.hlsli"
 
 float4 main(PSInput input) : SV_Target0

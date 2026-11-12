@@ -1,6 +1,3 @@
-/**
- * @file    gpu/render/title_logo.cpp
- */
 #include "renut_engine/gpu/render/title_logo.h"
 
 #include <cstddef>
@@ -8,14 +5,19 @@
 #include <mutex>
 #include <vector>
 
-#include <rex/cvar.h>
+#include <rex/setting.h>
 #include <xxhash.h>
 #include <zstd.h>
 
-#include "renut_engine/gpu/log.h"
+#include "renut_engine/app/renut_settings.h"
 
-REXCVAR_DEFINE_BOOL(renut_title_logo, true, "Nuts&Bolts/Menus",
-                    "Show reNut's logo on the title screen in place of the game's");
+namespace {
+struct TitleLogoSettings final : rex::SettingOwner {
+  TitleLogoSettings() : rex::SettingOwner(renut::settings::kScope) { renut::settings::Add(*this); }
+  REX_SETTING(bool, renut_title_logo, true, "Show reNut's logo on the title screen in place of the game's");
+};
+TitleLogoSettings &g_title_logo_settings = *new TitleLogoSettings();  // never freed, registered by RenutApp::OnConfigure
+} // namespace
 
 namespace renut::gpu {
 
@@ -37,10 +39,8 @@ const std::vector<uint8_t> &Logo() {
   std::call_once(once, [] {
     logo.resize(kTitleLogoBytes);
     const size_t n = ZSTD_decompress(logo.data(), logo.size(), kTitleLogoZstd, sizeof(kTitleLogoZstd));
-    if (ZSTD_isError(n) || n != logo.size()) {
-      RGPU_ERROR("Title logo: decompressing failed");
+    if (ZSTD_isError(n) || n != logo.size())
       logo.clear();
-    }
   });
   return logo;
 }
@@ -48,7 +48,7 @@ const std::vector<uint8_t> &Logo() {
 } // namespace
 
 bool ReplaceTitleLogo(uint8_t *blocks, uint32_t blocks_w, uint32_t blocks_h, uint32_t row_pitch) {
-  if (blocks_w != kBlocksWide || blocks_h != kBlocksHigh || !REXCVAR_GET(renut_title_logo))
+  if (blocks_w != kBlocksWide || blocks_h != kBlocksHigh || !g_title_logo_settings.renut_title_logo.Get())
     return false;
   const size_t row_bytes = size_t(kBlocksWide) * kBlockBytes;
   uint64_t hash = 0;

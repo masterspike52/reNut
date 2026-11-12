@@ -17,11 +17,11 @@
 #include <stdexcept>
 
 #include <nlohmann/json.hpp>
-#include <rex/logging.h>
 
 #include "assets.h"
 #include "backend.h"
 #include "http.h"
+#include "log.h"
 
 namespace rexglue_guide {
 namespace {
@@ -676,7 +676,7 @@ class ServerBackend final : public Backend {
       }
       if (r.status != 200) {
         ++failed_syncs_;
-        REXKRNL_WARN("RexLiveless: sync failed ({} {}), {} in a row", r.status, r.error, failed_syncs_);
+        RG_WARN("RexLiveless: sync failed ({} {}), {} in a row", r.status, r.error, failed_syncs_);
         if (connected_ && failed_syncs_ >= kSyncFailuresBeforeLost) {
           if (on_notification) on_notification({.text = "Lost connection to RexLiveless."});
           connected_ = false;
@@ -981,7 +981,7 @@ class ServerBackend final : public Backend {
   void LoadAccount() {
     std::ifstream file(account_path_);
     if (!file) {
-      REXKRNL_INFO("RexLiveless: no saved account at {}", account_path_.string());
+      RG_INFO("RexLiveless: no saved account at {}", account_path_.string());
       return;
     }
     try {
@@ -992,11 +992,11 @@ class ServerBackend final : public Backend {
       remembered_.xuid = ParseXuid(j.value("xuid", json()));
       remembered_.gamerpic = j.value("gamerpic", 0);
     } catch (...) {
-      REXKRNL_WARN("RexLiveless: {} is not valid JSON", account_path_.string());
+      RG_WARN("RexLiveless: {} is not valid JSON", account_path_.string());
       return;
     }
-    REXKRNL_INFO("RexLiveless: saved account {} at {} ({})", remembered_.gamertag, account_path_.string(),
-                 token_.empty() ? "signed out" : "signed in");
+    RG_INFO("RexLiveless: saved account {} at {} ({})", remembered_.gamertag, account_path_.string(),
+            token_.empty() ? "signed out" : "signed in");
   }
 
   // Written whole to account.json.tmp, then moved over account.json, so a
@@ -1006,8 +1006,8 @@ class ServerBackend final : public Backend {
     std::error_code ec;
     std::filesystem::create_directories(account_path_.parent_path(), ec);
     if (ec) {
-      REXKRNL_WARN("RexLiveless: can't create {} to save the account: {}", account_path_.parent_path().string(),
-                   ec.message());
+      RG_WARN("RexLiveless: can't create {} to save the account: {}", account_path_.parent_path().string(),
+              ec.message());
       return;
     }
     char xuid[17];
@@ -1022,24 +1022,24 @@ class ServerBackend final : public Backend {
     {
       std::ofstream file(temp, std::ios::trunc);
       if (!file) {
-        REXKRNL_WARN("RexLiveless: can't write {}: {}", temp.string(), std::strerror(errno));
+        RG_WARN("RexLiveless: can't write {}: {}", temp.string(), std::strerror(errno));
         return;
       }
       file << j.dump(2);
       file.close();
       if (!file) {
-        REXKRNL_WARN("RexLiveless: couldn't finish writing {}", temp.string());
+        RG_WARN("RexLiveless: couldn't finish writing {}", temp.string());
         std::filesystem::remove(temp, ec);
         return;
       }
     }
     std::filesystem::rename(temp, account_path_, ec);
     if (ec) {
-      REXKRNL_WARN("RexLiveless: can't save the account to {}: {}", account_path_.string(), ec.message());
+      RG_WARN("RexLiveless: can't save the account to {}: {}", account_path_.string(), ec.message());
       std::filesystem::remove(temp, ec);
       return;
     }
-    REXKRNL_INFO("RexLiveless: saved the account to {}", account_path_.string());
+    RG_INFO("RexLiveless: saved the account to {}", account_path_.string());
   }
 
   void ForgetToken() {

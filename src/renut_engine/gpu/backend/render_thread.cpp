@@ -1,6 +1,3 @@
-/**
- * @file    gpu/backend/render_thread.cpp
- */
 #include "renut_engine/gpu/backend/render_thread.h"
 
 #include <algorithm>
@@ -12,9 +9,7 @@
 #include <vector>
 
 #include "renut_engine/perf/frame_stats.h"
-#include "renut_engine/gpu/backend/render_profile.h"
 #include "renut_engine/gpu/guest/guest_memory.h"
-#include "renut_engine/gpu/log.h"
 #include "renut_engine/gpu/backend/video.h"
 
 #if defined(_WIN32)
@@ -121,12 +116,10 @@ void Start() {
   std::call_once(g_start_once, [] {
     std::lock_guard lock(g_mutex);
     g_running = true;
-    // Never joined or destroyed: the renderer's objects are left at exit too
-    // (Video::BeginShutdown), and a joinable std::thread destroyed at exit
-    // would terminate the process.
+    // Never joined or destroyed: a joinable std::thread destroyed at exit would
+    // terminate the process.
     auto *thread = new std::thread(Run);
     g_thread_id = thread->get_id();
-    RGPU_INFO("Render thread started");
   });
 }
 
@@ -229,7 +222,6 @@ uint64_t QueueFrame(std::function<void()> work) {
     g_busy = -so_far;
     g_waited = {};
     frame_stats::OnRenderThreadFrame(busy_ms);
-    render_profile::FrameDone(busy_ms);
     {
       std::lock_guard lock(g_mutex);
       ++g_frames_done;

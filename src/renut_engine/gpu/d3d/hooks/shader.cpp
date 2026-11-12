@@ -1,29 +1,14 @@
-/**
- * @file    gpu/d3d/hooks/shader.cpp
- * @brief   Shader creation. The renderer owns the shader objects: each is a
- *          record keyed to its XenosRecomp cache entry by container hash.
- *
- * The ~150 shaders N&B compiles from HLSL at boot (hcg*ShaderCreateByHlsl)
- * reach D3DDevice_CreateVertexShader/CreatePixelShader too, so a cache miss
- * here is captured to disk for the next shader cache build.
- *
- * Shaders loaded with asset bundles are D3D objects the bundle already holds,
- * set up in place by XGRegisterVertexShader/XGRegisterPixelShader. Those stay
- * guest objects; the host side is kept per object address, keyed by the same
- * container hash.
- */
 #include <cstring>
 #include <memory>
 #include <unordered_map>
 #include <utility>
 #include <vector>
 
-#include <rex/hook.h>
+#include <rex/ppc/hook.h>
 #include <rex/types.h>
 
 #include "renut_engine/gpu/render/draw.h"
 #include "renut_engine/gpu/guest/guest_memory.h"
-#include "renut_engine/gpu/log.h"
 #include "renut_engine/gpu/backend/render_thread.h"
 #include "renut_engine/gpu/guest/resources.h"
 #include "renut_engine/gpu/render/pipeline.h"
@@ -34,10 +19,8 @@ using namespace renut::gpu;
 
 namespace {
 
-// Where D3DDevice_CreateVertexShader / CreatePixelShader (0x8264E8B0 /
-// 0x8264E6A8) lay out a shader object: the container's virtual part copied
-// after the D3D header, and a pointer to its physical part (literal constants
-// and microcode). Objects in bundles have the same layout.
+// Shader object layout (CreateVertexShader 0x8264E8B0 / CreatePixelShader
+// 0x8264E6A8): the container's virtual part and a pointer to its physical part.
 constexpr u32 kVertexShaderContainer = 0x368;
 constexpr u32 kVertexShaderPhysical = 0x20;
 constexpr u32 kPixelShaderContainer = 0x28;
@@ -47,24 +30,14 @@ constexpr u32 kPixelShaderPhysical = 0x18;
 // thread's (State().mutex).
 std::unordered_map<u32, std::unique_ptr<ShaderRecord>> g_guest_shaders;
 
-// Recent FindShaderLocked results (two lookups a draw otherwise, one under a
-// shared lock). An entry goes when its shader does (ForgetShader): both kinds
-// are destroyed on the render thread, the only user, so a memo'd record is
-// alive. (Checking the record registry's generation instead missed whenever
-// any record came or went, which busy levels do all the time.) State().mutex.
-// A miss is kept too (record null): draws keep binding addresses that are no
-// shader of the kind (depth-only passes), and those cost a registry lookup and
-// a map search a draw. A shader made at an address forgets it first (both are
-// in order with the draws on the render thread). va 0 is an empty entry
-// (FindShaderLocked never looks it up).
+// Recent FindShaderLocked results, misses included (record null); an entry
+// goes when its shader does (ForgetShader). Render thread only, State().mutex.
 struct ShaderMemo {
   u32 va = 0;
   ShaderRecord *record = nullptr;
 };
 // A table per kind, a set of four entries per cache line, the most recent
-// first. A single direct-mapped table for both kinds had the shaders of a busy
-// level (Showdown Town binds hundreds a frame) evicting each other every frame,
-// and each miss was a registry lookup and a map search.
+// first.
 constexpr u32 kShaderMemoWays = 4;
 constexpr u32 kShaderMemoSetBits = 10;
 struct alignas(64) ShaderMemoSet {
@@ -159,7 +132,7 @@ const VertexDeclarationRecord *ShaderFetchDeclarationLocked(ShaderRecord &vs) {
   if (!vs.entry || !vs.entry->vertexInputCount)
     return nullptr;
   auto declaration = std::make_unique<VertexDeclarationRecord>();
-  const ShaderVertexInput *inputs = g_shaderVertexInputs + vs.entry->vertexInputOffset;
+  const ShaderVertexInput *inputs = ShaderVertexInputs(*vs.entry);
   for (u32 i = 0; i < vs.entry->vertexInputCount; ++i) {
     const ShaderVertexInput &input = inputs[i];
     // Stream n's fetch constant is Xenos index 95 - n (d3d::StreamFetchIndex).
@@ -199,7 +172,6 @@ plume::RenderShader *GetHostShader(ShaderRecord *shader) {
   if (!shader->host) {
     shader->host = CreateCachedShader(Video::Device(), *shader->entry);
     if (!shader->host) {
-      RGPU_ERROR("Creating shader {:016X} failed", shader->hash);
       shader->entry = nullptr;  // don't retry every draw
       return nullptr;
     }
@@ -238,11 +210,8 @@ u32 CreateShaderRecord(const be_u32 *function, bool pixel) {
     return 0;
   const auto *container = reinterpret_cast<const uint8_t *>(function);
   const auto *header = reinterpret_cast<const d3d::ShaderContainer *>(container);
-  if ((u32(header->flags) & 0xFFFFFF00u) != 0x102A1100u) {
-    RGPU_ERROR("Create{}Shader: not a shader container (flags {:08X})", pixel ? "Pixel" : "Vertex",
-               u32(header->flags));
-    return 0;
-  }
+  if ((u32(header->flags) & 0xFFFFFF00u) != 0x102A1100u)
+    return 0;  // not a shader container
 
   auto *shader = CreateRecord<ShaderRecord>(pixel ? RecordKind::PixelShader
                                                   : RecordKind::VertexShader);
@@ -253,7 +222,9 @@ u32 CreateShaderRecord(const be_u32 *function, bool pixel) {
   shader->x360.resource.ReferenceCount = 1u;
 
   shader->hash = HashShaderContainer(container);
-  shader->entry = FindShaderEntry(shader->hash);
+  shader->entry = BuiltInShaderEntry(container, pixel);
+  if (!shader->entry)
+    shader->entry = FindShaderEntry(shader->hash);
   if (!shader->entry)
     CaptureMissingShader(container, pixel, shader->hash);
   PipelineShaderLoaded(shader->entry);
@@ -276,42 +247,40 @@ void RegisterGuestShader(u32 shader_va, u32 physical_va, bool pixel) {
   const u32 physical_size = header->physicalSize;
   if ((flags & 0xFFFFFF00u) != 0x102A1100u || ((flags & 1) != 0) == pixel ||
       virtual_size < sizeof(d3d::ShaderContainer) || virtual_size > 0x10000 ||
-      physical_size == 0 || physical_size > 0x100000) {
-    RGPU_ERROR("XGRegister{}Shader {:08X}: no shader container at {:08X} (flags {:08X})",
-               pixel ? "Pixel" : "Vertex", shader_va, container_va, flags);
-    return;
-  }
+      physical_size == 0 || physical_size > 0x100000)
+    return;  // no shader container there
   std::vector<uint8_t> container(size_t(virtual_size) + physical_size);
   std::memcpy(container.data(), header, virtual_size);
   std::memcpy(container.data() + virtual_size, physical, physical_size);
   const uint64_t hash = HashShaderContainer(container.data());
   const RecordKind kind = pixel ? RecordKind::PixelShader : RecordKind::VertexShader;
-  // Captured here, where its container is at hand, only when the cache lacks it.
-  if (!FindShaderEntry(hash))
+  // A built-in shader's entry, else the cache's; captured here, where its container is at hand,
+  // only when the cache lacks it.
+  const ShaderCacheEntry *entry = BuiltInShaderEntry(container.data(), pixel);
+  if (!entry)
+    entry = FindShaderEntry(hash);
+  if (!entry)
     CaptureMissingShader(container.data(), pixel, hash);
 
   // In order with the draws that use it (render thread).
-  render_thread::Queue([shader_va, pixel, hash, kind] {
+  render_thread::Queue([shader_va, pixel, hash, kind, entry] {
     auto &shader = g_guest_shaders[shader_va];
     if (shader && shader->hash == hash && shader->kind == kind)
       return;
     // A different shader in the same memory: pipelines keep their own compiled
-    // copy of the old one, so its module can go now. Draws before it may also
-    // have found none there (FindShaderLocked).
+    // copy of the old one, so its module can go now.
     ForgetShader(shader_va);
     shader = std::make_unique<ShaderRecord>();
     shader->kind = kind;
     shader->self_va = shader_va;
     shader->hash = hash;
-    shader->entry = FindShaderEntry(hash);
+    shader->entry = entry;
     PipelineShaderLoaded(shader->entry);
   });
 }
 
-// void XGRegisterVertexShader(D3DVertexShader *pShader, void *pPhysicalPart) [0x8264E7B8]
-// As the original: the header (a vertex shader of one reference), and for
-// each of its bind slots (two when the container's flag 0x20 is set) the
-// vertex fetch instructions copied from the microcode into the slot.
+// void XGRegisterVertexShader(D3DVertexShader *pShader, void *pPhysicalPart) [0x8264E7B8]:
+// sets up the header and copies each bind slot's vertex fetches from the microcode.
 void XGRegisterVertexShader_hook(u32 shader, u32 physical) {
   auto *bytes = GuestPtr<u8>(shader);
   if (!bytes)
@@ -361,18 +330,18 @@ void XGRegisterPixelShader_hook(u32 shader, u32 physical) {
 }
 
 // D3DVertexShader *D3DDevice_CreateVertexShader(const DWORD *pFunction) [0x8264E8B0]
-u32 D3DDevice_CreateVertexShader_hook(mapped_u32 function) {
+u32 D3DDevice_CreateVertexShader_hook(MappedU32 function) {
   return CreateShaderRecord(static_cast<const be_u32 *>(function), false);
 }
 
 // D3DPixelShader *D3DDevice_CreatePixelShader(const DWORD *pFunction) [0x8264E6A8]
-u32 D3DDevice_CreatePixelShader_hook(mapped_u32 function) {
+u32 D3DDevice_CreatePixelShader_hook(MappedU32 function) {
   return CreateShaderRecord(static_cast<const be_u32 *>(function), true);
 }
 
 // D3DVertexDeclaration *D3DDevice_CreateVertexDeclaration(
 //     const D3DVERTEXELEMENT9 *pVertexElements) [0x8264EA90]
-u32 D3DDevice_CreateVertexDeclaration_hook(rex::MappedPtr<GuestVertexElement> elements) {
+u32 D3DDevice_CreateVertexDeclaration_hook(rex::memory::MappedPtr<GuestVertexElement> elements) {
   if (!elements)
     return 0;
   auto *declaration = CreateRecord<VertexDeclarationRecord>(RecordKind::VertexDeclaration);
@@ -389,16 +358,9 @@ u32 D3DDevice_CreateVertexDeclaration_hook(rex::MappedPtr<GuestVertexElement> el
   return declaration->self_va;
 }
 
-// void D3DVertexShader_Bind(D3DVertexShader *pShader, D3DVertexDeclaration *pDecl,
-//     const DWORD *pStreamStrides) [0x8263FBD0] (TU3's build dropped the unused
-// Flags and Index of the first release's)
-// Patches a CVertexShader's vertex fetches to a declaration and the strides of
-// streams 0..(highest stream in the declaration). Draws take their input layout
-// from a declaration record instead, so nothing is patched; the declaration and
-// strides are kept for draws that rely on the bind: N&B binds its shaders when
-// it creates them and then draws with no declaration set, or with a zero
-// SetStreamSource stride.
-void D3DVertexShader_Bind_hook(u32 shader_va, u32 declaration_va, mapped_u32 stream_strides) {
+// D3DVertexShader_Bind(pShader, pDecl, pStreamStrides) [0x8263FBD0]: keeps the
+// declaration and strides for draws that rely on the bind, patching nothing.
+void D3DVertexShader_Bind_hook(u32 shader_va, u32 declaration_va, MappedU32 stream_strides) {
   // The declaration and strides as they are now; the shader record is the
   // render thread's (draws read it), so it is updated there, in order.
   const auto *declaration =

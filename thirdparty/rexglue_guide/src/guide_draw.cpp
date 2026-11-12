@@ -32,21 +32,31 @@ void GuideDialog::Draw(ImDrawList* dl) {
 }
 
 bool GuideDialog::DrawBlurredGame(ImDrawList* dl, float a) {
-  if (!config_.game_frame) return false;
-  float uv[4] = {0.0f, 0.0f, 1.0f, 1.0f};
-  rex::ui::ImmediateTexture* frame = config_.game_frame(uv);
-  if (!frame || display_.x <= 0 || display_.y <= 0) return false;
-  const ImTextureID tex = reinterpret_cast<ImTextureID>(frame);
-  // How blurred is the theme's (0.5: the console's look).
+  if ((!config_.game_frame && !config_.blurred_game_frame) || display_.x <= 0 || display_.y <= 0) return false;
+  // How blurred is the theme's (0.5: the console's look): 0.5 is a sigma of 10
+  // (at 1080p), 1.0 about 14.
   const float blur = ShownTheme().backdrop_blur;
+  const float sigma = Px(10) * std::sqrt(2.0f * blur);
+  float uv[4] = {0.0f, 0.0f, 1.0f, 1.0f};
+
+  // Blurred by the app: one copy.
+  if (config_.blurred_game_frame && blur >= 0.01f) {
+    const ImTextureID frame = config_.blurred_game_frame(sigma, uv);
+    if (frame == ImTextureID_Invalid) return false;
+    dl->AddImage(frame, ImVec2(0, 0), display_, ImVec2(uv[0], uv[1]), ImVec2(uv[2], uv[3]), WithAlpha(color::kWhite, a));
+    return true;
+  }
+
+  if (!config_.game_frame) return false;
+  const ImTextureID tex = config_.game_frame(uv);
+  if (tex == ImTextureID_Invalid) return false;
   if (blur < 0.01f) {
     dl->AddImage(tex, ImVec2(0, 0), display_, ImVec2(uv[0], uv[1]), ImVec2(uv[2], uv[3]), WithAlpha(color::kWhite, a));
     return true;
   }
 
-  // 0.5 is a sigma of 10 (at 1080p), 1.0 about 14. Wider blurs take more
-  // copies, so they stay close enough for linear filtering to fill between.
-  const float sigma = Px(10) * std::sqrt(2.0f * blur);
+  // Blurred here, by many offset copies. Wider blurs take more, so they stay
+  // close enough for linear filtering to fill between.
   const int kHalf = sigma > Px(10.5f) ? 5 : 4;  // 11 x 11 or 9 x 9 copies
   const float step = 2.2f * sigma / float(kHalf);
   struct Tap {
@@ -234,12 +244,7 @@ void GuideDialog::DrawHeader(ImDrawList* dl, ImVec2 p0, ImVec2 p1, float a) {
 }
 
 void GuideDialog::DrawLegend(ImDrawList* dl, ImVec2 pos, float a) {
-  struct Hint {
-    char button;
-    const char* key;
-    std::string label;
-  };
-  std::vector<Hint> hints = {{'A', "Enter", "Select"}, {'B', "Esc", Stack().size() > 1 ? "Back" : "Close"}};
+  std::vector<LegendHint> hints = {{'A', "Enter", "Select"}, {'B', "Esc", Stack().size() > 1 ? "Back" : "Close"}};
   if (screen_ == Screen::kGuide && Current().kind == PageKind::kHome && backend_->signed_in()) {
     hints.push_back({'X', "X", "Sign Out"});
   }
@@ -247,9 +252,24 @@ void GuideDialog::DrawLegend(ImDrawList* dl, ImVec2 pos, float a) {
     hints.push_back({'X', "X", "Sort"});
     hints.push_back({'Y', "Y", "Like"});
   }
+  if (screen_ == Screen::kGuide && Current().kind == PageKind::kMenu) {
+    for (LegendHint& hint : InnerHints(list_, Current())) hints.push_back(std::move(hint));
+  }
+  const float x = DrawHints(dl, pos, hints, a);
+  if (screen_ == Screen::kGuide) {
+    // The app's key binds take Q / E when it has a keyboard pad (its bumper
+    // keys switch then, like a pad's).
+    const char* switch_label = pad_ ? "LB / RB  Switch"
+                               : Input::KeyboardPlayer() >= 0 ? "PgUp / PgDn  Switch"
+                                                              : "Q / E  Switch";
+    Caps(dl, Semibold(), Px(14), ImVec2(x, pos.y - Px(8)), WithAlpha(color::kTextDim, a), switch_label, Px(1.2f));
+  }
+}
+
+float GuideDialog::DrawHints(ImDrawList* dl, ImVec2 pos, const std::vector<LegendHint>& hints, float a) {
   float x = pos.x;
   const float y = pos.y;
-  for (const Hint& h : hints) {
+  for (const LegendHint& h : hints) {
     if (pad_) {
       FaceButton(dl, ImVec2(x + Px(12), y), Px(12), h.button);
       x += Px(30);
@@ -262,14 +282,7 @@ void GuideDialog::DrawLegend(ImDrawList* dl, ImVec2 pos, float a) {
     Caps(dl, Semibold(), Px(14), ImVec2(x, y - Px(8)), WithAlpha(color::kText, a), h.label, Px(1.2f));
     x += CapsWidth(Semibold(), Px(14), h.label, Px(1.2f)) + Px(30);
   }
-  if (screen_ == Screen::kGuide) {
-    // The app's key binds take Q / E when it has a keyboard pad (its bumper
-    // keys switch then, like a pad's).
-    const char* switch_label = pad_ ? "LB / RB  Switch"
-                               : Input::KeyboardPlayer() >= 0 ? "PgUp / PgDn  Switch"
-                                                              : "Q / E  Switch";
-    Caps(dl, Semibold(), Px(14), ImVec2(x, y - Px(8)), WithAlpha(color::kTextDim, a), switch_label, Px(1.2f));
-  }
+  return x;
 }
 
 void GuideDialog::DrawSignIn(ImDrawList* dl, float a) {

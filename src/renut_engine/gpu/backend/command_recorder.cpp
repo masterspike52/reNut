@@ -1,6 +1,3 @@
-/**
- * @file    gpu/backend/command_recorder.cpp
- */
 #include "renut_engine/gpu/backend/command_recorder.h"
 
 #include <atomic>
@@ -14,10 +11,10 @@
 #include <type_traits>
 #include <vector>
 
-#include <rex/cvar.h>
+#include <rex/setting.h>
 
+#include "renut_engine/app/renut_settings.h"
 #include "renut_engine/gpu/backend/backend.h"
-#include "renut_engine/gpu/log.h"
 
 #if defined(_WIN32)
 #ifndef NOMINMAX
@@ -32,15 +29,21 @@
 #include <immintrin.h>
 #endif
 
-REXCVAR_DEFINE_BOOL(renut_threaded_recording, true, "Nuts&Bolts/Graphics",
-                    "Make the host API's calls (the driver's share of the renderer's work) on "
-                    "a thread of their own, beside the render thread. Takes effect at the next "
-                    "start.");
+namespace {
+struct RecorderSettings final : rex::SettingOwner {
+  RecorderSettings() : rex::SettingOwner(renut::settings::kScope) { renut::settings::Add(*this); }
+  REX_SETTING(bool, renut_threaded_recording, true,
+              "Make the host API's calls (the driver's share of the renderer's work) on "
+              "a thread of their own, beside the render thread. Takes effect at the next "
+              "start.");
+};
+RecorderSettings &g_recorder_settings = *new RecorderSettings();  // never freed, registered by RenutApp::OnConfigure
+} // namespace
 
 namespace renut::gpu {
 
 bool ThreadedRecordingEnabled() {
-  return REXCVAR_GET(renut_threaded_recording);
+  return g_recorder_settings.renut_threaded_recording.Get();
 }
 
 struct CommandRecorder::Chunk {
@@ -245,9 +248,7 @@ struct QueryPoolOp {
 constexpr size_t kPublishBytes = 32 * 1024;
 constexpr size_t kChunkBytes = 64 * 1024;
 // How many pauses (a few microseconds) the thread looks for more work before
-// it sleeps: a wake-up costs the render thread a system call, but spinning
-// for longer (30 us, timed by the clock) was a seventh of the thread's time,
-// taken from the game's threads on an 8-thread CPU (xperf, 2026-10-22).
+// it sleeps.
 constexpr uint32_t kSpinPauses = 256;
 
 void Replay(plume::RenderCommandList *t, const uint8_t *at, const uint8_t *end) {
@@ -500,7 +501,6 @@ public:
 private:
   Worker() {
     std::thread(&Worker::Run, this).detach();
-    RGPU_INFO("Command recording thread started (renut_threaded_recording)");
   }
 
   void Run() {
@@ -714,12 +714,8 @@ void CommandRecorder::setComputePipelineLayout(const plume::RenderPipelineLayout
 void CommandRecorder::setComputePushConstants(uint32_t rangeIndex, const void *data, uint32_t offset,
                                               uint32_t size) {
   if (!size) {
-    // The range's size is the layout's, which is not known here.
-    static bool logged = false;
-    if (!logged) {
-      logged = true;
-      RGPU_WARN("Command recorder: push constants without a size are set synchronously");
-    }
+    // The range's size is the layout's, which is not known here: set
+    // synchronously.
     Direct()->setComputePushConstants(rangeIndex, data, offset, size);
     return;
   }
@@ -742,11 +738,6 @@ void CommandRecorder::setGraphicsPipelineLayout(const plume::RenderPipelineLayou
 void CommandRecorder::setGraphicsPushConstants(uint32_t rangeIndex, const void *data,
                                                uint32_t offset, uint32_t size) {
   if (!size) {
-    static bool logged = false;
-    if (!logged) {
-      logged = true;
-      RGPU_WARN("Command recorder: push constants without a size are set synchronously");
-    }
     Direct()->setGraphicsPushConstants(rangeIndex, data, offset, size);
     return;
   }

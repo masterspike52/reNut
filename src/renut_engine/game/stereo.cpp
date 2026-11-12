@@ -1,62 +1,6 @@
-/**
- * @file    game/stereo.cpp
- * @brief   N&B's Stereo part, owned from the start, with the game's music and
- *          the player's own.
- *
- * N&B (TU3, IDA): the Stereo is a Jinjo Bingo prize:
- * aid_objparams_banjox_vehicleblock_gadgets_stereo (class vehicleBlockStereo,
- * category "accessory", type "stereo", which the garage's accessory grouping
- * lists), its model, icon and garage text in the parts bundle, and a track
- * list (objparams + 968, aid_misc_banjox_stereotracklists_default) of the
- * game's two radio songs, cues Music_Radio_ClickClockWood (0x7EE19746) and
- * Music_Radio_FreezeeyPark (0xCDC00E78). Its descriptor (getter 0x8261F8C0,
- * fill sub_8261F908):
- *   init sub_8261F9D8: the track list into a vector at + 1164 ({u16 entry
- *     size, ..., + 4 first, + 8 end}; entries {cue, ?}), track + 1156 = 0
- *   [7] tick sub_8261FB60(part, vehicle, dt): held (+ 1168) for a second,
- *     not yet handled (+ 1176), turns it off (sub_82620128); keeps the
- *     playing cue (sound slot + 1152, -1 for none) at the part
- *   [18] button down sub_8261FE38: off (+ 1160 0) -> on, plays the track
- *     (sub_82620008(part, vehicle): stops the slot's cue, starts the track's
- *     entry where the part is), handled; held
- *   [19] button up sub_8261FEA8: on and not handled -> the next track
- * A part's sound slots (any vehicle part): a vector at + 816 of 16-byte
- * slots {cue handle (0: none started), -1, -1, in use};
- * sub_8261C7C8(part, &entry, &position, positional, &slot) starts an entry's
- * cue in a free slot through sub_82261608(..., double volume 0-1),
- * sub_8261C888(part, &slot) stops one (slot -1 after); sub_82211450(&slot
- * record) is whether its cue still plays.
- *
- * Music: a music cue the Stereo plays takes the level's music's place, which
- * comes back once the cue ends (the radio songs; reNut's first versions: a
- * file played with the Stereo's cue stopped, a silent radio song under
- * another music cue silenced that cue). A cue plays from wavebanks: the cue
- * list (aid_xcuelist_banjox_default) makes every wavebank at startup
- * (sub_82B59F38; 160-byte AudioWavebank_c: + 32 its asset id, + 44 wanted
- * (0 no, 1 until idle, 2 kept), + 48 state (1 failed, 6 prepared)), in the
- * wavebank manager (dword_82DC1448; + 72 first, + 76 end); each world loads
- * its own music's. sub_82B610B0(wavebank, want, keep) sets + 44, and the
- * wavebank's tick opens, loads (streaming) or unloads it.
- *
- * reNut gives it (renut_stereo: restored_parts.cpp, custom_parts.cpp adds it
- * to the garage inventory) and plays a playlist: the radio songs and four of
- * the game's songs (kGameSongs: Main Theme, Mumbo's Mountain, Spiral
- * Challenge, Grunty's Challenge; their wavebanks loaded when the level hasn't,
- * played without a position, as music cues have no 3D distances; the level's
- * music paused meanwhile, see kCategoryMusicNormal), the player's own music (the files in the "music" folder beside
- * renut.exe: MP3, Ogg Vorbis, FLAC, WAV; read again each time), or both. A
- * press is the next track, two quick presses the next source (all, the
- * game's, yours), holding turns it off, as the game's does. A song ends: the
- * next track. Under a file a radio song plays silently (volume 0) in the
- * Stereo's slot, started again every minute, keeping the level's music away.
- * reNut plays the files (miniaudio, on a sound device of its own) as if from
- * the vehicle: louder the nearer the camera, panned to its side. They pause
- * while the Stereo isn't updated (the game paused, the level gone).
- */
-#include <rex/cvar.h>
-#include <rex/hook.h>
-#include <rex/system/kernel_state.h>
-#include <rex/system/xmemory.h>
+#include <rex/kernel/heap.h>
+#include <rex/kernel/title_runtime.h>
+#include <rex/ppc/hook.h>
 #include <rex/types.h>
 
 #include <algorithm>
@@ -81,18 +25,10 @@
 #include "miniaudio.h"
 
 #include "renut_engine/app/app_paths.h"
-#include "renut_engine/app/renut_logging.h"
 #include "renut_engine/game/banner.h"
+#include "renut_engine/game/custom_npcs.h"
+#include "renut_engine/game/custom_worlds.h"
 #include "renut_engine/game/stereo.h"
-
-REXCVAR_DEFINE_BOOL(renut_stereo, true, "Nuts&Bolts/Vehicles",
-                    "Gives you the Stereo (a Jinjo Bingo prize) from the start: on a vehicle its "
-                    "action button plays the game's music and your own (the 'music' folder beside "
-                    "renut.exe). Press: next track. Press twice: all music, the game's, or yours. "
-                    "Hold: off.");
-REXCVAR_DEFINE_DOUBLE(renut_stereo_volume, 0.8, "Nuts&Bolts/Vehicles",
-                      "How loud the Stereo plays your own music (0 to 1).")
-    .range(0.0, 1.0);
 
 REX_EXTERN(__imp__sub_8261FE38);  // Stereo: button down
 REX_EXTERN(__imp__sub_8261FEA8);  // Stereo: button up
@@ -107,14 +43,17 @@ REX_EXTERN(__imp__sub_82261608);  // starts a cue (..., double volume)
 REX_EXTERN(__imp__sub_82B610B0);  // a wavebank: wanted (want, keep)
 REX_EXTERN(__imp__sub_82B4D518);  // the audio system: reads the cue list
 REX_EXTERN(__imp__rex_XACT__CEngine__Pause);
-REX_EXTERN(__imp__audioMainPlayHash);  // (&cue, , workspace, double volume): a 2D cue
+REX_EXTERN(__imp__rex_audioMainPlayHash);  // (&cue, , workspace, double volume): a 2D cue
 REX_EXTERN(__imp__sub_8239F790);       // a cue record: stops its cue (record, now, )
 
 namespace {
 
 using Clock = std::chrono::steady_clock;
 
-// The Stereo (see the file comment).
+// How loud the Stereo plays the player's own music.
+constexpr float kOwnMusicVolume = 0.8f;
+
+// The Stereo part's fields (vehicleBlockStereo).
 constexpr uint32_t kSoundSlot = 1152;
 constexpr uint32_t kTrack = 1156;
 constexpr uint32_t kOn = 1160;
@@ -125,7 +64,7 @@ constexpr uint32_t kHandled = 1176;
 // its cue handle.
 constexpr uint32_t kPartSlots = 816;
 constexpr uint32_t kNoSlot = 0xFFFFFFFFu;
-// The wavebank manager and a wavebank (see the file comment).
+// The wavebank manager's list and an AudioWavebank_c's fields.
 constexpr uint32_t kWavebankManager = 0x82DC1448;
 constexpr uint32_t kWavebanksFirst = 72;
 constexpr uint32_t kWavebanksEnd = 76;
@@ -145,11 +84,8 @@ constexpr uint32_t kCameraPosition = 0x82E1B500;
 
 constexpr uint32_t kRadioClickClockWood = 0x7EE19746;
 constexpr uint32_t kRadioFreezeezyPeak = 0xCDC00E78;
-// The game's other songs: music cues and the wavebanks each plays from (cue
-// list aid_xcuelist_banjox_default, by name; the stream bundle 50/685374 holds
-// the wavebanks). Music cues have no 3D distances (the radio songs': 20 to
-// 70), so the Stereo plays them without a position (PlayEntry2D). MusicTitle
-// (Rawk 'n Roll) has no cue; its waves are MusicMainTheme's, byte for byte.
+// The game's other songs: music cues and the wavebanks each plays from; music
+// cues have no 3D distances, so the Stereo plays them without a position.
 constexpr size_t kMaxSongWavebanks = 3;
 struct GameSong {
   uint32_t cue;
@@ -162,8 +98,7 @@ constexpr uint32_t kPreRaceDrums = 0x1225F73D;  // MusicPreRaceDrums
 constexpr GameSong kGameSongs[] = {
     {0x1BFBF80D, "MainTheme", {0x1242B3DC}, "Main Theme (Rawk 'n Roll)"},                          // MusicMainTheme
     {0x05002046, "MumbosMoutain", {0x12A81462}, "Mumbo's Mountain"},                               // MusicMumbosMountain
-    // Interactive cues: the cue list's Music_Interactive_*_Race records play
-    // them with their variable at 1 (the race song; 0 the drum roll, 2 and 3
+    // Interactive cues: variable 1 is the race song (0 the drum roll, 2 and 3
     // the win and lose fanfares).
     {0xC216EA2D, "Spiral_Challenge", {0x128D8F6C, kRaceFanfares, kPreRaceDrums}, "Spiral Challenge"},  // MusicSpiralChallenge
     {0x1CE2085D, "Grunty_Final", {0x12742C94, kRaceFanfares, kPreRaceDrums}, "Grunty's Challenge"},    // MusicGruntyChallenge
@@ -184,14 +119,8 @@ constexpr uint32_t kCueRecordSize = 20;
 constexpr uint32_t kCueRecordId = 16;
 constexpr uint32_t kNoWorkspace = 0;  // audioMainPlayHash: no world's
 
-// The level's music keeps playing under a song played without a position, so
-// the Stereo pauses it: XACT pauses a category's playing cues
-// (CEngine::Pause(engine, category, pause), IXACTEngine vtable 0x82003E58
-// + 68; it reads each cue's category from its sound in the soundbank, which
-// XACT plays in place). All level music is under music_normal (its main, race
-// and others); at startup reNut moves the songs' sounds to music_radio, the
-// radio songs' category, so pausing music_normal leaves them playing.
-// XACT categories (the cue list's global settings).
+// XACT categories: level music is under music_normal, paused while a game song
+// plays; the songs' sounds are moved to music_radio so they keep playing.
 constexpr uint16_t kCategoryMain = 26, kCategoryRace = 27, kCategoryOthers = 28, kCategoryFanfare = 152;
 constexpr uint16_t kCategoryMusicRadio = 16, kCategoryMusicNormal = 17;
 // The audio system (sub_82222610) and its IXACTEngine (R1 InitXACT).
@@ -202,12 +131,8 @@ constexpr uint32_t kAudioEngine = 4;
 constexpr uint32_t kCueListSoundbankCount = 24;
 constexpr uint32_t kCueListSoundbanks = 28;
 constexpr uint32_t kSoundbankEntrySize = 24;
-// An XACT soundbank (v43, big-endian; offsets from its start): "KBDS", cue
-// counts, tables, its name. A simple cue: {u8 flags, u32 sound};
-// a complex cue: {u8 flags (4: one sound), u32 sound or variation table,
-// ...} (15 bytes); a variation table {u16 type, u16 count, u32}, then
-// {u32 sound, f32, f32, u32} entries; a sound's category at + 1 (u16), its
-// volume at + 3 (u8; the radio songs' 180, the four songs' 101 to 127).
+// An XACT soundbank (v43, big-endian): header offsets, cue and variation entry
+// sizes, and a sound's category (+ 1, u16) and volume (+ 3, u8).
 constexpr uint32_t kSoundbankMagic = 0x4B424453;
 constexpr uint32_t kXsbSimpleCount = 0x13, kXsbComplexCount = 0x15;
 constexpr uint32_t kXsbSimpleCues = 0x22, kXsbComplexCues = 0x26, kXsbCueNames = 0x2A, kXsbName = 0x4A;
@@ -330,10 +255,47 @@ struct ChallengeMusic {
   bool holds_music = false;  // its cue plays: the level's music paused
 };
 
-std::mutex g_mutex;  // the stereos, the source, the engine, the challenge's song
+// A mod world's music (renut.worlds.add's music), looping while the world is played.
+struct WorldMusic {
+  std::filesystem::path file;
+  std::unique_ptr<ma_sound> sound;
+  bool paused = false;
+  bool failed = false;  // the file wouldn't play: not tried again in this world
+  Clock::time_point last_tick{};
+  bool holds_music = false;  // it plays: the level's music paused
+};
+
+// A sound file played once (PlayOneShot: an NPC's voice clip).
+struct OneShot {
+  std::unique_ptr<ma_sound> sound;
+  bool paused = false;
+};
+
+// A mod's sound (PlayModSound): placed from the camera each tick when it has a position.
+struct ModSound {
+  std::unique_ptr<ma_sound> sound;
+  bool paused = false;
+  bool loop = false;
+  float volume = 1.0f;
+  bool positional = false;
+  Vec3 at;
+  float range = 70.0f;  // silent this far from the camera
+};
+
+std::mutex g_mutex;  // the stereos, the source, the engine, the challenge's song, the world's music, the one-shots
 std::unordered_map<uint32_t, Stereo> g_stereos;
 ChallengeMusic g_challenge;
+WorldMusic g_world_music;
+std::unordered_map<uint32_t, OneShot> g_one_shots;  // by channel
+std::unordered_map<uint32_t, ModSound> g_mod_sounds;  // by handle
+uint32_t g_next_mod_sound = 1;
+Clock::time_point g_one_shots_tick{};
+uint32_t g_npc_scene = 0;  // the scene NpcSoundsTick last saw
+HeldWavebanks g_voice_wavebanks;  // the NPCs' game voices' dialog wavebanks reNut wanted
+std::vector<uint32_t> g_voice_wavebanks_seen;  // those looked at in this scene
 bool g_music_paused = false;  // reNut paused music_normal
+std::filesystem::path g_music_override;  // renut.sound.music's file, under g_mutex; empty for none
+float g_music_override_volume = 1.0f;
 Source g_source = Source::All;
 ma_engine g_engine;
 bool g_engine_ready = false, g_engine_failed = false;
@@ -455,6 +417,26 @@ void WatchStereos() {
     }
     ++it;
   }
+  // A world's music pauses with the game (its ticks stop), as the Stereos' files do.
+  WorldMusic &m = g_world_music;
+  if (m.sound && !m.paused && now - m.last_tick > kPauseAfter) {
+    ma_sound_stop(m.sound.get());
+    m.paused = true;
+  }
+  if (now - g_one_shots_tick > kPauseAfter) {
+    for (auto &[channel, shot] : g_one_shots) {
+      if (shot.sound && !shot.paused) {
+        ma_sound_stop(shot.sound.get());
+        shot.paused = true;
+      }
+    }
+    for (auto &[handle, mod] : g_mod_sounds) {
+      if (mod.sound && !mod.paused) {
+        ma_sound_stop(mod.sound.get());
+        mod.paused = true;
+      }
+    }
+  }
 }
 
 bool EnsureEngine() {
@@ -463,9 +445,9 @@ bool EnsureEngine() {
   if (g_engine_failed)
     return false;
   ma_engine_config config = ma_engine_config_init();
+  // No sound device for your own music (miniaudio): the game's songs still play.
   if (ma_engine_init(&config, &g_engine) != MA_SUCCESS) {
     g_engine_failed = true;
-    RNUT_ERROR("Stereo: no sound device for your own music (miniaudio); the game's songs still play");
     return false;
   }
   g_engine_ready = true;
@@ -493,10 +475,8 @@ bool PlayFile(Stereo &s, const std::filesystem::path &file) {
 #else
   const ma_result result = ma_sound_init_from_file(&g_engine, file.c_str(), flags, nullptr, nullptr, sound.get());
 #endif
-  if (result != MA_SUCCESS) {
-    RNUT_WARN("Stereo: can't play '{}' (miniaudio error {})", FileTitle(file), int(result));
+  if (result != MA_SUCCESS)
     return false;
-  }
   ma_sound_set_volume(sound.get(), 0.0f);  // until it is placed
   ma_sound_start(sound.get());
   s.sound = std::move(sound);
@@ -521,7 +501,7 @@ void PlaceFile(const uint8_t *base, Stereo &s, uint32_t vehicle) {
   float pan = 0.0f;
   if (distance > 0.5f)
     pan = std::clamp((d.x * right.x + d.y * right.y + d.z * right.z) / distance * 0.8f, -0.8f, 0.8f);
-  ma_sound_set_volume(s.sound.get(), gain * float(REXCVAR_GET(renut_stereo_volume)));
+  ma_sound_set_volume(s.sound.get(), gain * kOwnMusicVolume);
   ma_sound_set_pan(s.sound.get(), pan);
 }
 
@@ -529,10 +509,8 @@ void PlaceFile(const uint8_t *base, Stereo &s, uint32_t vehicle) {
 
 void StopSlot(PPCContext &ctx, uint8_t *base, uint32_t part);
 
-// The Stereo's slot plays 'cue' at 'volume' (< 0: the game's), through its
-// first track entry: where the vehicle is, as the game's Stereo does, or
-// without a position (a music cue: sub_82261608 then plays it as the game
-// plays music, audioMainPlayHash).
+// Plays 'cue' at 'volume' (< 0: the game's) in the Stereo's slot through its
+// first track entry, at the vehicle or without a position (music cues).
 void PlayEntry(PPCContext &ctx, uint8_t *base, Stereo &s, uint32_t part, uint32_t vehicle, uint32_t cue,
                uint32_t second, double volume, bool positional = true) {
   const uint32_t tracks = Load32(base, part + kTracks);
@@ -667,10 +645,8 @@ bool IsLevelMusicCategory(uint16_t category) {
          category == kCategoryFanfare;
 }
 
-// Moves the songs' sounds from the level music's categories to music_radio in
-// the cue list's "Music" soundbank, before XACT makes the soundbanks, and
-// makes them as loud as the radio songs: each song's loudest sound gets
-// Radio_ClickClockWood's volume, its others keep their difference.
+// Moves the songs' sounds in the "Music" soundbank to music_radio, and matches
+// their loudest sound to Radio_ClickClockWood's volume.
 void MoveSongsToRadio(uint8_t *base, uint32_t cue_list) {
   const uint32_t count = Load32(base, cue_list + kCueListSoundbankCount);
   const uint32_t table = Load32(base, cue_list + kCueListSoundbanks);
@@ -715,7 +691,6 @@ void MoveSongsToRadio(uint8_t *base, uint32_t cue_list) {
                       [&](const GameSong &song) { return std::strcmp(song.xsb_name, text) == 0; }))
         songs.push_back(cue_sounds(cue));
     }
-    uint32_t moved = 0;
     for (const auto &sounds : songs) {
       int loudest = 0;
       for (const uint32_t sound : sounds)
@@ -727,14 +702,11 @@ void MoveSongsToRadio(uint8_t *base, uint32_t cue_list) {
         if (radio_volume >= 0)
           base[xsb + sound + kSoundVolume] =
               uint8_t(std::clamp(base[xsb + sound + kSoundVolume] + radio_volume - loudest, 0, 255));
-        ++moved;
       }
     }
-    RNUT_INFO("Stereo: {} sounds of the game's songs moved to the radio's category (volume {})", moved,
-              radio_volume);
     return;
   }
-  RNUT_WARN("Stereo: no Music soundbank in the cue list; the level's music will play under game songs");
+  // No Music soundbank in the cue list: the level's music plays under game songs.
 }
 
 // Pauses (or resumes) the level's music: XACT's music_normal category.
@@ -749,11 +721,10 @@ void PauseLevelMusic(PPCContext &ctx, uint8_t *base, bool pause) {
   __imp__rex_XACT__CEngine__Pause(ctx, base);
 }
 
-// The level's music paused while any Stereo or the challenge plays a game
-// song (again each update: XACT pauses only the cues already playing),
-// resumed after. Requires g_mutex.
+// Pauses the level's music (each update) while any Stereo or the challenge
+// plays a game song, resumes it after. Requires g_mutex.
 void UpdateLevelMusic(PPCContext &ctx, uint8_t *base) {
-  const bool hold = g_challenge.holds_music ||
+  const bool hold = g_challenge.holds_music || g_world_music.holds_music ||
                     std::any_of(g_stereos.begin(), g_stereos.end(),
                                 [](const auto &entry) { return entry.second.holds_music; });
   if (hold) {
@@ -782,14 +753,13 @@ bool PlayCurrent(PPCContext &ctx, uint8_t *base, Stereo &s, uint32_t part, uint3
     PlayEntry(ctx, base, s, part, vehicle, track.cue, track.second, -1.0);
     break;
   case Kind::Game: {
+    // A wavebank missing, or one that failed to load: the song is left out.
     if (!WantWavebanks(ctx, base, s.held, *track.song)) {
-      RNUT_WARN("Stereo: '{}' has a wavebank missing; left out", track.title);
       s.unavailable.insert(track.cue);
       return false;
     }
     const uint32_t state = SongState(base, *track.song);
     if (state == kWavebankFailed) {
-      RNUT_WARN("Stereo: a wavebank of '{}' failed to load; left out", track.title);
       ReleaseWavebanks(ctx, base, s.held);
       s.unavailable.insert(track.cue);
       return false;
@@ -910,9 +880,8 @@ REX_HOOK_RAW(sub_8261FEA8) {
 
 namespace {
 
-// After the Stereo's update: a single press's next track, a game song's
-// wavebanks prepared, a song's end (the next), the silent radio song under a
-// file, where the file is. Requires g_mutex.
+// After the Stereo's update: handles pending presses, song ends, waiting
+// wavebanks and the playing file. Requires g_mutex.
 void UpdateStereo(PPCContext &ctx, uint8_t *base, Stereo &s, uint32_t part, uint32_t vehicle) {
   const auto now = Clock::now();
   s.last_tick = now;
@@ -939,8 +908,6 @@ void UpdateStereo(PPCContext &ctx, uint8_t *base, Stereo &s, uint32_t part, uint
       s.waiting = false;
       PlayEntry(ctx, base, s, part, vehicle, track.cue, 0, -1.0, false);
     } else if (state == kWavebankFailed || now - s.waiting_since > kWavebankWait) {
-      RNUT_WARN("Stereo: the wavebanks of '{}' didn't load ({}); left out", track.title,
-                state == kWavebankFailed ? "failed" : "timed out");
       s.unavailable.insert(track.cue);
       Next(ctx, base, s, part, vehicle);
     } else if (ended) {
@@ -950,10 +917,8 @@ void UpdateStereo(PPCContext &ctx, uint8_t *base, Stereo &s, uint32_t part, uint
   }
   if (track.kind != Kind::File) {
     if (ended) {
-      if (track.kind == Kind::Game && !s.seen_playing) {
-        RNUT_WARN("Stereo: '{}' didn't play; left out", track.title);
+      if (track.kind == Kind::Game && !s.seen_playing)
         s.unavailable.insert(track.cue);
-      }
       Next(ctx, base, s, part, vehicle);
     }
     return;
@@ -1059,7 +1024,7 @@ bool StartRecord(PPCContext &ctx, uint8_t *base, uint32_t record, uint32_t cue) 
   ctx.r3.u64 = record + kCueRecordId;
   ctx.r5.u64 = kNoWorkspace;
   ctx.f1.f64 = 1.0;
-  __imp__audioMainPlayHash(ctx, base);
+  __imp__rex_audioMainPlayHash(ctx, base);
   const uint32_t handle = ctx.r3.u32;
   Store32(base, record, handle);
   Store32(base, record + 4, kNoSlot);
@@ -1076,11 +1041,290 @@ void StopChallengeSong(PPCContext &ctx, uint8_t *base) {
   g_challenge.holds_music = false;
 }
 
+// Requires g_mutex.
+void StopWorldMusic() {
+  WorldMusic &m = g_world_music;
+  if (m.sound) {
+    ma_sound_stop(m.sound.get());
+    ma_sound_uninit(m.sound.get());
+    m.sound.reset();
+  }
+  m.paused = false;
+  m.holds_music = false;
+}
+
+// Requires g_mutex.
+void StopOneShot(OneShot &shot) {
+  if (shot.sound) {
+    ma_sound_stop(shot.sound.get());
+    ma_sound_uninit(shot.sound.get());
+    shot.sound.reset();
+  }
+  shot.paused = false;
+}
+
 }  // namespace
 
-// The challenge's song: its wavebanks wanted when the challenge is chosen,
-// its cue started once it's in play and they're prepared, again whenever it
-// ends, stopped at the results or with the challenge.
+// Loops the played world's music (none outside mod worlds), paused while a challenge's song or a
+// Stereo plays and with the game; the level's own music is paused under it.
+void renut::game::WorldMusicTick(PPCContext &ctx, uint8_t *base, uint32_t scene) {
+  std::filesystem::path file;
+  float volume = 0;
+  bool wanted;
+  {
+    std::lock_guard lock(g_mutex);
+    file = g_music_override;  // a mod's (renut.sound.music), over the world's own
+    volume = g_music_override_volume;
+  }
+  wanted = !file.empty() || renut::game::custom_worlds::WorldMusic(scene, &file, &volume);
+  std::lock_guard lock(g_mutex);
+  WorldMusic &m = g_world_music;
+  if (!wanted) {
+    if (m.sound || m.holds_music) {
+      StopWorldMusic();
+      UpdateLevelMusic(ctx, base);
+    }
+    m.file.clear();
+    m.failed = false;
+    return;
+  }
+  m.last_tick = Clock::now();
+  if (file != m.file) {
+    StopWorldMusic();
+    m.file = file;
+    m.failed = false;
+  }
+  if (!m.sound && !m.failed) {
+    auto sound = std::make_unique<ma_sound>();
+    const ma_uint32 flags = MA_SOUND_FLAG_STREAM | MA_SOUND_FLAG_NO_SPATIALIZATION;
+#ifdef _WIN32
+    const bool ok = EnsureEngine() &&
+                    ma_sound_init_from_file_w(&g_engine, file.c_str(), flags, nullptr, nullptr, sound.get()) == MA_SUCCESS;
+#else
+    const bool ok = EnsureEngine() &&
+                    ma_sound_init_from_file(&g_engine, file.c_str(), flags, nullptr, nullptr, sound.get()) == MA_SUCCESS;
+#endif
+    if (!ok) {
+      m.failed = true;
+      return;
+    }
+    ma_sound_set_looping(sound.get(), MA_TRUE);
+    m.sound = std::move(sound);
+    m.paused = true;  // started below
+  }
+  if (!m.sound)
+    return;
+  // Another song takes the floor: the challenge's, or a Stereo's.
+  const bool other = g_challenge.holds_music ||
+                     std::any_of(g_stereos.begin(), g_stereos.end(), [](const auto &entry) {
+                       return entry.second.holds_music || (entry.second.sound && !entry.second.paused);
+                     });
+  if (other && !m.paused) {
+    ma_sound_stop(m.sound.get());
+    m.paused = true;
+  } else if (!other && m.paused) {
+    ma_sound_start(m.sound.get());
+    m.paused = false;
+  }
+  ma_sound_set_volume(m.sound.get(), volume);
+  m.holds_music = !other;
+  UpdateLevelMusic(ctx, base);
+}
+
+void renut::game::SetMusicOverride(const std::filesystem::path &file, float volume) {
+  std::lock_guard lock(g_mutex);
+  g_music_override = file;
+  g_music_override_volume = volume;
+}
+
+void renut::game::PlayOneShot(const std::filesystem::path &file, float volume, uint32_t channel) {
+  std::lock_guard lock(g_mutex);
+  OneShot &shot = g_one_shots[channel];
+  StopOneShot(shot);
+  if (!EnsureEngine())
+    return;
+  auto sound = std::make_unique<ma_sound>();
+  const ma_uint32 flags = MA_SOUND_FLAG_STREAM | MA_SOUND_FLAG_NO_SPATIALIZATION;
+#ifdef _WIN32
+  const ma_result result = ma_sound_init_from_file_w(&g_engine, file.c_str(), flags, nullptr, nullptr, sound.get());
+#else
+  const ma_result result = ma_sound_init_from_file(&g_engine, file.c_str(), flags, nullptr, nullptr, sound.get());
+#endif
+  if (result != MA_SUCCESS)
+    return;
+  ma_sound_set_volume(sound.get(), volume);
+  ma_sound_start(sound.get());
+  shot.sound = std::move(sound);
+  g_one_shots_tick = Clock::now();  // the watchdog waits for the next tick
+}
+
+namespace {
+
+void StopModSoundLocked(ModSound &mod) {
+  if (mod.sound) {
+    ma_sound_stop(mod.sound.get());
+    ma_sound_uninit(mod.sound.get());
+    mod.sound.reset();
+  }
+  mod.paused = false;
+}
+
+// Its loudness and side from where it is to the camera, as a Stereo's file is placed; without a position, its volume.
+void PlaceModSound(const uint8_t *base, ModSound &mod) {
+  if (!mod.sound)
+    return;
+  if (!mod.positional) {
+    ma_sound_set_volume(mod.sound.get(), mod.volume);
+    ma_sound_set_pan(mod.sound.get(), 0.0f);
+    return;
+  }
+  const Vec3 camera = LoadVec3(base, kCameraPosition);
+  const Vec3 right = LoadVec3(base, kCameraRight);
+  const Vec3 d{mod.at.x - camera.x, mod.at.y - camera.y, mod.at.z - camera.z};
+  const float distance = std::sqrt(d.x * d.x + d.y * d.y + d.z * d.z);
+  if (!std::isfinite(distance))
+    return;
+  const float near = mod.range * (kNear / kFar);
+  float gain = std::clamp((mod.range - distance) / std::max(mod.range - near, 0.01f), 0.0f, 1.0f);
+  gain *= gain;
+  float pan = 0.0f;
+  if (distance > 0.5f)
+    pan = std::clamp((d.x * right.x + d.y * right.y + d.z * right.z) / distance * 0.8f, -0.8f, 0.8f);
+  ma_sound_set_volume(mod.sound.get(), gain * mod.volume);
+  ma_sound_set_pan(mod.sound.get(), pan);
+}
+
+} // namespace
+
+uint32_t renut::game::PlayModSound(const std::filesystem::path &file, float volume, float pitch, bool loop,
+                                   bool positional, float x, float y, float z, float range) {
+  std::lock_guard lock(g_mutex);
+  if (!EnsureEngine())
+    return 0;
+  auto sound = std::make_unique<ma_sound>();
+  const ma_uint32 flags = MA_SOUND_FLAG_STREAM | MA_SOUND_FLAG_NO_SPATIALIZATION;
+#ifdef _WIN32
+  const ma_result result = ma_sound_init_from_file_w(&g_engine, file.c_str(), flags, nullptr, nullptr, sound.get());
+#else
+  const ma_result result = ma_sound_init_from_file(&g_engine, file.c_str(), flags, nullptr, nullptr, sound.get());
+#endif
+  if (result != MA_SUCCESS)
+    return 0;
+  const uint32_t handle = g_next_mod_sound++;
+  if (!g_next_mod_sound)
+    g_next_mod_sound = 1;
+  ModSound &mod = g_mod_sounds[handle];
+  mod.loop = loop;
+  mod.volume = std::clamp(volume, 0.0f, 4.0f);
+  mod.positional = positional;
+  mod.at = {x, y, z};
+  mod.range = std::max(range, 1.0f);
+  ma_sound_set_looping(sound.get(), loop ? MA_TRUE : MA_FALSE);
+  ma_sound_set_pitch(sound.get(), std::clamp(pitch, 0.05f, 8.0f));
+  // A placed sound starts silent until the next tick puts it where it is.
+  ma_sound_set_volume(sound.get(), positional ? 0.0f : mod.volume);
+  ma_sound_start(sound.get());
+  mod.sound = std::move(sound);
+  g_one_shots_tick = Clock::now();
+  return handle;
+}
+
+void renut::game::SetModSound(uint32_t handle, float volume, bool positional, float x, float y, float z) {
+  std::lock_guard lock(g_mutex);
+  const auto found = g_mod_sounds.find(handle);
+  if (found == g_mod_sounds.end())
+    return;
+  ModSound &mod = found->second;
+  mod.volume = std::clamp(volume, 0.0f, 4.0f);
+  mod.positional = positional;
+  mod.at = {x, y, z};
+  if (!positional && mod.sound)
+    ma_sound_set_volume(mod.sound.get(), mod.volume);
+}
+
+void renut::game::SetModSoundPitch(uint32_t handle, float pitch) {
+  std::lock_guard lock(g_mutex);
+  const auto found = g_mod_sounds.find(handle);
+  if (found != g_mod_sounds.end() && found->second.sound)
+    ma_sound_set_pitch(found->second.sound.get(), std::clamp(pitch, 0.05f, 8.0f));
+}
+
+void renut::game::StopModSound(uint32_t handle) {
+  std::lock_guard lock(g_mutex);
+  const auto found = g_mod_sounds.find(handle);
+  if (found == g_mod_sounds.end())
+    return;
+  StopModSoundLocked(found->second);
+  g_mod_sounds.erase(found);
+}
+
+bool renut::game::ModSoundPlaying(uint32_t handle) {
+  std::lock_guard lock(g_mutex);
+  const auto found = g_mod_sounds.find(handle);
+  return found != g_mod_sounds.end() && found->second.sound && (found->second.paused || !ma_sound_at_end(found->second.sound.get()));
+}
+
+// The one-shots resume after a pause and go once played; a new scene stops them and lets go of the
+// last one's voice wavebanks, and wants the wavebanks of its NPCs' game voices.
+void renut::game::NpcSoundsTick(PPCContext &ctx, uint8_t *base, uint32_t scene) {
+  const std::vector<uint32_t> wavebanks = renut::game::custom_npcs::VoiceWavebanks(scene);
+  std::lock_guard lock(g_mutex);
+  g_one_shots_tick = Clock::now();
+  if (scene != g_npc_scene) {
+    for (auto &[channel, shot] : g_one_shots)
+      StopOneShot(shot);
+    g_one_shots.clear();
+    for (auto &[handle, mod] : g_mod_sounds)
+      StopModSoundLocked(mod);
+    g_mod_sounds.clear();
+    ReleaseWavebanks(ctx, base, g_voice_wavebanks);
+    g_voice_wavebanks_seen.clear();
+    g_npc_scene = scene;
+  }
+  for (auto it = g_one_shots.begin(); it != g_one_shots.end();) {
+    OneShot &shot = it->second;
+    if (!shot.sound || ma_sound_at_end(shot.sound.get())) {
+      StopOneShot(shot);
+      it = g_one_shots.erase(it);
+      continue;
+    }
+    if (shot.paused) {
+      ma_sound_start(shot.sound.get());
+      shot.paused = false;
+    }
+    ++it;
+  }
+  for (auto it = g_mod_sounds.begin(); it != g_mod_sounds.end();) {
+    ModSound &mod = it->second;
+    if (!mod.sound || (!mod.paused && !mod.loop && ma_sound_at_end(mod.sound.get()))) {
+      StopModSoundLocked(mod);
+      it = g_mod_sounds.erase(it);
+      continue;
+    }
+    if (mod.paused) {
+      ma_sound_start(mod.sound.get());
+      mod.paused = false;
+    }
+    PlaceModSound(base, mod);
+    ++it;
+  }
+  // A wavebank not there yet is looked for again; one the game wants already is left to it.
+  for (const uint32_t id : wavebanks) {
+    if (std::find(g_voice_wavebanks_seen.begin(), g_voice_wavebanks_seen.end(), id) != g_voice_wavebanks_seen.end())
+      continue;
+    const uint32_t wavebank = FindWavebank(base, id);
+    if (!wavebank)
+      continue;
+    g_voice_wavebanks_seen.push_back(id);
+    if (!Load32(base, wavebank + kWavebankWanted)) {
+      SetWanted(ctx, base, wavebank, true);
+      g_voice_wavebanks.owned.push_back(id);
+    }
+  }
+}
+
+// Plays the challenge's song while it is in play (restarting when it ends),
+// loading its wavebanks when the challenge is chosen.
 void renut::game::ChallengeMusicTick(PPCContext &ctx, uint8_t *base, uint32_t challenge, bool in_play) {
   const GameSong *song = nullptr;
   for (const ChallengeSong &entry : kChallengeSongs) {
@@ -1097,8 +1341,7 @@ void renut::game::ChallengeMusicTick(PPCContext &ctx, uint8_t *base, uint32_t ch
     return;
   const auto now = Clock::now();
   // A song that can't play stays chosen (not tried again this challenge).
-  const auto give_up = [&](const char *why) {
-    RNUT_WARN("Stereo: '{}' {}; the challenge keeps its music", m.song->title, why);
+  const auto give_up = [&] {
     ReleaseWavebanks(ctx, base, m.held);
     m.started = true;
     m.since = Clock::time_point::max();
@@ -1110,10 +1353,10 @@ void renut::game::ChallengeMusicTick(PPCContext &ctx, uint8_t *base, uint32_t ch
       return;
     m.song = song;
     m.since = now;
-    if (!m.record && (m.record = REX_KERNEL_MEMORY()->SystemHeapAlloc(kCueRecordSize)))
+    if (!m.record && (m.record = REX_RUNTIME()->GetGuestHeap().SystemHeapAlloc(kCueRecordSize)))
       std::memset(base + m.record, 0, kCueRecordSize);
     if (!m.record || !WantWavebanks(ctx, base, m.held, *song))
-      give_up("has a wavebank missing");
+      give_up();
     return;
   }
   if (m.since == Clock::time_point::max())
@@ -1135,7 +1378,7 @@ void renut::game::ChallengeMusicTick(PPCContext &ctx, uint8_t *base, uint32_t ch
       m.started = true;
       m.since = now;
     } else if (state == kWavebankFailed || now - m.since > kWavebankWait) {
-      give_up("didn't load");
+      give_up();
     }
     return;
   }

@@ -1,17 +1,3 @@
-/**
- * @file    gpu/overlay/overlay_ui.h
- * @brief   reNut's own overlay: an ImGui context of its own, fed from the game
- *          window's messages, built on the window's thread and drawn by the
- *          renderer into each presented frame.
- *
- * The overlay has a Dear ImGui of its own, compiled into the executable
- * (gpu.cmake): the SDK's copy in rexruntime has one current context, which
- * the SDK switches to its own from any thread. The frame is built on the
- * SDK's UI thread (a call the overlay's pump queues there 60 times a second);
- * the window's input is queued as it arrives and applied by the next build.
- * What a build produces is copied out, and Present draws the latest copy, so
- * neither thread waits for the other.
- */
 #pragma once
 
 #include <cstdint>
@@ -37,17 +23,15 @@ public:
 void AddDialog(Dialog *dialog);
 void RemoveDialog(Dialog *dialog);
 
-// Any thread: the last overlay frame showed a window that takes input (a
-// settings or online window, not the FPS overlay), so the mouse should be a
-// free cursor.
+// Any thread: the last overlay frame showed a window that takes input, so the
+// mouse should be a free cursor.
 bool WantsCursor();
 
-// The window WantsCursor is for, or empty. On the UI thread.
-std::string InputWindowName();
+// Any thread: the game window's mouse wheel since the last call (120 a detent, up positive).
+int32_t ConsumeMouseWheel();
 
-// Any thread: a picture of reNut's own for the overlay (RGBA, rows top
-// down), uploaded with the next drawn frame. Its id is an ImTextureID for
-// ImDrawList::AddImage. RemoveImage frees it.
+// Any thread: an RGBA picture for the overlay, uploaded with the next drawn
+// frame; its id is an ImTextureID for ImDrawList::AddImage.
 uint64_t AddImage(uint32_t width, uint32_t height, std::vector<uint8_t> rgba);
 void RemoveImage(uint64_t id);
 
@@ -55,8 +39,11 @@ void RemoveImage(uint64_t id);
 // default font if that could not load. ImGui scales it to any size.
 ImFont *MenuFont();
 
-// Runs a function on the SDK's UI thread, later (WindowedAppContext::
-// CallInUIThreadDeferred).
+// The launcher's face: the game's own font (launcher_font_data.inc, made by
+// tools/make_launcher_font.py), or MenuFont if that could not load.
+ImFont *LauncherFont();
+
+// Runs a function on the SDK's UI thread, later (IUISystem::PostTask).
 using UIThreadRunner = std::function<void(std::function<void()>)>;
 
 // Once the window exists: takes the window's input and starts building frames

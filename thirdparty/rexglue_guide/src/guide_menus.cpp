@@ -35,9 +35,40 @@ std::set<std::string, std::less<>> g_menus_shown;
 // Choices with more options than this get a search row at the top of their list.
 constexpr size_t kSearchFrom = 12;
 
+// What tells a label's row apart: after "###" only that part, so its words
+// can change.
+std::string_view FixedId(std::string_view label) {
+  const size_t fixed = label.find("###");
+  return fixed == std::string_view::npos ? label : label.substr(fixed);
+}
+
 // A label's words: what's before any "##".
 std::string Shown(std::string_view label) {
   return std::string(label.substr(0, label.find("##")));
+}
+
+// A Button or Page row as its Look asks: everything but what choosing it does.
+Row LookRow(std::string_view label, const Menu::Look& look) {
+  Row row{.label = Shown(label), .sub = look.sub, .detail = look.detail};
+  if (look.icon) {
+    row.lazy_icon = look.icon;
+  }
+  row.icon_dim = look.icon_dim;
+  row.disabled = look.disabled;
+  return row;
+}
+
+// A move as the Lists row will show it once the app has made it.
+void ApplyMove(RowLists& lists, const ListsDone& move) {
+  for (auto& items : lists.items) {
+    const auto it = std::find_if(items.begin(), items.end(), [&](const RowLists::Item& item) { return item.id == move.id; });
+    if (it == items.end()) continue;
+    RowLists::Item item = std::move(*it);
+    items.erase(it);
+    std::vector<RowLists::Item>& to = lists.items[move.list ? 1 : 0];
+    to.insert(to.begin() + std::clamp(move.index, 0, int(to.size())), std::move(item));
+    return;
+  }
 }
 
 bool Matches(const std::string& text, const std::string& search) {
@@ -110,11 +141,31 @@ struct Menu::State {
 
   bool Here() const { return depth == path.size(); }
   std::string Id(std::string_view label) {
-    const std::string text(label);
+    const std::string text(FixedId(label));
     const int n = seen.back()[text]++;
     return n ? text + "#" + std::to_string(n) : text;
   }
   std::string Key(const std::string& id) const { return key + kMenuRow + id; }
+  // Into a page on the way to the one shown, for its build function to go on.
+  void Descend(Menu& menu, const std::string& page_id, const std::function<void(Menu&)>& build) {
+    const std::string outer = key;
+    key += kMenuPath + page_id;
+    ++depth;
+    seen.emplace_back();
+    if (Here()) found = true;
+    build(menu);
+    seen.pop_back();
+    --depth;
+    key = outer;
+  }
+  // Opens the page `page_id` of the page being built.
+  std::function<void()> Opener(const std::string& page_id, std::string title) const {
+    return [push = push, arg = key + kMenuPath + page_id, title = std::move(title)] { push({PageKind::kMenu, title, arg}); };
+  }
+  void Add(Row row, const std::string& id) {
+    row.key = id;
+    rows->push_back(std::move(row));
+  }
   MenuEvent Take(const std::string& id) {
     const auto it = events->find(Key(id));
     if (it == events->end()) return {};
@@ -130,6 +181,7 @@ struct Menu::State {
     if (e.index) to.index = e.index;
     if (e.number) to.number = e.number;
     if (e.text) to.text = std::move(e.text);
+    if (e.lists) to.lists = std::move(e.lists);
   }
   std::function<void()> Poster(const std::string& id, MenuEvent e) const {
     return [events = events, key = Key(id), e] { Post(events, key, e); };
@@ -140,11 +192,17 @@ struct Menu::State {
 };
 
 bool Menu::Button(std::string_view label, std::string_view detail) {
+  return Button(label, Look{.detail = std::string(detail)});
+}
+
+bool Menu::Button(std::string_view label, const Look& look) {
   State& s = *state_;
   const std::string id = s.Id(label);
   if (!s.Here()) return false;
-  const bool chosen = s.Take(id).chosen;
-  s.rows->push_back({.label = Shown(label), .detail = std::string(detail), .activate = s.Poster(id, {.chosen = true})});
+  const bool chosen = s.Take(id).chosen && !look.disabled;
+  Row row = LookRow(label, look);
+  if (!look.disabled) row.activate = s.Poster(id, {.chosen = true});
+  s.Add(std::move(row), id);
   return chosen;
 }
 
@@ -156,7 +214,7 @@ bool Menu::Toggle(std::string_view label, bool* value) {
   if (changed) *value = !*value;
   Row row{.label = Shown(label), .activate = s.Poster(id, {.chosen = true})};
   row.toggle = *value;
-  s.rows->push_back(std::move(row));
+  s.Add(std::move(row), id);
   return changed;
 }
 
@@ -205,7 +263,7 @@ bool Menu::Choice(std::string_view label, int* index, const std::vector<std::str
     page.selected = selected;
     push(std::move(page));
   };
-  s.rows->push_back(std::move(row));
+  s.Add(std::move(row), id);
   return *index != was;
 }
 
@@ -227,7 +285,7 @@ bool Menu::Number(std::string_view label, int* value, int min, int max, int step
                 if (end != text->c_str()) State::Post(events, key, {.number = number});
               }});
   };
-  s.rows->push_back(std::move(row));
+  s.Add(std::move(row), id);
   return *value != was;
 }
 
@@ -251,7 +309,7 @@ bool Menu::Slider(std::string_view label, float* value, float min, float max, fl
   row.set_slider = [events = s.events, key = s.Key(id), min, range](float t) {
     State::Post(events, key, {.number = double(min + t * range)});
   };
-  s.rows->push_back(std::move(row));
+  s.Add(std::move(row), id);
   return *value != was;
 }
 
@@ -269,31 +327,97 @@ bool Menu::TextField(std::string_view label, std::string* text, size_t max_lengt
                 if (typed) State::Post(events, key, {.text = std::move(*typed)});
               }});
   };
-  s.rows->push_back(std::move(row));
+  s.Add(std::move(row), id);
   return changed;
 }
 
 void Menu::Page(std::string_view label, const std::function<void(Menu&)>& build, std::string_view detail) {
+  Page(label, build, Look{.detail = std::string(detail)});
+}
+
+void Menu::Page(std::string_view label, const std::function<void(Menu&)>& build, const Look& look) {
   State& s = *state_;
   const std::string id = s.Id(label);
   if (!s.Here()) {
-    // A page on the way to the one shown: in, for its build function to go on.
-    if (s.path[s.depth] != id) return;
-    const std::string outer = s.key;
-    s.key += kMenuPath + id;
-    ++s.depth;
-    s.seen.emplace_back();
-    if (s.Here()) s.found = true;
-    build(*this);
-    s.seen.pop_back();
-    --s.depth;
-    s.key = outer;
+    if (s.path[s.depth] == id) s.Descend(*this, id, build);
     return;
   }
-  s.rows->push_back({.label = Shown(label), .detail = std::string(detail),
-                     .activate = [push = s.push, arg = s.key + kMenuPath + id, title = Shown(label)] {
-                       push({PageKind::kMenu, title, arg});
-                     }});
+  Row row = LookRow(label, look);
+  if (!look.disabled) row.activate = s.Opener(id, Shown(label));
+  s.Add(std::move(row), id);
+}
+
+int Menu::Bar(std::string_view label, const std::vector<BarButton>& buttons) {
+  State& s = *state_;
+  const std::string id = s.Id(label);
+  if (!s.Here()) {
+    for (const BarButton& button : buttons) {
+      const std::string page_id = id + kMenuItem + std::string(FixedId(button.label));
+      if (button.page && s.path[s.depth] == page_id) s.Descend(*this, page_id, button.page);
+    }
+    return -1;
+  }
+  const MenuEvent e = s.Take(id);
+  Row row{.label = Shown(label)};
+  std::vector<std::function<void()>> openers;
+  for (const BarButton& button : buttons) {
+    row.bar.push_back(Shown(button.label));
+    openers.push_back(button.page ? s.Opener(id + kMenuItem + std::string(FixedId(button.label)), Shown(button.label)) : nullptr);
+  }
+  row.bar_chosen = [events = s.events, key = s.Key(id), openers = std::move(openers)](int button) {
+    if (openers[size_t(button)]) openers[size_t(button)]();
+    else State::Post(events, key, {.index = button});
+  };
+  s.Add(std::move(row), id);
+  return e.index && *e.index >= 0 && *e.index < int(buttons.size()) ? *e.index : -1;
+}
+
+Menu::ListsAction Menu::Lists(std::string_view label, const ListsDef& def) {
+  State& s = *state_;
+  const std::string id = s.Id(label);
+  if (!s.Here()) {
+    for (const auto* side : {&def.left, &def.right}) {
+      for (const Item& item : *side) {
+        const std::string page_id = id + kMenuItem + item.id;
+        if (item.page && s.path[s.depth] == page_id) s.Descend(*this, page_id, item.page);
+      }
+    }
+    return {};
+  }
+  const MenuEvent e = s.Take(id);
+  auto lists = std::make_shared<RowLists>();
+  lists->title[0] = def.left_title;
+  lists->title[1] = def.right_title;
+  lists->across[0] = def.to_right;
+  lists->across[1] = def.to_left;
+  std::map<std::string, std::function<void()>> openers;
+  for (int side = 0; side < 2; ++side) {
+    for (const Item& item : side ? def.right : def.left) {
+      RowLists::Item shown{item.id, item.label, item.sub};
+      if (item.icon) shown.icon = item.icon;
+      if (item.page) openers[item.id] = s.Opener(id + kMenuItem + item.id, item.label);
+      lists->items[side].push_back(std::move(shown));
+    }
+  }
+  ListsAction action;
+  if (e.lists) {
+    action.id = e.lists->id;
+    action.kind = e.lists->open ? ListsAction::Kind::kOpen : ListsAction::Kind::kMove;
+    action.list = e.lists->list;
+    action.index = e.lists->index;
+    // The app makes the move after this; shown made already, so the row
+    // doesn't show the old order for a frame.
+    if (!e.lists->open) ApplyMove(*lists, *e.lists);
+  }
+  Row row{.label = Shown(label)};
+  row.lists = std::move(lists);
+  row.lists_done = [events = s.events, key = s.Key(id), openers = std::move(openers)](ListsDone done) {
+    const auto opener = done.open ? openers.find(done.id) : openers.end();
+    if (opener != openers.end()) opener->second();
+    else State::Post(events, key, {.lists = std::move(done)});
+  };
+  s.Add(std::move(row), id);
+  return action;
 }
 
 void Menu::Header(std::string_view text) {
@@ -311,12 +435,18 @@ void Menu::Text(std::string_view text, Tone tone) {
   s.rows->push_back(std::move(row));
 }
 
-void Menu::Image(rex::ui::ImmediateTexture* texture, float aspect, float max_height) {
+void Menu::Image(ImTextureID texture, float aspect, float max_height) {
   State& s = *state_;
   if (!s.Here()) return;
-  s.rows->push_back({.picture = reinterpret_cast<ImTextureID>(texture),
+  s.rows->push_back({.picture = texture,
                      .picture_aspect = aspect > 0.0f ? aspect : 1.0f,
                      .picture_height = max_height});
+}
+
+void Menu::Progress(std::string_view label, float fraction, std::string_view detail) {
+  State& s = *state_;
+  if (!s.Here()) return;
+  s.rows->push_back({.label = std::string(label), .detail = std::string(detail), .progress = fraction});
 }
 
 void Menu::Back() {
@@ -354,6 +484,16 @@ void GuideDialog::MenuRows(std::vector<Row>& rows, Page& page, std::function<voi
   s.detached = detached;
   Menu builder(&s);
   menu->build(builder);
+
+  // The selection follows its row, so rows coming and going above it don't
+  // move it onto another.
+  const size_t was = size_t(std::max(0, page.selected));
+  if (was < page.row_keys.size() && !page.row_keys[was].empty()) {
+    const auto it = std::find_if(rows.begin(), rows.end(), [&](const Row& row) { return row.key == page.row_keys[was]; });
+    if (it != rows.end()) page.selected = int(it - rows.begin());
+  }
+  page.row_keys.clear();
+  for (const Row& row : rows) page.row_keys.push_back(row.key);
 
   // What its rows did has been heard; any left were for rows gone since.
   for (auto it = menu_events_.begin(); it != menu_events_.end();) {
@@ -621,7 +761,16 @@ void GuideDialog::DrawMenuWindows(ImDrawList* dl, const NavInput& in, float dt) 
       dl->PathLineTo(ImVec2(back_c.x + k * 0.5f, back_c.y + k));
       dl->PathStroke(WithAlpha(color::kText, a), 0, Px(2.5f));
     }
-    DrawList(dl, drawn.list, drawn.stack, l0, l1, a, drawn.slide);
+    // A window the pad works gets a line of hints under a Lists row, as the
+    // Guide has under its blades.
+    const bool lists = std::any_of(drawn.list.rows.begin(), drawn.list.rows.end(), [](const Row& row) { return row.lists != nullptr; });
+    const bool hints = layout.hold_input && lists;
+    DrawList(dl, drawn.list, drawn.stack, l0, hints ? ImVec2(l1.x, l1.y - Px(40)) : l1, a, drawn.slide);
+    if (hints) {
+      std::vector<LegendHint> line = {{'A', "Enter", "Select"}, {'B', "Esc", drawn.stack.size() > 1 ? "Back" : "Close"}};
+      for (LegendHint& hint : InnerHints(drawn.list, drawn.stack.back())) line.push_back(std::move(hint));
+      DrawHints(dl, ImVec2(l0.x + Px(10), l1.y - Px(16)), line, a);
+    }
   }
 }
 

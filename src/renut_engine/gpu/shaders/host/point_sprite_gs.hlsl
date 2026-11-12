@@ -1,13 +1,5 @@
-// Xenos point sprites: a point list draws a screen-aligned square per point,
-// the size the vertex shader exports (oPts.x) or else the render state's,
-// clamped to the render state's minimum and maximum, with the coordinate
-// across the square (0,0 top left to 1,1 bottom right) in the pixel shader's
-// generated register (iPointCoord in XenosRecomp's pixel shaders). The host
-// draws them as points through this shader, which emits each as a strip.
-//
-// The vertex layout is what XenosRecomp (RENUT_RECOMP) writes for every vertex
-// shader and pixel shader (see rectangle_list_gs.hlsl). A vertex shader that
-// killed its vertex exports a negative size.
+// Xenos point sprites: expands each point into a screen-aligned square strip of
+// the exported or render-state size, with pointCoord 0,0 top left to 1,1 bottom right.
 
 struct Vertex
 {
@@ -21,10 +13,8 @@ struct Vertex
     float pointSize : POINTSIZE;
 };
 
-// SharedConstants (draw.cpp): at 1312 the render state's point width and
-// height and minimum and maximum size, at 1328 the size of the host viewport
-// (what clip space spans), all in guest pixels (the host viewport is the
-// render resolution scale times that, so sprites scale with it).
+// SharedConstants (draw.cpp): at 1312 the point width, height, min and max size,
+// at 1328 the viewport size clip space spans, all in guest pixels.
 #ifdef __spirv__
 struct PushConstants
 {

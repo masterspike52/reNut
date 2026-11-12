@@ -13,18 +13,17 @@
 #include <mutex>
 #include <string>
 #include <iterator>
+#include <memory>
 #include <unordered_map>
 #include <vector>
 
-#include <rex/logging.h>
-#include <rex/memory/utils.h>
+#include <rex/kernel/types/status.h>
 #include <rex/ppc/context.h>
-#include <rex/system/kernel_state.h>
-#include <rex/system/xenumerator.h>
 
-#include "account_info.h"
+#include "enumerator.h"
 #include "guest.h"
 #include "live.h"
+#include "log.h"
 #include "live_sessions.h"
 #include "live_storage.h"
 #include "xlivebase_app.h"
@@ -68,8 +67,7 @@ void Post(std::function<void(Backend&)> work) {
 }
 
 void NotifySigninChanged() {
-  auto* kernel = REX_KERNEL_STATE();
-  if (!kernel) return;
+  if (!REX_RUNTIME()) return;
   // XN_SYS_SIGNINCHANGED with the signed-in user mask: titles re-read the
   // profiles, as when a different profile signs in on a console. Player 1
   // always has the runtime's profile; players 2-4 only a Guide one.
@@ -77,10 +75,10 @@ void NotifySigninChanged() {
   for (int user = 1; user < kMaxUsers; ++user) {
     if (Snapshot(user).signed_in) mask |= 1u << user;
   }
-  kernel->BroadcastNotification(0x0000000A, mask);
+  guest::Broadcast(0x0000000A, mask);
   // XN_LIVE_CONNECTIONCHANGED: titles track LIVE logon from this (TiP only
   // enables its LIVE features after XONLINE_S_LOGON_CONNECTION_ESTABLISHED).
-  kernel->BroadcastNotification(0x02000001, Snapshot().signed_in ? 0x001510F0u : 0x001510F1u);
+  guest::Broadcast(0x02000001, Snapshot().signed_in ? 0x001510F0u : 0x001510F1u);
 }
 
 void Attach(int user, Backend* backend) {
@@ -103,14 +101,28 @@ void Pump() {
 
 }  // namespace rexglue_guide::live
 
-using rex::X_HRESULT;
-using rex::X_RESULT;
+using rex::kernel::X_HRESULT;
+using rex::kernel::X_RESULT;
+using rex::kernel::X_E_FAIL;
+using rex::kernel::X_E_INVALIDARG;
+using rex::kernel::X_E_SUCCESS;
+using rex::kernel::X_ERROR_IO_PENDING;
 
 namespace {
 
-using rex::memory::load_and_swap;
-using rex::memory::store_and_swap;
 using rexglue_guide::guest::CallOriginal;
+
+template <typename T>
+T load_and_swap(const void* p) {
+  return rexglue_guide::guest::LoadBE<T>(static_cast<const uint8_t*>(p));
+}
+template <typename T>
+void store_and_swap(void* p, T v) {
+  rexglue_guide::guest::StoreBE<T>(static_cast<uint8_t*>(p), v);
+}
+
+// XamUserGetXUID's type mask bit for the online XUID.
+constexpr uint32_t kXuidOnline = 0x02;
 
 uint8_t* Guest(uint32_t address) {
   return rexglue_guide::guest::At(address);
@@ -130,7 +142,7 @@ uint32_t SigninState(const rexglue_guide::LiveSnapshot& s) {
 }
 
 // Logs the first time each override handles a call.
-#define GUIDE_TRACE(name)                                                     do {                                                                          static bool logged = false;                                                 if (!logged) {                                                                logged = true;                                                              REXKRNL_INFO("Rexglue Guide: {} answered for the RexLiveless account", name);     }                                                                         } while (0)
+#define GUIDE_TRACE(name)                                                     do {                                                                          static bool logged = false;                                                 if (!logged) {                                                                logged = true;                                                              RG_INFO("Rexglue Guide: {} answered for the RexLiveless account", name);     }                                                                         } while (0)
 
 void WriteGamertag(uint8_t* dest, size_t size, const std::string& gamertag) {
   std::memset(dest, 0, size);
@@ -151,7 +163,7 @@ extern "C" REX_FUNC(__imp__XamUserGetXUID) {
   const uint32_t user = ctx.r3.u32;
   const uint32_t mask = ctx.r4.u32;
   const auto s = UserSnapshot(user);
-  if (!s.signed_in || (user == 0 && !(mask & rex::system::xam::X_USER_XUID_ONLINE))) {
+  if (!s.signed_in || (user == 0 && !(mask & kXuidOnline))) {
     return CallOriginal("__imp__XamUserGetXUID", ctx, base);
   }
   GUIDE_TRACE("XamUserGetXUID");
@@ -168,6 +180,17 @@ extern "C" REX_FUNC(__imp__XamShowGamerCardUIForXUID) {
   }
   GUIDE_TRACE("XamShowGamerCardUIForXUID");
   rexglue_guide::live::RequestGamercard(xuid);
+  SetResult(ctx, 0);
+}
+
+// XamShowSigninUI(unk, mask): the title's "sign in" prompt (the Leaderboards
+// logon page opens it). With no account signed in it opens the Guide's sign-in
+// screen, which tells the title the system UI is up and, once it closes, that
+// it's gone. The title's logon carries on from whatever the player did there.
+extern "C" REX_FUNC(__imp__XamShowSigninUI) {
+  if (rexglue_guide::live::Snapshot().signed_in) return CallOriginal("__imp__XamShowSigninUI", ctx, base);
+  GUIDE_TRACE("XamShowSigninUI");
+  rexglue_guide::live::RequestSignIn();
   SetResult(ctx, 0);
 }
 
@@ -242,7 +265,7 @@ extern "C" REX_FUNC(__imp__XamUserAreUsersFriends) {
   }
   if (uint8_t* out = Guest(ctx.r6.u32)) store_and_swap<uint32_t>(out, all ? 1 : 0);
   if (ctx.r7.u32) {
-    REX_KERNEL_STATE()->CompleteOverlappedImmediate(ctx.r7.u32, 0);
+    rexglue_guide::guest::CompleteOverlapped(ctx.r7.u32, 0);
     SetResult(ctx, X_ERROR_IO_PENDING);
   } else {
     SetResult(ctx, 0);
@@ -269,8 +292,8 @@ namespace {
 // points at a marshaled argument list: user index, start index, count,
 // DWORD* buffer size, HANDLE* enumerator.
 uint32_t CreateFriendsEnumerator(uint32_t args_ptr) {
-  using rex::kernel::xam::apps::X_CREATE_FRIENDS_ENUMERATOR;
-  using rex::kernel::xam::apps::X_ONLINE_FRIEND;
+  using rexglue_guide::xlive::X_CREATE_FRIENDS_ENUMERATOR;
+  using rexglue_guide::xlive::X_ONLINE_FRIEND;
   auto* args = reinterpret_cast<X_CREATE_FRIENDS_ENUMERATOR*>(Guest(args_ptr));
   if (!args) return X_E_INVALIDARG;
   auto arg32 = [](const auto& entry) {
@@ -284,14 +307,12 @@ uint32_t CreateFriendsEnumerator(uint32_t args_ptr) {
   if (!handle_out) return X_E_INVALIDARG;
   store_and_swap<uint32_t>(handle_out, 0);
 
-  auto* kernel = REX_KERNEL_STATE();
-  auto e = rex::system::object_ref<rex::system::XStaticUntypedEnumerator>(
-      new rex::system::XStaticUntypedEnumerator(kernel, amount, sizeof(X_ONLINE_FRIEND)));
-  if (XFAILED(e->Initialize(0xFF, 0xFC, 0x58021, 0x58022, 0))) return X_E_FAIL;
+  auto owned = std::make_unique<rexglue_guide::enumerator::StaticEnumerator>(amount, uint32_t(sizeof(X_ONLINE_FRIEND)));
+  auto* e = owned.get();
 
   const auto s = rexglue_guide::live::Snapshot();
   char title[9];
-  std::snprintf(title, sizeof(title), "%08X", kernel->title_id());
+  std::snprintf(title, sizeof(title), "%08X", rexglue_guide::guest::RunningTitleId());
   for (size_t i = start; i < s.friends.size() && i < start + amount; ++i) {
     const auto& f = s.friends[i];
     auto* out = reinterpret_cast<X_ONLINE_FRIEND*>(e->AppendItem());
@@ -316,8 +337,11 @@ uint32_t CreateFriendsEnumerator(uint32_t args_ptr) {
     for (size_t c = 0; c < n; ++c) out->wszRichPresence[c] = char16_t(static_cast<unsigned char>(presence[c]));
     out->cchRichPresence = uint32_t(n);
   }
-  if (size_out) store_and_swap<uint32_t>(size_out, uint32_t(e->items_per_enumerate() * e->item_size()));
-  store_and_swap<uint32_t>(handle_out, e->handle());
+  const uint32_t size = e->items_per_enumerate() * e->item_size();
+  const uint32_t handle = rexglue_guide::enumerator::Create(std::move(owned), 0xFF, 0xFC, 0x58021, 0x58022, 0);
+  if (!handle) return X_E_FAIL;
+  if (size_out) store_and_swap<uint32_t>(size_out, size);
+  store_and_swap<uint32_t>(handle_out, handle);
   return X_E_SUCCESS;
 }
 
@@ -327,13 +351,12 @@ uint32_t CreateFriendsEnumerator(uint32_t args_ptr) {
 // data after making it, so the names are made when the title enumerates.
 // Without one (Nuts & Bolts asks for every server and matches them against its
 // own "XLS.Express.*" itself) it's the server under each known title's prefix.
-class TitleServerEnumerator : public rex::system::XEnumerator {
+class TitleServerEnumerator : public rexglue_guide::enumerator::Enumerator {
  public:
   static constexpr uint32_t kServerInfoSize = 208;  // XTITLE_SERVER_INFO: IN_ADDR, flags, char[200]
   static constexpr const char* kKnownMasks[] = {"XLS.SS07R.*", "XLS.Express.*"};
 
-  TitleServerEnumerator(rex::system::KernelState* kernel, uint32_t items)
-      : XEnumerator(kernel, items, kServerInfoSize), items_(items) {}
+  explicit TitleServerEnumerator(uint32_t items) : Enumerator(items, kServerInfoSize), items_(items) {}
 
   void set_mask(const uint8_t* private_data) { mask_ = private_data; }
 
@@ -380,11 +403,14 @@ extern "C" REX_FUNC(__imp__XamCreateEnumeratorHandle) {
   uint8_t* out = Guest(ctx.r10.u32);
   if (app != 0xFC || open != 0x58039 || !out) return CallOriginal("__imp__XamCreateEnumeratorHandle", ctx, base);
   GUIDE_TRACE("XTitleServerCreateEnumerator");
-  auto e = rex::system::object_ref<TitleServerEnumerator>(new TitleServerEnumerator(REX_KERNEL_STATE(), items));
-  void* private_data = nullptr;
-  if (XFAILED(e->Initialize(user, app, open, close, flags, extra, &private_data))) return SetResult(ctx, X_E_FAIL);
-  if (extra) e->set_mask(static_cast<const uint8_t*>(private_data));
-  store_and_swap<uint32_t>(out, e->handle());
+  auto owned = std::make_unique<TitleServerEnumerator>(items);
+  TitleServerEnumerator* e = owned.get();
+  uint8_t* private_data = nullptr;
+  const uint32_t handle =
+      rexglue_guide::enumerator::Create(std::move(owned), user, app, open, close, flags, extra, &private_data);
+  if (!handle) return SetResult(ctx, X_E_FAIL);
+  if (extra) e->set_mask(private_data);
+  store_and_swap<uint32_t>(out, handle);
   SetResult(ctx, 0);
 }
 
@@ -405,6 +431,11 @@ extern "C" REX_FUNC(__imp__XMsgInProcessCall) {
       case 0x00058035:  // XStorageBuildServerPath(ByXuid)
         GUIDE_TRACE("XStorageBuildServerPath");
         return SetResult(ctx, rexglue_guide::storage::BuildServerPath(ctx.r5.u32));
+      case 0x0005800E:  // XUserMuteListQuery: (user, xuid) in arg1, BOOL* in arg2
+        // Nobody is on a mute list here. Voice titles ask this for each remote
+        // talker every frame (Kameo's voice tick does).
+        if (uint8_t* muted = Guest(ctx.r6.u32)) store_and_swap<uint32_t>(muted, 0);
+        return SetResult(ctx, 0);
       default:
         break;
     }

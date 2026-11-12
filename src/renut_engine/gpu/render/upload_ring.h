@@ -1,13 +1,3 @@
-/**
- * @file    gpu/render/upload_ring.h
- * @brief   Per-frame linear allocator over host-visible UPLOAD memory.
- *
- * One ring per frame slot. Allocations live until that slot's fence is waited
- * at reuse, when Reset() rewinds it. Overflow grows into extra chunks that are
- * kept (and reused) rather than failing the frame, until no frame has needed
- * them for a while: a load that uploads hundreds of megabytes of textures in
- * one frame would otherwise keep that much host memory for good.
- */
 #pragma once
 
 #include <cstdint>
@@ -38,7 +28,6 @@ public:
   void Reset();
   UploadAllocation Allocate(uint64_t size, uint64_t alignment = 256);
   UploadAllocation Upload(const void *data, uint64_t size, uint64_t alignment = 256);
-  uint64_t Bytes() const;
 
 private:
   struct Chunk {

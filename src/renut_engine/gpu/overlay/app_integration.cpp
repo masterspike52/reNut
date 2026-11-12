@@ -1,6 +1,3 @@
-/**
- * @file    gpu/overlay/app_integration.cpp
- */
 #include "renut_engine/gpu/overlay/app_integration.h"
 
 #include <atomic>
@@ -9,12 +6,14 @@
 #include <thread>
 #include <utility>
 
-#include <rex/runtime.h>
-#include <rex/ui/imgui_drawer.h>
-#include <rex/ui/windowed_app_context.h>
+#include <rex/gpu/graphics_system.h>
+#include <rex/platform/native_window.h>
+#include <rex/ui/ui_event.h>
+#include <rex/ui/ui_system.h>
+#include <rex/utility.h>
 
 #include "renut_engine/gpu/backend/native_window.h"
-#include "renut_engine/gpu/log.h"
+#include "renut_engine/gpu/backend/render_thread.h"
 #include "renut_engine/gpu/overlay/overlay_drawer.h"
 #include "renut_engine/gpu/overlay/overlay_ui.h"
 #include "renut_engine/gpu/backend/video.h"
@@ -23,38 +22,37 @@ namespace renut::gpu {
 
 namespace {
 
-// The SDK's menus (F3, F4, console, achievements), drawn by its ImGuiDrawer
-// on the UI thread, which owns their ImGui; OverlayDrawer records the frame
-// for Present to draw.
-void RecordSdkMenus(rex::ui::ImGuiDrawer *drawer) {
+// Records the SDK's menus (F3, F4, console, achievements, its dialogs), never
+// freed: a task already posted may still run after shutdown.
+OverlayDrawer &g_recorder = *new OverlayDrawer();
+
+// Records the SDK's menus on the UI thread for Present to draw.
+void RecordSdkMenus(rex::ui::IUISystem &ui) {
   uint32_t width = 0, height = 0;
-  if (!drawer || !drawer->HasDialogs() || !GetRenderWindowPixelSize(width, height) || !width ||
-      !height) {
+  if (!ui.HasDialogs() || !GetRenderWindowPixelSize(width, height) || !width || !height) {
     OverlayDrawer::ClearLatest();
     return;
   }
   const uint64_t recorded = OverlayDrawer::FramesRecorded();
-  rex::ui::AppUIDrawContext ctx(width, height);
-  drawer->Draw(ctx);
+  // On the UI thread it builds the frame there and then, and records it through g_recorder.
+  ui.DrawOverlays(g_recorder);
   if (OverlayDrawer::FramesRecorded() == recorded)
     OverlayDrawer::ClearLatest();
 }
 
-// Records the SDK's menus and drives Video::PresentOverlayOnly for the whole
-// session. Ticks come from their own thread: a UI-thread tick that re-queues
-// itself would starve the UI thread's event processing.
+// Records the SDK's menus and drives Video::PresentOverlayOnly, ticking from
+// its own thread so the UI thread's event processing isn't starved.
 class OverlayPump {
 public:
-  void Start(rex::ui::WindowedAppContext &app_context,
-             std::function<rex::ui::ImGuiDrawer *()> imgui_drawer) {
+  void Start(rex::ui::IUISystem &ui) {
     Stop();
     stop_.store(false, std::memory_order_release);
     pending_.store(false, std::memory_order_release);
-    thread_ = std::thread([this, &app_context, imgui_drawer = std::move(imgui_drawer)] {
+    thread_ = std::thread([this, &ui] {
       while (!stop_.load(std::memory_order_acquire)) {
         if (!pending_.exchange(true, std::memory_order_acq_rel)) {
-          app_context.CallInUIThreadDeferred([this, imgui_drawer] {
-            RecordSdkMenus(imgui_drawer());
+          ui.PostTask([this, &ui] {
+            RecordSdkMenus(ui);
             Video::PresentOverlayOnly();
             pending_.store(false, std::memory_order_release);
           });
@@ -80,28 +78,33 @@ private:
 
 OverlayPump g_pump;
 
+// The window's size changes, on the UI thread: the swapchain follows at the next present.
+class ResizeListener final : public rex::ui::IUIEventListener {
+public:
+  void OnUIEvent(const rex::ui::UIEvent &event) override {
+    if (event.GetType() == rex::ui::UIEvent::Type::kResize)
+      Video::RequestResize();
+  }
+  void OnInputEvent(rex::InputEvent &) override {}
+};
+
+ResizeListener g_resize_listener;
+rex::ScopeGuard g_resize_guard;
+
 } // namespace
 
-void ConfigureRuntime(rex::RuntimeConfig &config) {
-  config.graphics = nullptr;
-  config.gpu_plugin.clear();
-}
-
-std::unique_ptr<rex::ui::ImmediateDrawer> CreateOverlayDrawer() {
-  return std::make_unique<OverlayDrawer>();
-}
-
-bool StartRenderer(rex::ui::WindowedAppContext &app_context,
-                   std::function<rex::ui::ImGuiDrawer *()> imgui_drawer) {
-  if (!Video::CreateHostDevice()) {
-    RGPU_ERROR("Renderer initialisation failed");
+bool StartRenderer(rex::ui::IUISystem &ui, rex::gpu::IGraphicsSystem &graphics) {
+  const rex::Result<rex::NativeWindow> window = ui.GetNativeWindow();
+  if (!window)
     return false;
-  }
-  // reNut's own overlay (overlay_ui.h), built on the UI thread with the SDK's.
-  if (!overlay::Start([&app_context](std::function<void()> build) {
-        app_context.CallInUIThreadDeferred(std::move(build));
-      }))
-    RGPU_WARN("Overlay input unavailable: no game window");
+  SetNativeWindow(*window);
+  Video::SetGraphicsSystem(&graphics);
+  if (!Video::CreateHostDevice())
+    return false;
+  g_resize_guard = ui.AddEventListener(g_resize_listener);
+  // reNut's own overlay (overlay_ui.h), built on the UI thread with the SDK's
+  // (without a game window it has no input).
+  overlay::Start([&ui](std::function<void()> build) { ui.PostTask(std::move(build)); });
 
   // The SDK's own menus: recorded on the UI thread by the pump, drawn here
   // from the latest recording, so Present never waits for the UI thread.
@@ -110,18 +113,21 @@ bool StartRenderer(rex::ui::WindowedAppContext &app_context,
     OverlayDrawer::DrawLatestLocked(cmd, framebuffer, width, height);
   });
 
-  g_pump.Start(app_context, std::move(imgui_drawer));
+  g_pump.Start(ui);
   return true;
 }
 
-void OnWindowResized() {
-  Video::RequestResize();
+void StopGuestRendering() {
+  render_thread::Stop();
+  render_thread::Drain();
 }
 
 void ShutdownRenderer() {
   g_pump.Stop();
   overlay::Stop();
+  g_resize_guard.Reset();
   Video::BeginShutdown();
+  Video::SetGraphicsSystem(nullptr);
 }
 
 } // namespace renut::gpu

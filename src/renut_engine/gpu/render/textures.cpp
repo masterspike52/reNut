@@ -1,6 +1,3 @@
-/**
- * @file    gpu/render/textures.cpp
- */
 #include "renut_engine/gpu/render/textures.h"
 
 #include <algorithm>
@@ -14,10 +11,8 @@
 #include <xxhash.h>
 
 #include "renut_engine/gpu/backend/backend.h"
-#include "renut_engine/gpu/backend/gpu_profile.h"
 #include "renut_engine/gpu/d3d/d3d.h"
 #include "renut_engine/gpu/guest/guest_memory.h"
-#include "renut_engine/gpu/log.h"
 #include "renut_engine/gpu/render/graphics_options.h"
 #include "renut_engine/gpu/render/menu_colour.h"
 #include "renut_engine/gpu/render/settings_icon.h"
@@ -43,9 +38,8 @@ constexpr uint32_t kMaxTextureSize = 8192;
 
 std::unordered_map<u32, std::unique_ptr<HostTexture>> g_textures;
 
-// Recent g_textures entries by VA: BindTextureLocked looks up every texture
-// of every draw. The map's nodes stay put until erased (ReleaseHostTextureLocked
-// drops the entry here first).
+// Recent g_textures entries by VA, for BindTextureLocked's lookups
+// (ReleaseHostTextureLocked drops an entry here before erasing it).
 struct TextureMemo {
   u32 va = 0;
   std::unique_ptr<HostTexture> *slot = nullptr;
@@ -68,21 +62,15 @@ std::unique_ptr<HostTexture> &TextureSlot(u32 texture_va) {
 }
 // Depth resolve destinations with guest words, by base address (4 KB pages).
 std::unordered_map<u32, HostTexture *> g_depth_words;
-// The last resolve destination into each base address (4 KB pages): D3D
-// textures are views of memory, and a game may resolve through one header and
-// sample the same memory through another.
+// The last resolve destination into each base address (4 KB pages), for
+// headers that sample memory another header was resolved into.
 std::unordered_map<u32, HostTexture *> g_resolve_targets;
 std::unordered_map<uint64_t, uint32_t> g_samplers;  // sampler key -> slot
 std::vector<std::unique_ptr<plume::RenderSampler>> g_sampler_objects;
 uint64_t g_frame = 1;
 
-// BindTextureLocked's answers by texture, device fetch constant and the
-// header's own, within a generation: a frame's draws bind the same few
-// hundred textures thousands of times, and each bind read the header,
-// converted it and looked the texture up in up to three maps (a tenth of the
-// render thread, 2026-10-22). A generation ends with the frame and with
-// whatever changes what a bind finds: a host texture retired (released,
-// replaced, evicted) and any resolve. Two ways to a set, the newer first.
+// BindTextureLocked's answers by texture, device and header fetch constants,
+// valid within a generation (ended by frames, retired textures and resolves).
 uint64_t g_bind_generation = 1;
 struct BindMemo {
   uint64_t generation = 0;
@@ -107,27 +95,16 @@ BindMemo *BindMemoSet(u32 texture_va, const u32 device[6]) {
 std::mutex g_unlocked_mutex;
 std::vector<u32> g_unlocked;
 
-// The bindless table filling up (past kEvictPressureSlots of its slots), or
-// video memory nearing the budget the OS gives the process (past
-// kEvictMemoryShare of it): host textures not bound or resolved into for
-// kEvictIdleFrames go, checked every kEvictCheckFrames, and are made again
-// from guest memory if bound later. Resolve destinations hold what only the
-// GPU has and wait kEvictIdleGpuFrames. The section pools' textures normally
-// go with their memory (ReleaseHostTexturesInMemoryLocked); this catches
-// whatever else piles up: at 4K, resolve destinations of levels played
-// earlier (2.2 GB of them after a few levels, 2026-10-15), while past the
-// budget the OS moves allocations out to system memory and the frame rate
-// sinks until it frees them.
+// When the bindless table or the video memory budget fills up, host textures
+// idle for kEvictIdleFrames (kEvictIdleGpuFrames for resolve destinations) go.
 constexpr uint64_t kEvictCheckFrames = 120;
 constexpr uint64_t kEvictIdleFrames = 600;
 constexpr uint64_t kEvictIdleGpuFrames = 3600;
 constexpr uint32_t kEvictPressureSlots = kTextureDescriptorCount * 3 / 4;
 constexpr double kEvictMemoryShare = 0.85;
 
-// Linear textures (see BindTextureLocked): how often a lock-driven texture
-// is checked for writes that went around an unlock, and a dynamic one for
-// having stopped changing; how long after an unlock the content is watched;
-// and how many checks in a row must see a change to make a texture dynamic.
+// Linear textures: the full-check interval, how long after an unlock content
+// is watched, and how many changes in a row make a texture dynamic.
 constexpr uint64_t kLinearVerifyFrames = 30;
 constexpr uint64_t kUnlockWatchFrames = 8;
 constexpr uint32_t kDynamicChanges = 2;
@@ -202,12 +179,8 @@ bool SingleComponent(plume::RenderFormat format) {
   }
 }
 
-// The view mapping of a fetch constant swizzle: which stored component each
-// shader component reads (0-3 XYZW, 4 zero, 5 one), with X and Z exchanged
-// for content stored so (swap_red_blue, see Create). A one-component format
-// fetches its value in every component: the game's depth restore
-// (ps_beb4ddc38d3b2df5) writes the W of a depth resolve fetched with the
-// identity swizzle as its depth, where a host view has 1.
+// The view mapping of a fetch constant swizzle (0-3 XYZW, 4 zero, 5 one), with
+// X and Z exchanged for swap_red_blue and one-component formats read in all.
 plume::RenderComponentMapping SwizzleMapping(u32 swizzle, bool swap_red_blue,
                                              plume::RenderFormat format) {
   const bool single = SingleComponent(format);
@@ -248,6 +221,35 @@ uint32_t SlotForSwizzle(HostTexture &t, u32 swizzle) {
   return t.swizzle_views.back().slot;
 }
 
+// The bindless slot of stacked 't''s layer 0 as a 2D texture through 'swizzle',
+// which 2D fetches of it read (the water's displacement map).
+uint32_t LayerSlotForSwizzle(HostTexture &t, u32 swizzle) {
+  if (!t.stacked || !t.texture)
+    return kNullTextureSlot;
+  for (const HostTexture::SwizzleView &v : t.layer_views) {
+    if (v.swizzle == swizzle)
+      return v.slot;
+  }
+  plume::RenderTextureViewDesc desc = t.view_desc;
+  desc.dimension = plume::RenderTextureViewDimension::TEXTURE_2D;
+  desc.arraySize = 1;
+  desc.arrayIndex = 0;
+  desc.componentMapping = SwizzleMapping(swizzle, t.view_swap_red_blue, t.host_format);
+  HostTexture::SwizzleView v;
+  v.swizzle = swizzle;
+  v.view = t.texture->createTextureView(desc);
+  if (!v.view)
+    return kNullTextureSlot;
+  v.slot = Video::AllocateTextureSlotLocked();
+  if (v.slot == kInvalidDescriptor) {
+    Video::RetireLocked(std::move(v.view));
+    return kNullTextureSlot;
+  }
+  Video::SetTextureSlotLocked(v.slot, t.texture.get(), v.view.get());
+  t.layer_views.push_back(std::move(v));
+  return t.layer_views.back().slot;
+}
+
 // Where a texture's guest data is depends only on the fetch constant bits in
 // t.desc, so it is worked out once per texture.
 void KnowGuestExtent(const TextureFetch &fetch, HostTexture &t) {
@@ -263,14 +265,7 @@ constexpr uint32_t kSampleProbes = 8;
 constexpr uint32_t kSampleProbeBytes = 64;
 
 // Cheap content fingerprint of a tiled texture: the first and last 256 bytes
-// of the base level and of the mip chain, and spans spread through each. The
-// game streams textures into memory another one used, with the same header
-// (format, size, address): masks that are white at the edges (the hill's
-// blend mask after the clearing's ring stencil) have the same ends, so the
-// ends alone kept the old texture. Every bound texture is checked each frame
-// and its guest memory is mostly out of the cache, so the cost is the lines
-// read: eight spans, gathered and hashed at once. (32 spans hashed one at a
-// time were a tenth of the render thread.)
+// of the base level and of the mip chain, and eight spans spread through each.
 uint64_t SampleHash(const TextureFetch &fetch, HostTexture &t) {
   KnowGuestExtent(fetch, t);
   alignas(64) uint8_t gathered[2 * (2 * kSampleEndBytes + kSampleProbes * kSampleProbeBytes)];
@@ -296,10 +291,8 @@ uint64_t SampleHash(const TextureFetch &fetch, HostTexture &t) {
   return at ? XXH3_64bits(gathered, at) : 0;
 }
 
-// Fingerprint of every guest byte of a texture, for the CPU-written linear
-// ones, whose writes land anywhere: N&B's font cache (FontCache.cpp,
-// sub_82B8F848) inflates each new glyph into its cell of a 1920x1920 texture
-// between D3DLineTexture_LockRect and D3DArrayTexture_UnlockRect.
+// Fingerprint of every guest byte of a texture, for CPU-written linear ones
+// such as N&B's font cache (sub_82B8F848).
 uint64_t ContentHash(const TextureFetch &fetch, HostTexture &t) {
   KnowGuestExtent(fetch, t);
   uint64_t hash = 0;
@@ -325,10 +318,8 @@ bool MenuPanelCandidate(const HostTexture &t) {
          t.dimension == TextureDimension::Tex2D && !t.stacked && !t.render_target;
 }
 
-// Untiles/copies one subresource (level, slice) into 'dst' rows of host blocks.
-// Tiled rows are copied a run of blocks at a time where the tiling keeps
-// them together, as the game's UntileSurface does. 'menu_panel': a
-// MenuPanelCandidate, recoloured when it is a panel.
+// Untiles/copies one subresource (level, slice) into 'dst' rows of host blocks,
+// recolouring a 'menu_panel' (MenuPanelCandidate) that is a panel.
 void ReadLevel(const TextureFormatInfo &info, const TextureFetch &fetch, const LevelSource &src,
                uint32_t blocks_w, uint32_t blocks_h, uint32_t depth, uint8_t *dst,
                uint32_t dst_row_pitch, uint32_t dst_slice_pitch, bool menu_panel) {
@@ -397,8 +388,6 @@ bool Upload(HostTexture &t, const TextureFetch &fetch, bool defer_read) {
 
   auto &s = State();
   plume::RenderCommandList *cmd = s.command_list;
-  static const uint32_t kProfileLabel = gpu_profile::Label("texture uploads");
-  gpu_profile::Mark(s, kProfileLabel);
   cmd->barriers(plume::RenderBarrierStage::COPY,
                 plume::RenderTextureBarrier(t.texture.get(), plume::RenderTextureLayout::COPY_DEST));
   t.layout = plume::RenderTextureLayout::COPY_DEST;
@@ -449,16 +438,13 @@ bool Upload(HostTexture &t, const TextureFetch &fetch, bool defer_read) {
             {t.info, fetch, src, blocks_w, blocks_h, d, dst, row_pitch, slice_pitch, menu_panel});
       else
         ReadLevel(t.info, fetch, src, blocks_w, blocks_h, d, dst, row_pitch, slice_pitch, menu_panel);
-      // Footprints are in texels, block-aligned for compressed formats. Decoded
-      // blocks are plain texels, so a level smaller than a block (a small mip)
-      // takes only its own part of the decoded block.
+      // Footprints are in texels, block-aligned for compressed formats; a decoded
+      // level smaller than a block takes only its part of the block.
       const uint32_t copy_w = std::min(blocks_w * bs, std::max(1u, t.alloc_width >> level));
       const uint32_t copy_h = std::min(blocks_h * bs, std::max(1u, t.alloc_height >> level));
       const plume::RenderBox level_box(0, 0, int32_t(copy_w), int32_t(copy_h), 0, int32_t(d));
-      // plume's Vulkan copy takes its extent from the footprint and ignores the
-      // box, and Vulkan allows no extent past the level (a compressed one ends
-      // at the level's edge instead of a block's): the footprint is the level's
-      // part there. D3D12 wants block-aligned footprints, cut by the box.
+      // Vulkan's footprint is the level's part (plume ignores the box there);
+      // D3D12 wants block-aligned footprints, cut by the box.
       const bool vulkan = IsVulkan();
       const uint32_t row_texels = row_pitch / t.info.host_block_bytes * bs;
       if (vulkan && d > 1 && copy_h != blocks_h * bs) {
@@ -492,11 +478,8 @@ uint32_t ExtraLevels(RenderScale scale) {
   return factor > 4.0f ? 3 : factor > 2.0f ? 2 : factor > 1.0f ? 1 : 0;
 }
 
-// swap_red_blue: the content was stored with X and Z exchanged (a guest
-// resolve does that when the destination's X swizzle is not X). 'scale': see
-// HostTexture::scale (content the GPU writes only). host_levels: a color
-// resolve destination, which gets HostTexture::extra_levels when it is a
-// scaled 2D one.
+// swap_red_blue: the content was stored with X and Z exchanged. host_levels: a
+// color resolve destination, given extra_levels when it is a scaled 2D one.
 bool Create(HostTexture &t, const TextureFetch &fetch, bool render_target,
             plume::RenderFormat rt_format, bool swap_red_blue = false, RenderScale scale = {},
             bool host_levels = false) {
@@ -563,9 +546,8 @@ bool Create(HostTexture &t, const TextureFetch &fetch, bool render_target,
   t.host_format = format;
   t.alloc_width = w;
   t.alloc_height = h;
-  // Beyond what the backends create (plume returns an object without a
-  // resource then); Xenos textures are at most 8192 wide/high, and the
-  // backends' limit is 16384.
+  // Beyond what the backends create: Xenos textures are at most 8192 wide/high,
+  // the backends' limit 16384.
   const uint32_t max_size = scale.Factor() > 1.0f ? kMaxTextureSize * 2 : kMaxTextureSize;
   if (w > max_size || h > max_size || t.depth > kMaxTextureSize)
     return false;
@@ -608,6 +590,11 @@ void Retire(HostTexture &t) {
     Video::RetireLocked(std::move(v.view));
   }
   t.swizzle_views.clear();
+  for (HostTexture::SwizzleView &v : t.layer_views) {
+    Video::FreeTextureSlotLocked(v.slot);
+    Video::RetireLocked(std::move(v.view));
+  }
+  t.layer_views.clear();
   if (t.level0_slot != UINT32_MAX && t.level0_slot != kInvalidDescriptor)
     Video::FreeTextureSlotLocked(t.level0_slot);
   t.level0_slot = UINT32_MAX;
@@ -625,16 +612,14 @@ void Retire(HostTexture &t) {
 }
 
 // Two descriptions of the same data: the same memory, format, endianness, size
-// and dimension (fetch dwords 1, 2 and the dimension in 5). Fetch constants of
-// the same memory may still differ in pitch, swizzle or mip fields.
+// and dimension (fetch dwords 1, 2 and the dimension in 5).
 bool SameData(const u32 a[6], const u32 b[6]) {
   constexpr u32 kDimensionMask = 0x600u;  // fetch dword 5 bits 9-10
   return a[1] == b[1] && a[2] == b[2] && (a[5] & kDimensionMask) == (b[5] & kDimensionMask);
 }
 
 // The resolve destination another header wrote this texture's memory through,
-// when it holds the same data (SameData). Only the GPU has what the resolve
-// wrote.
+// when it holds the same data (SameData).
 HostTexture *ResolvedAlias(u32 texture_va, const TextureFetch &fetch, const u32 desc[6]) {
   auto it = g_resolve_targets.find(fetch.BasePage());
   if (it == g_resolve_targets.end())
@@ -646,8 +631,7 @@ HostTexture *ResolvedAlias(u32 texture_va, const TextureFetch &fetch, const u32 
 }
 
 // The depth resolve whose words a texture described by 'fetch' reads: a
-// 32-bit 8_8_8_8 texture over a depth resolve destination's memory, of its
-// size.
+// 32-bit 8_8_8_8 texture of its size over its memory.
 HostTexture *DepthWordsSource(const TextureFetch &fetch) {
   if (fetch.Format() != GpuTextureFormat::Fmt8_8_8_8 || g_depth_words.empty())
     return nullptr;
@@ -702,16 +686,6 @@ HostTexture *ResolveTarget(u32 texture_va, plume::RenderFormat format, RenderSca
   if (slot && (!slot->render_target || std::memcmp(slot->desc, desc, sizeof(desc)) != 0 ||
                !slot->texture || slot->host_format != format || slot->scale != scale)) {
     // What an earlier resolve wrote is lost (only the GPU had it).
-    static uint32_t logged = 0;
-    if (slot->gpu_written && slot->texture && logged++ < 32) {
-      RGPU_WARN("Resolve destination {:08X} rebuilt ({}), frame {}: what it held is lost",
-                texture_va,
-                !slot->render_target                                 ? "was a sampled texture"
-                : std::memcmp(slot->desc, desc, sizeof(desc)) != 0 ? "header changed"
-                : slot->host_format != format                        ? "format changed"
-                                                                     : "scale changed",
-                g_frame);
-    }
     Retire(*slot);
     slot.reset();
   }
@@ -721,8 +695,6 @@ HostTexture *ResolveTarget(u32 texture_va, plume::RenderFormat format, RenderSca
     std::memcpy(slot->desc, desc, sizeof(desc));
     // A depth destination has one component, which the swizzle places.
     if (!Create(*slot, fetch, true, format, !depth && (fetch.Swizzle() & 7) != 0, scale, !depth)) {
-      RGPU_ERROR("Resolve destination {:08X}: {}x{} target creation failed", texture_va,
-                 slot->width, slot->height);
       Retire(*slot);
       return nullptr;
     }
@@ -764,23 +736,8 @@ void ApplyUnlocksLocked() {
   }
 }
 
-// Linear textures are the CPU-written ones. The GPU reads them when it
-// executes, after the CPU is done with the frame, so an upload reads memory
-// as it is at submission; reading at the draw can catch writes still in
-// progress. Only bytes that changed are worth uploading: converting the font
-// cache every frame cost more than anything else in Present, and hashing its
-// 7 MB every frame still cost more than half a millisecond. How a texture
-// changes decides how it is checked, once per frame it is bound:
-// - Lock-driven: the game writes it between a Lock and D3D::UnlockResource
-//   (the font cache, sub_82B8F848). An unlock uploads; the content is watched
-//   for kUnlockWatchFrames after one, and checked every kLinearVerifyFrames
-//   for a write that went around the unlock (which ends lock-driven).
-// - Dynamic: changed at kDynamicChanges checks in a row (the XMV logo movies,
-//   whose decoder writes without a Lock and may still be writing at the
-//   draw). Uploaded every frame; checked every kLinearVerifyFrames for having
-//   stopped changing.
-// - Otherwise the content is hashed at every check.
-// A write after the check shows the next frame.
+// Re-uploads a linear (CPU-written) texture at submission when it changed,
+// checked once a frame by kind: lock-driven, dynamic, or hashed every time.
 void RefreshLinearLocked(HostTexture &t, const TextureFetch &fetch) {
   ApplyUnlocksLocked();
   auto upload = [&](uint64_t hash) {
@@ -826,14 +783,11 @@ void RefreshLinearLocked(HostTexture &t, const TextureFetch &fetch) {
   t.unlocked = false;
 }
 
-// The backstop (kEvictPressureSlots, kEvictMemoryShare): with the bindless
-// table filling up or video memory near its budget, the host textures idle
-// for a while go.
+// With the bindless table filling up or video memory near its budget, the
+// host textures idle for a while go.
 void EvictIdleTexturesLocked() {
-  const bool slots = Video::TextureSlotsInUseLocked() >= kEvictPressureSlots;
-  GpuMemoryUsage memory;
-  if (!slots) {
-    memory = QueryGpuMemory(State().device.get());
+  if (Video::TextureSlotsInUseLocked() < kEvictPressureSlots) {
+    const GpuMemoryUsage memory = QueryGpuMemory(State().device.get());
     if (!memory.valid || !memory.local_budget ||
         double(memory.local_used) < double(memory.local_budget) * kEvictMemoryShare) {
       return;
@@ -847,15 +801,6 @@ void EvictIdleTexturesLocked() {
   }
   for (u32 va : idle)
     ReleaseHostTextureLocked(va);
-  if (slots) {
-    RGPU_WARN("Textures: bindless table nearly full; {} idle host textures released ({} of {} "
-              "slots in use)",
-              idle.size(), Video::TextureSlotsInUseLocked(), kTextureDescriptorCount);
-  } else if (!idle.empty()) {
-    RGPU_WARN("Textures: video memory near its budget ({} of {} MB); {} idle host textures "
-              "released",
-              memory.local_used >> 20, memory.local_budget >> 20, idle.size());
-  }
 }
 
 } // namespace
@@ -943,15 +888,8 @@ TextureBinding BindUncached(u32 texture_va, const TextureFetch &device_fetch,
   binding.dimension = HostDimension(device_fetch);
   binding.slot = NullSlot(binding.dimension);
   TextureFetch fetch = TextureFetch::FromHeader(header->Format);
-  // SetTexture copied the header into the device's fetch constant. A header
-  // that no longer describes the same data (SameData: memory, format, size,
-  // dimension) was a temporary the game has overwritten since (a command
-  // buffer runs after its recording thread's stack moved on); the device's
-  // copy is what the GPU reads. Its memory alone does not tell: N&B's main
-  // menu builds its bloom buffers' headers on the stack (160x90 and 80x45
-  // 8_8_8_8 at 701CFB48 / 701CFB7C), whose size and dimension words are
-  // overwritten while the base address stays; read as another texture, the
-  // resolve those buffers hold was dropped, a black frame now and then.
+  // A header that no longer describes the device fetch constant's data
+  // (SameData) was a temporary since overwritten; the GPU reads the device's.
   u32 desc[6];
   MaskedDesc(fetch, desc);
   u32 device_desc[6];
@@ -969,23 +907,17 @@ TextureBinding BindUncached(u32 texture_va, const TextureFetch &device_fetch,
     binding.dimension = resolved->dimension;
     binding.slot = SlotForSwizzle(*resolved, fetch.Swizzle());
     binding.stacked = resolved->stacked;
+    binding.layer_slot = LayerSlotForSwizzle(*resolved, fetch.Swizzle());
     binding.scale = resolved->scale;
     binding.lod_scale = resolved->extra_levels ? resolved->scale : RenderScale{};
     binding.shadow_map = resolved->shadow_map;
     return binding;
   }
   auto &slot = TextureSlot(texture_va);
-  // A resolve destination sampled through a fetch constant that differs from
-  // its header only in fields that leave the data alone (the mip range, say)
-  // keeps what the resolve wrote.
+  // A resolve destination sampled through a fetch constant differing only in
+  // fields that leave the data alone keeps what the resolve wrote.
   if (slot && std::memcmp(slot->desc, desc, sizeof(desc)) != 0 &&
       !(slot->gpu_written && SameData(slot->desc, desc))) {
-    static uint32_t logged = 0;
-    if (slot->gpu_written && slot->texture && logged++ < 32) {
-      RGPU_WARN("Texture {:08X}: sampled with another header, frame {}: what a resolve wrote is "
-                "dropped for guest memory",
-                texture_va, g_frame);
-    }
     Retire(*slot);
     slot.reset();
   }
@@ -1002,11 +934,7 @@ TextureBinding BindUncached(u32 texture_va, const TextureFetch &device_fetch,
     slot->guest_va = texture_va;
     std::memcpy(slot->desc, desc, sizeof(desc));
     if (!Create(*slot, fetch, false, plume::RenderFormat::UNKNOWN, false, scale)) {
-      static uint32_t logged = 0;
-      if (logged++ < 16) {
-        RGPU_WARN("Texture {:08X}: format {} {}x{}x{} not supported, frame {}", texture_va,
-                  u32(fetch.Format()), slot->width, slot->height, slot->depth, g_frame);
-      }
+      // A format not supported.
       Retire(*slot);
       return binding;  // keep the entry so it is not retried every draw
     }
@@ -1041,6 +969,7 @@ TextureBinding BindUncached(u32 texture_va, const TextureFetch &device_fetch,
   binding.dimension = t.dimension;
   binding.slot = SlotForSwizzle(t, fetch.Swizzle());
   binding.stacked = t.stacked;
+  binding.layer_slot = LayerSlotForSwizzle(t, fetch.Swizzle());
   binding.scale = t.scale;
   binding.lod_scale = t.extra_levels ? t.scale : RenderScale{};
   binding.shadow_map = t.shadow_map;
@@ -1089,9 +1018,8 @@ TextureBinding BindTextureLocked(u32 texture_va, const TextureFetch &device_fetc
 }
 
 void TextureGuestExtent(const TextureFetch &fetch, uint32_t pages[2], uint32_t sizes[2]) {
-  // Memo over the fetch constant: while memexport results are pending, every
-  // draw asks for its textures' extents (DrawNeedsExportFlush), and the layout
-  // math cost more than the rest of the check.
+  // Memoised over the fetch constant: every draw asks for its textures' extents
+  // while memexport results are pending (DrawNeedsExportFlush).
   struct Entry {
     uint32_t key[6];
     uint32_t pages[2];
@@ -1174,11 +1102,8 @@ HostTexture *GetDepthResolveTextureLocked(u32 texture_va, RenderScale scale,
 
 namespace {
 
-// Single-level color targets the host levels are drawn into (plume's barriers
-// cover a whole texture, so a level cannot be drawn while level 0 of the same
-// texture is sampled) and multisampled resolves staged in: a bare target
-// (texture, layout, size) and its framebuffer, by format and size. Kept for
-// reuse.
+// Single-level color targets the host levels are drawn into and multisampled
+// resolves staged in, by format and size; kept for reuse.
 struct ScratchTarget {
   HostTexture target;
   std::unique_ptr<plume::RenderFramebuffer> framebuffer;
@@ -1254,10 +1179,8 @@ plume::RenderPipeline *MipPipeline(plume::RenderFormat format) {
   desc.renderTargetBlend[0] = plume::RenderBlendDesc::Copy();
   desc.depthTargetFormat = plume::RenderFormat::UNKNOWN;
   pipeline = s.device->createGraphicsPipeline(desc);
-  if (!pipeline) {
-    RGPU_ERROR("Texture mip pipeline creation failed (format {})", uint32_t(format));
+  if (!pipeline)
     return nullptr;
-  }
   pipeline->setName("renut texture mip");
   return pipeline.get();
 }
@@ -1296,14 +1219,9 @@ void UpdateResolveMipsLocked(HostTexture *texture, const plume::RenderRect &rect
   const uint32_t source_slot = Level0Slot(t);
   if (!pipeline || source_slot == kInvalidDescriptor)
     return;
-  static const uint32_t kProfileLabel = gpu_profile::Label("resolve host mip levels");
-  gpu_profile::Mark(s, kProfileLabel);
 
-  // Each level is the 2x2 box of the one above: level 1 of level 0, the rest
-  // of the previous level's scratch target. The rect is first widened to
-  // whole texels of the smallest level, so each level's region is exactly
-  // what the next one reads (the scratch targets are shared, and hold other
-  // textures' texels outside what was drawn now).
+  // Each level is the 2x2 box of the one above, drawn into a scratch target over
+  // 'rect' widened to whole texels of the smallest level, then copied in.
   struct Level {
     ScratchTarget *scratch;
     plume::RenderRect region;
@@ -1372,57 +1290,12 @@ void UpdateResolveMipsLocked(HostTexture *texture, const plume::RenderRect &rect
 }
 
 namespace {
-
-// The host texture's levels in bytes, from its host format.
-uint64_t HostTextureBytes(const HostTexture &t) {
-  if (!t.texture)
-    return 0;
-  const uint32_t block = std::max(plume::RenderFormatBlockWidth(t.host_format), 1u);
-  const uint64_t block_bytes = plume::RenderFormatSize(t.host_format);
-  const uint32_t layers = t.stacked ? StackedLayers(t) : t.depth;
-  uint64_t bytes = 0;
-  for (uint32_t level = 0; level < t.mip_levels; ++level) {
-    const uint64_t w = std::max(1u, t.alloc_width >> level);
-    const uint64_t h = std::max(1u, t.alloc_height >> level);
-    const uint64_t d = t.dimension == TextureDimension::Tex3D && !t.stacked
-                           ? std::max(1u, t.depth >> level)
-                           : layers;
-    bytes += (w + block - 1) / block * ((h + block - 1) / block) * block_bytes * d;
-  }
-  if (t.words)
-    bytes += HostTextureBytes(*t.words);
-  return bytes;
-}
-
-} // namespace
-
-TextureMemory TextureMemoryLocked() {
-  TextureMemory usage;
-  for (const auto &[va, t] : g_textures) {
-    if (!t || !t->texture)
-      continue;
-    const uint64_t bytes = HostTextureBytes(*t);
-    ++usage.textures;
-    usage.bytes += bytes;
-    if (t->render_target) {
-      ++usage.resolve_targets;
-      usage.resolve_bytes += bytes;
-    }
-  }
-  return usage;
-}
-
-namespace {
 uint32_t SamplerSlotUncached(const TextureFetch &fetch, RenderScale lod_scale);
 } // namespace
 
 uint32_t SamplerSlotLocked(const TextureFetch &fetch, RenderScale lod_scale) {
-  // Every draw asks for each of its textures: remember the answer by the
-  // fetch constant bits the sampler state comes from (clamps in 0, filters
-  // and anisotropy in 3, mip range and LOD bias in 4, border color in 5).
-  // Only those bits: the words also hold the pitch and the mip address, and
-  // keyed by them every texture had entries of its own, which pushed each
-  // other out.
+  // Memoised by the fetch constant bits the sampler state comes from: clamps
+  // (0), filters and anisotropy (3), mip range and LOD bias (4), border color (5).
   struct Memo {
     bool valid = false;
     u32 words[4] = {};
@@ -1499,10 +1372,8 @@ uint32_t SamplerSlotUncached(const TextureFetch &fetch, RenderScale lod_scale) {
   desc.maxLOD = fetch.MipFilter() == TextureFilter::BaseMap ? float(fetch.MinMipLevel())
                                                             : float(fetch.MaxMipLevel());
   desc.mipLODBias = float(fetch.LodBias()) / 32.0f;  // MipMapLodBias stores bias * 32
-  // A resolve destination with host levels (HostTexture::extra_levels) has
-  // the guest's one level: a filtered fetch reaches the host level whose
-  // texel is the guest's, blending between them; a point fetch stays at the
-  // guest texel it hits.
+  // A resolve destination with host levels: a filtered fetch blends down to the
+  // host level whose texel is the guest's; a point fetch stays at level 0.
   if (lod_scale.Factor() > 1.0f) {
     desc.minLOD = 0.0f;
     if (desc.minFilter == plume::RenderFilter::LINEAR) {
@@ -1544,14 +1415,8 @@ uint32_t SamplerSlotUncached(const TextureFetch &fetch, RenderScale lod_scale) {
       break;
     }
   }
-  if (slot == UINT32_MAX) {
-    static bool logged = false;
-    if (!logged) {
-      RGPU_WARN("Sampler table full; falling back to linear clamp");
-      logged = true;
-    }
-    return kLinearClampSamplerSlot;
-  }
+  if (slot == UINT32_MAX)
+    return kLinearClampSamplerSlot;  // the sampler table is full
   auto sampler = s.device->createSampler(desc);
   if (!sampler)
     return kLinearClampSamplerSlot;

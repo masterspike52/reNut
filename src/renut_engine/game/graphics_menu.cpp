@@ -1,82 +1,10 @@
-/**
- * @file    game/graphics_menu.cpp
- * @brief   GRAPHICS in N&B's Display Settings: a submenu of reNut's graphics options.
- *
- * N&B (IDA): Display Settings is one scene (26, class DisplaySettings) that
- * the pause screen (tab 5, page object at pause + 376) and the main menu
- * (state 5, + 352) both open. Its init (sub_82560958) finds the brightness
- * and contrast sliders (+ 192, + 196; XuiSliders with the visual
- * list_pause_menu_slider_item, labelled by message 0x7E0 through
- * sub_8254B1A8) and, unless its args say not to (+ 232), shows the big font
- * row under them (useBigFontButton + 204, its tick + 208 and tick box + 212);
- * it shows the sliders disabled and focuses brightness; up and down move
- * between the rows through their NavUp / NavDown ids (sub_8254B0F0). Pressing
- * A (pause sub_8258DA40, main sub_825A0F98) edits the focused row: it is
- * enabled and its navigation cleared until A again (sub_82560C58 puts the
- * sliders' navigation back, contrast's down the big font row). sub_82560DF8
- * sets the A prompt for the focused row (+ 220 editing, + 224 the prompt bar).
- *
- * Game Information is scene 27 (class GameInformation; pause tab 4, main
- * state 2). Its init (sub_825613A8) fills its menu list (+ 200, class
- * GameInformationMenuList, one row per entry, row text from the list's
- * sub_82562CE8) and leaves it focused in state 5 (+ 320); its other states
- * show a panel and disable the host's tab list (+ 220: the pause's tabs, the
- * main menu's list), which keeps the host's B and tab switching off, and B
- * (its backButton, + 228) returns to the menu list. Its presses come to
- * sub_82561960; the hidden left / right buttons (+ 232, + 236) are disabled
- * in state 5. + 260 is the host's subtitle text, + 328 a copy of what it
- * said, + 304 the prompt bar (sub_82555490 / 500 / 570 / 5E0: A, B, X, Y).
- * A list's rows are 3024-byte records (+ 8: column 0's text, wchar_t[128],
- * then + 268 = 0, + 272 its length), filled when shown while + 3016 is 0.
- *
- * Here Display Settings gets a row under its last (the big font row when the
- * game shows it, else contrast), GRAPHICS: a button made at
- * init with Game Information's menu item visual (list_pause_menu_item, its
- * text set by XM_SET_TEXT 0x7E0), linked into the navigation, the rows
- * respaced to fit the box. A on it opens Game Information the way the host
- * would (pause sub_8258D038(4), main sub_8259F940(2)), and that page's init
- * turns it into the graphics menu: its menu list lists the options as
- * "NAME: VALUE", the host's tabs are disabled as in its other states, and the
- * left / right buttons are enabled. A or right moves the selected option to
- * its next value, left to its previous; each change applies at once and is
- * saved to the config. B goes back (pause sub_8258D038(5), main
- * sub_8259F940(5)) with GRAPHICS focused. The host is switched from its own
- * code only (its press handler or its update), never from the page's: the
- * switch destroys the page. Display Settings' name, text key
- * pause_displaysettings (the pause tab's title and the main menu's entry,
- * looked up by sub_825D7F28), reads DISPLAY/GRAPHICS (capitals, as the
- * game's menu text is).
- *
- * The pause screen also gets a tab of its own, RENUT SETTINGS, with the rest
- * of reNut's settings (every Nuts&Bolts category but Graphics: cheats and the
- * like). N&B's pause (constructor sub_8258B948) lists its visible tab types in
- * dword_82E1045C (8 slots, count dword_82E10458), each type's icon asset and
- * title key in off_82D8B7B8 ({icon, key} by type); type 3, the town map
- * (pausemenutownmap, pause_map), is never listed, and sub_8258D038 shows it
- * as prompts only. Here the constructor lists it last, its title reads RENUT
- * SETTINGS and its icon is a gear (gpu/render/settings_icon.cpp swaps the map
- * icon's texture), and showing it shows Game Information (type 4) made into
- * the categories, as Display Settings is a tab with GRAPHICS on it. A on a
- * category is the pause's (its aButton, the page's own off as in the game's
- * menu state; or the list's press, which goes on to the pause), and the
- * pause's press shows Game Information again made into that category's
- * settings, as GRAPHICS is shown: the tabs off, each setting "NAME: VALUE"
- * (on/off switches, settings with a list of values or a range, and commands,
- * which A runs), A moving it to its next value in place. B there (the
- * pause's) shows the categories again with it selected, as GRAPHICS' B shows
- * Display Settings; on the categories B resumes the game as on any tab.
- * Pages are shown from the pause's own press or update (host code, its
- * buttons outliving the page), never from the page's own handlers (showing a
- * page destroys the one there), and the new page's list is focused again on
- * the next updates. On the categories left / right on the stick change tab
- * as on the game's tabs, done here: the page's navigation (sub_823B33E8)
- * keeps the focus and the pause's update moves the tab bar's selection and
- * shows that tab (as sub_8258C948 does for its leftButton / rightButton).
- */
-#include <rex/cvar.h>
-#include <rex/hook.h>
-#include <rex/system/kernel_state.h>
-#include <rex/system/xmemory.h>
+#include <rex/console_command.h>
+#include <rex/kernel/heap.h>
+#include <rex/kernel/title_runtime.h>
+#include <rex/ppc/hook.h>
+#include <rex/result.h>
+#include <rex/setting.h>
+#include <rex/settings_registry.h>
 #include <rex/types.h>
 
 #include <algorithm>
@@ -93,8 +21,9 @@
 #include <unordered_map>
 #include <vector>
 
-#include "renut_engine/app/renut_logging.h"
+#include "renut_engine/app/renut_settings.h"
 #include "renut_engine/game/graphics_menu.h"
+#include "renut_engine/game/guest_call.h"
 
 // Hooked.
 REX_EXTERN(__imp__sub_82560958);  // DisplaySettings init
@@ -112,9 +41,9 @@ REX_EXTERN(__imp__sub_825A0458);  // main menu press
 REX_EXTERN(__imp__sub_8259FDA8);  // main menu update
 REX_EXTERN(__imp__sub_825D7F28);  // text lookup (table, key, wchar_t *out, out length, flag)
 REX_EXTERN(__imp__sub_823B33E8);  // a page's navigation (page, XUIMessageControlNavigate *, handled *)
-REX_EXTERN(__imp__sub_82A27180);  // XuiElementSetBounds(h, float width, float height)
 
 // Called.
+REX_IMPORT(__imp__sub_82A27180, XuiElementSetBounds, u32(u32, f64, f64));  // (h, float width, float height)
 REX_IMPORT(__imp__sub_82A1F6B8, XuiCreateObject, u32(u32, u32));
 REX_IMPORT(__imp__sub_82A24F68, XuiElementAddChild, u32(u32, u32));
 REX_IMPORT(__imp__sub_82229C90, XuiElementGetParent, u32(u32, u32));
@@ -143,8 +72,8 @@ REX_IMPORT(__imp__sub_8254B0F0, SetNavUpDown, void(u32, u32, u32));       // (h,
 REX_IMPORT(__imp__sub_8254B1A8, MakeLabelMessage, void(u32, u32, u32));  // (msg, data, text)
 REX_IMPORT(__imp__sub_82A25808, XuiImageElementSetImagePath, u32(u32, u32));
 REX_IMPORT(__imp__sub_8254B058, AddAssetTexture, u32(u32, u32, u32, u32));  // (texture asset, name, HXUITEX *, 0)
-REX_IMPORT(__imp__gameAssetRefGetAid, GameAssetRefGetAid, u32(u32, u32, u32));
-REX_IMPORT(__imp__assetManOpenParams, AssetManOpenParams, u32(u32, u32));
+REX_IMPORT(__imp__rex_gameAssetRefGetAid, GameAssetRefGetAid, u32(u32, u32, u32));
+REX_IMPORT(__imp__rex_assetManOpenParams, AssetManOpenParams, u32(u32, u32));
 REX_IMPORT(__imp__sub_821DDBF0, AssetQuery, u32(u32, u32));  // ({vtable, aid} *, provider): a loaded bundle has it
 REX_IMPORT(__imp__sub_82555490, PromptA, void(u32, u32));
 REX_IMPORT(__imp__sub_82555500, PromptB, void(u32, u32));
@@ -152,7 +81,7 @@ REX_IMPORT(__imp__sub_82555570, PromptX, void(u32, u32));
 REX_IMPORT(__imp__sub_825555E0, PromptY, void(u32, u32));
 REX_IMPORT(__imp__sub_8258D038, PauseShowPage, void(u32, u32));
 REX_IMPORT(__imp__sub_8259F940, MainShowPage, void(u32, u32));
-REX_IMPORT(__imp__uiSystemSfxPlayOperation, PlayUiSound, void(u32, u32));
+REX_IMPORT(__imp__rex_uiSystemSfxPlayOperation, PlayUiSound, void(u32, u32));
 
 namespace {
 
@@ -208,15 +137,11 @@ constexpr uint32_t kPauseTabSlots = 8;
 constexpr uint32_t kPauseTabRenut = 3;  // the unused town map tab
 constexpr uint32_t kPauseBusy = 456;    // nonzero: sub_8258D038 shows no page
 constexpr uint32_t kPauseToolBar = 192;  // toolBarList: the tab bar
-// The game's button (aButton and the like) being pressed: set when a press is
-// handled (sub_823AFCC0), cleared at its release (sub_823B0110); no button
-// takes a key while it's set (sub_823AFEA8). A page destroyed under its
-// pressed button never clears it, and every button stays dead.
+// The game's button being pressed (set by sub_823AFCC0, cleared at release by
+// sub_823B0110); while set no button takes a key.
 constexpr uint32_t kButtonPressed = 0x82E19A34;
-// XUIMessageControlNavigate: + 0 direction (XUI_CONTROL_NAVIGATE: 0 up,
-// 1 down, 2 left, 3 right, 4 / 5 tab forward / back; sub_82A26900 takes
-// NavUp, NavDown, NavLeft, NavRight in that order), + 4 from, + 8 to,
-// + 12 stay.
+// XUIMessageControlNavigate: + 0 direction (0 up, 1 down, 2 left, 3 right,
+// 4 / 5 tab forward / back), + 4 from, + 8 to, + 12 stay.
 constexpr uint32_t kNavigateLeft = 2;
 constexpr uint32_t kNavigateRight = 3;
 // Main menu.
@@ -245,9 +170,8 @@ constexpr std::string_view kCategoryPrefix = "Nuts&Bolts/";
 constexpr std::string_view kGraphicsCategory = "Nuts&Bolts/Graphics";
 constexpr std::string_view kFirstCategory = "Nuts&Bolts/Cheats";
 
-// The TV on GRAPHICS, by the row's height: as big and as far in as the
-// sliders' icons. XuiImage SizeMode 0x10: stretched to fit, aspect kept,
-// centred (ComputeBrushXFormForObject; 4 stretches, 8 fits from the corner).
+// The TV icon on GRAPHICS, sized by the row's height like the sliders' icons;
+// XuiImage SizeMode 0x10 fits it centred with its aspect kept.
 constexpr float kIconSize = 0.9f;
 constexpr float kIconLeft = 0.05f;
 constexpr float kIconRaise = 0.1f;  // above the middle, level with the name
@@ -265,6 +189,7 @@ struct Option {
 constexpr Option kOptions[] = {
     {"renut_resolution", "Resolution"},
     {"renut_field_of_view", "Field of View"},
+    {"renut_time_of_day", "Time of Day"},
     {"renut_shadow_resolution", "Shadow Resolution"},
     {"renut_shadow_softness", "Shadow Softness"},
     {"renut_anisotropic_filtering", "Anisotropic Filtering"},
@@ -312,17 +237,9 @@ std::string g_category;
 std::string g_category_return;
 // B on a category's page (its own back button): the pause's update goes back.
 bool g_back_requested = false;
-// Every input the menus take goes to the player's focused element: the game's
-// dispatcher (sub_82247D88; sub_823B7660 for ticks) asks
-// XuiElementGetUserFocus (sub_82263290: dword_82DAA740 for player 255,
-// unk_82DAA744[n] for 0-3) and sends nothing without one. XuiElementSetFocus
-// (sub_82A27CA8), the only writer, stores null when its element refuses
-// (hidden, disabled), as list slots past the last row are (sub_82A3F750) and
-// as what a scene or list hands the focus on to (sub_82A3EED8 /
-// sub_82A31EF8, message 12) may be. A null focus leaves the pause dead but
-// for Start. So while the reNut page is up its list takes the focus back
-// whenever it's null (the pause's update), logged once a page.
-bool g_focus_lost_logged = false;
+// A null user focus (sub_82263290) leaves the pause dead but for Start, so
+// while the reNut page is up the pause's update gives its list the focus back.
+
 // Left / right on the reNut tab's list: the tab to step to (-1, 1), which
 // the pause's update shows.
 int g_tab_step = 0;
@@ -368,32 +285,9 @@ void StoreFloat(uint8_t *base, uint32_t va, float value) {
 
 bool Failed(uint32_t hr) { return int32_t(hr) < 0; }
 
-// Guest calls from a hook: an isolated context whose stack pointer sits under
-// the scratch space handed out (out-parameters, structs), leaving a callee
-// room to write its caller's parameter area.
-class Guest {
- public:
-  Guest(PPCContext &ctx, uint8_t *base) : frame_(ctx), base_(base), low_(ctx.r1.u32 - kGap) {
-    frame_.ctx.r1.u32 = low_ - kCalleeArea;
-  }
-
-  // Zeroed scratch space for the calls made through this.
-  uint32_t Alloc(uint32_t size) {
-    low_ -= (size + 15) & ~15u;
-    std::memset(base_ + low_, 0, size);
-    frame_.ctx.r1.u32 = low_ - kCalleeArea;
-    return low_;
-  }
-
-  rex::CallFrame &frame() { return frame_; }
-
- private:
-  static constexpr uint32_t kGap = 0x100;
-  static constexpr uint32_t kCalleeArea = 0x60;
-  rex::CallFrame frame_;
-  uint8_t *base_;
-  uint32_t low_;
-};
+// Guest calls from a hook, on its own context: scratch space under its stack,
+// each call opening its frame below that.
+using Guest = renut::guest::Guest;
 
 // A wide (UTF-16, big-endian) copy of an ASCII string in guest memory, made
 // once and kept.
@@ -401,7 +295,7 @@ uint32_t Wide(uint8_t *base, const std::string &text) {
   static std::unordered_map<std::string, uint32_t> strings;
   if (auto it = strings.find(text); it != strings.end())
     return it->second;
-  const uint32_t va = REX_KERNEL_MEMORY()->SystemHeapAlloc(uint32_t(2 * (text.size() + 1)));
+  const uint32_t va = REX_RUNTIME()->GetGuestHeap().SystemHeapAlloc(uint32_t(2 * (text.size() + 1)));
   if (!va)
     return kWideEmpty;
   for (size_t i = 0; i < text.size(); ++i)
@@ -417,40 +311,140 @@ std::string Upper(std::string s) {
   return s;
 }
 
-const rex::cvar::FlagEntry *FindFlag(const char *name) {
-  for (const auto &entry : rex::cvar::GetRegistry())
-    if (entry.name == name)
-      return &entry;
-  return nullptr;
+// reNut's settings and commands by their old categories, which settings no longer
+// carry; each category's entries in its menu order.
+constexpr renut::graphics_menu::CategorizedSetting kCategorized[] = {
+    {"change_vehicles_anywhere", "Nuts&Bolts/Cheats"},
+    {"no_notes_spent", "Nuts&Bolts/Cheats"},
+    {"infinite_fuel_and_ammo", "Nuts&Bolts/Cheats"},
+    {"infinite_health", "Nuts&Bolts/Cheats"},
+    {"infinite_parts", "Nuts&Bolts/Cheats"},
+    {"no_out_of_bounds_reset", "Nuts&Bolts/Cheats"},
+    {"unlock_all_parts", "Nuts&Bolts/Cheats"},
+    {"max_acquired_parts_access", "Nuts&Bolts/Cheats"},
+    {"notes_amount", "Nuts&Bolts/Cheats"},
+    {"set_notes", "Nuts&Bolts/Cheats"},
+    {"unlimited_vehicle_building", "Nuts&Bolts/Cheats"},
+    {"walk_up_slopes", "Nuts&Bolts/Cheats"},
+    {"debug_main_menu", "Nuts&Bolts/Debug"},
+    {"debug_player_position", "Nuts&Bolts/Debug"},
+    {"renut_pipeline_capture", "Nuts&Bolts/Debug"},
+    {"StopNSwap", "Nuts&Bolts/Events"},
+    {"dial_fill_color_power", "Nuts&Bolts/Garage"},
+    {"dial_fill_color_ammo", "Nuts&Bolts/Garage"},
+    {"dial_fill_color_fuel", "Nuts&Bolts/Garage"},
+    {"dial_fill_color_weight", "Nuts&Bolts/Garage"},
+    {"dial_fill_color_parts", "Nuts&Bolts/Garage"},
+    {"dial_fill_color_strength", "Nuts&Bolts/Garage"},
+    {"dial_fill_color_speed", "Nuts&Bolts/Garage"},
+    {"renut_resolution", "Nuts&Bolts/Graphics"},
+    {"renut_aspect_ratio", "Nuts&Bolts/Graphics"},
+    {"renut_field_of_view", "Nuts&Bolts/Graphics"},
+    {"renut_time_of_day", "Nuts&Bolts/Graphics"},
+    {"renut_shadow_resolution", "Nuts&Bolts/Graphics"},
+    {"renut_shadow_softness", "Nuts&Bolts/Graphics"},
+    {"renut_anisotropic_filtering", "Nuts&Bolts/Graphics"},
+    {"renut_ambient_occlusion", "Nuts&Bolts/Graphics"},
+    {"renut_ssao", "Nuts&Bolts/Graphics"},
+    {"renut_reflection_resolution", "Nuts&Bolts/Graphics"},
+    {"renut_lod_distance", "Nuts&Bolts/Graphics"},
+    {"renut_grass_distance", "Nuts&Bolts/Graphics"},
+    {"disable_lod", "Nuts&Bolts/Graphics"},
+    {"renut_depth_of_field", "Nuts&Bolts/Graphics"},
+    {"renut_bloom", "Nuts&Bolts/Graphics"},
+    {"renut_post_process_precision", "Nuts&Bolts/Graphics"},
+    {"renut_msaa", "Nuts&Bolts/Graphics"},
+    {"renut_alpha_to_coverage", "Nuts&Bolts/Graphics"},
+    {"renut_anti_aliasing", "Nuts&Bolts/Graphics"},
+    {"renut_vsync", "Nuts&Bolts/Graphics"},
+    {"renut_gpu_backend", "Nuts&Bolts/Graphics"},
+    {"renut_gpu_dred", "Nuts&Bolts/Graphics"},
+    {"renut_vulkan_debug_layers", "Nuts&Bolts/Graphics"},
+    {"renut_threaded_recording", "Nuts&Bolts/Graphics"},
+    {"renut_shader_capture_dir", "Nuts&Bolts/Graphics"},
+    {"renut_keyboard", "Nuts&Bolts/Input"},
+    {"renut_key_forward", "Nuts&Bolts/Input"},
+    {"renut_key_back", "Nuts&Bolts/Input"},
+    {"renut_key_left", "Nuts&Bolts/Input"},
+    {"renut_key_right", "Nuts&Bolts/Input"},
+    {"renut_key_walk", "Nuts&Bolts/Input"},
+    {"renut_key_a", "Nuts&Bolts/Input"},
+    {"renut_key_b", "Nuts&Bolts/Input"},
+    {"renut_key_x", "Nuts&Bolts/Input"},
+    {"renut_key_y", "Nuts&Bolts/Input"},
+    {"renut_key_lb", "Nuts&Bolts/Input"},
+    {"renut_key_rb", "Nuts&Bolts/Input"},
+    {"renut_key_lt", "Nuts&Bolts/Input"},
+    {"renut_key_rt", "Nuts&Bolts/Input"},
+    {"renut_key_start", "Nuts&Bolts/Input"},
+    {"renut_key_back_button", "Nuts&Bolts/Input"},
+    {"renut_key_ls", "Nuts&Bolts/Input"},
+    {"renut_key_rs", "Nuts&Bolts/Input"},
+    {"renut_key_dpad_up", "Nuts&Bolts/Input"},
+    {"renut_key_dpad_down", "Nuts&Bolts/Input"},
+    {"renut_key_dpad_left", "Nuts&Bolts/Input"},
+    {"renut_key_dpad_right", "Nuts&Bolts/Input"},
+    {"renut_key_guide", "Nuts&Bolts/Input"},
+    {"renut_mouse_camera", "Nuts&Bolts/Input"},
+    {"renut_mouse_sensitivity", "Nuts&Bolts/Input"},
+    {"renut_mouse_invert_y", "Nuts&Bolts/Input"},
+    {"renut_disable_extra_controllers", "Nuts&Bolts/Input"},
+    {"menu_background_color", "Nuts&Bolts/Menus"},
+    {"renut_title_logo", "Nuts&Bolts/Menus"},
+    {"renut_mods", "Nuts&Bolts/Mods"},
+    {"renut_mods_folder", "Nuts&Bolts/Mods"},
+    {"frame_cap", "Nuts&Bolts/Performance"},
+    {"renut_physics_whole_steps", "Nuts&Bolts/Performance"},
+    {"renut_physics_substeps", "Nuts&Bolts/Performance"},
+    {"fps_overlay", "Nuts&Bolts/Performance"},
+    {"fps_overlay_size", "Nuts&Bolts/Performance"},
+    {"banjo_skin", "Nuts&Bolts/Skins"},
+};
+
+// A name in reNut's scope ("renut.<old cvar name>").
+std::string FullName(const std::string &name) {
+  return std::string(renut::settings::kScope) + "." + name;
 }
 
-std::vector<std::string> Values(const rex::cvar::FlagEntry &entry) {
-  if (entry.type == rex::cvar::FlagType::Boolean)
+rex::SettingBase *FindSetting(const std::string &name) {
+  auto found = REX_SETTINGS().Find(FullName(name));
+  return found ? *found : nullptr;
+}
+
+bool IsCommand(const std::string &name) {
+  const std::string full = FullName(name);
+  for (const rex::ConsoleCommand *command : REX_SETTINGS().EnumerateCommands(renut::settings::kScope))
+    if (command->GetName() == full)
+      return true;
+  return false;
+}
+
+std::vector<std::string> Values(const rex::SettingBase &setting) {
+  if (setting.GetType() == rex::SettingType::kBool)
     return {"false", "true"};
-  return entry.constraints.allowed_values;
+  return setting.GetConstraints().allowed;
 }
 
-bool IsNumber(const rex::cvar::FlagEntry &entry) {
-  using rex::cvar::FlagType;
-  return entry.type == FlagType::Int32 || entry.type == FlagType::Int64 || entry.type == FlagType::Uint32 ||
-         entry.type == FlagType::Uint64 || entry.type == FlagType::Double;
+bool IsNumber(const rex::SettingBase &setting) {
+  using rex::SettingType;
+  const SettingType type = setting.GetType();
+  return type == SettingType::kI32 || type == SettingType::kI64 || type == SettingType::kU32 ||
+         type == SettingType::kU64 || type == SettingType::kF64;
 }
 
 // A number with a range and no list of values: stepped through the range.
-bool IsRanged(const rex::cvar::FlagEntry &entry) {
-  return IsNumber(entry) && entry.constraints.allowed_values.empty() && entry.constraints.min &&
-         entry.constraints.max && *entry.constraints.max > *entry.constraints.min;
+bool IsRanged(const rex::SettingBase &setting) {
+  const rex::SettingConstraints &c = setting.GetConstraints();
+  return IsNumber(setting) && c.allowed.empty() && c.min && c.max && *c.max > *c.min;
 }
 
-// Whether the pad can change it here: an on/off switch, a list of values, a
-// ranged number, or a command. Free text (key binds, paths, colours) and
-// settings read only at startup are left to the settings window (F4).
-bool PadEditable(const rex::cvar::FlagEntry &entry) {
-  using rex::cvar::FlagType;
-  if (entry.lifecycle == rex::cvar::Lifecycle::kInitOnly)
+// Whether the pad can change it here: an on/off switch, a list of values or a
+// ranged number (the rest is left to the settings window, F4). Commands always can.
+bool PadEditable(const rex::SettingBase &setting) {
+  if (setting.GetConstraints().life == rex::SettingLife::kStartupOnly)
     return false;
-  return entry.type == FlagType::Boolean || entry.type == FlagType::Command ||
-         entry.constraints.allowed_values.size() >= 2 || IsRanged(entry);
+  return setting.GetType() == rex::SettingType::kBool || setting.GetConstraints().allowed.size() >= 2 ||
+         IsRanged(setting);
 }
 
 // "renut_host_cheats" as "HOST CHEATS".
@@ -468,20 +462,27 @@ std::vector<Row> GraphicsRows() {
 }
 
 // The reNut tab's categories (Cheats first, then by name), or one category's
-// settings in registry order.
+// settings in kCategorized's order. Only registered ones show.
 std::vector<Row> RenutRows(const std::string &category) {
   std::vector<Row> rows;
-  for (const auto &entry : rex::cvar::GetRegistry()) {
-    if (entry.category.rfind(kCategoryPrefix, 0) != 0 || entry.category == kGraphicsCategory || !PadEditable(entry))
+  for (const renut::graphics_menu::CategorizedSetting &entry : kCategorized) {
+    const std::string name = entry.name;
+    const std::string entry_category = entry.category;
+    if (entry_category.rfind(kCategoryPrefix, 0) != 0 || entry_category == kGraphicsCategory)
       continue;
+    const bool command = IsCommand(name);
+    if (!command) {
+      const rex::SettingBase *setting = FindSetting(name);
+      if (!setting || !PadEditable(*setting))
+        continue;
+    }
     if (!category.empty()) {
-      if (entry.category == category)
-        rows.push_back({entry.type == rex::cvar::FlagType::Command ? Row::Kind::kCommand : Row::Kind::kOption,
-                        entry.name, CvarLabel(entry.name)});
+      if (entry_category == category)
+        rows.push_back({command ? Row::Kind::kCommand : Row::Kind::kOption, name, CvarLabel(name)});
       continue;
     }
-    if (std::none_of(rows.begin(), rows.end(), [&](const Row &row) { return row.name == entry.category; }))
-      rows.push_back({Row::Kind::kCategory, entry.category, Upper(entry.category.substr(kCategoryPrefix.size()))});
+    if (std::none_of(rows.begin(), rows.end(), [&](const Row &row) { return row.name == entry_category; }))
+      rows.push_back({Row::Kind::kCategory, entry_category, Upper(entry_category.substr(kCategoryPrefix.size()))});
   }
   if (category.empty())
     std::sort(rows.begin(), rows.end(), [](const Row &a, const Row &b) {
@@ -496,24 +497,24 @@ std::vector<Row> RenutRows(const std::string &category) {
 std::string RowText(const Row &row) {
   if (row.kind != Row::Kind::kOption)
     return Upper(row.label);
-  const rex::cvar::FlagEntry *entry = FindFlag(row.name.c_str());
-  if (!entry)
+  const rex::SettingBase *setting = FindSetting(row.name);
+  if (!setting)
     return Upper(row.label);
-  std::string value = rex::cvar::GetFlagByName(row.name);
-  if (entry->type == rex::cvar::FlagType::Boolean)
+  std::string value = setting->GetText();
+  if (setting->GetType() == rex::SettingType::kBool)
     value = value == "true" || value == "1" ? "On" : "Off";
   std::string text = row.label + ": " + value;
-  if (entry->lifecycle == rex::cvar::Lifecycle::kRequiresRestart)
+  if (setting->GetConstraints().life == rex::SettingLife::kRestart)
     text += " (restart)";
   return Upper(text);
 }
 
 // A ranged number's next value: a twentieth of its range a step (whole
 // numbers at least 1), kept in the range.
-std::string StepNumber(const rex::cvar::FlagEntry &entry, const std::string &current, int dir) {
-  const double lo = *entry.constraints.min;
-  const double hi = *entry.constraints.max;
-  const bool whole = entry.type != rex::cvar::FlagType::Double;
+std::string StepNumber(const rex::SettingBase &setting, const std::string &current, int dir) {
+  const double lo = *setting.GetConstraints().min;
+  const double hi = *setting.GetConstraints().max;
+  const bool whole = setting.GetType() != rex::SettingType::kF64;
   double step = (hi - lo) / 20.0;
   if (whole)
     step = std::max(1.0, std::round(step));
@@ -528,41 +529,38 @@ std::string StepNumber(const rex::cvar::FlagEntry &entry, const std::string &cur
 // Moves the option to its next (dir 1) or previous (dir -1) value, applies it
 // and saves the config.
 bool StepOption(const std::string &cvar, int dir) {
-  const rex::cvar::FlagEntry *entry = FindFlag(cvar.c_str());
-  if (!entry)
+  const rex::SettingBase *setting = FindSetting(cvar);
+  if (!setting)
     return false;
-  const std::string current_text = rex::cvar::GetFlagByName(cvar);
+  const std::string current_text = setting->GetText();
   std::string next;
-  if (IsRanged(*entry)) {
-    next = StepNumber(*entry, current_text, dir);
+  if (IsRanged(*setting)) {
+    next = StepNumber(*setting, current_text, dir);
     if (next == current_text)
       return false;
   } else {
-    const std::vector<std::string> values = Values(*entry);
+    const std::vector<std::string> values = Values(*setting);
     if (values.size() < 2)
       return false;
     std::string current = current_text;
-    if (entry->type == rex::cvar::FlagType::Boolean)
+    if (setting->GetType() == rex::SettingType::kBool)
       current = current == "true" || current == "1" ? "true" : "false";
     const int count = int(values.size());
     const auto it = std::find(values.begin(), values.end(), current);
     const int index = it == values.end() ? 0 : int(it - values.begin());
     next = values[size_t(((index + dir) % count + count) % count)];
   }
-  if (!rex::cvar::SetFlagByName(cvar, next))
+  if (!REX_SETTINGS().SetText(FullName(cvar), next))
     return false;
   if (!g_config_path.empty())
-    rex::cvar::SaveConfig(g_config_path);
+    (void)REX_SETTINGS().Save(g_config_path);
   return true;
 }
 
 // A command row: A (or right) runs it.
 bool RunCommand(const std::string &cvar) {
-  const rex::cvar::FlagEntry *entry = FindFlag(cvar.c_str());
-  if (!entry || !entry->command_callback)
-    return false;
-  entry->command_callback("");
-  return true;
+  const rex::Result<void> ran = REX_SETTINGS().Run(FullName(cvar), "");
+  return ran || ran.error().category != rex::ErrorCategory::kNotFound;
 }
 
 // Column 0 of a list row record, as sub_823B2798 writes it.
@@ -576,7 +574,7 @@ void WriteRowText(uint8_t *base, uint32_t row, const std::string &text) {
 }
 
 void SetStringProperty(Guest &g, uint8_t *base, uint32_t obj, const char *name, const char *value) {
-  auto &f = g.frame();
+  auto &f = g.ctx();
   const uint32_t id = g.Alloc(4);
   const uint32_t val = g.Alloc(20);
   if (Failed(XuiObjectGetPropertyId(f, base, obj, Wide(base, name), id)))
@@ -587,7 +585,7 @@ void SetStringProperty(Guest &g, uint8_t *base, uint32_t obj, const char *name, 
 }
 
 void SetUnsignedProperty(Guest &g, uint8_t *base, uint32_t obj, const char *name, uint32_t value) {
-  auto &f = g.frame();
+  auto &f = g.ctx();
   const uint32_t id = g.Alloc(4);
   const uint32_t val = g.Alloc(20);
   if (Failed(XuiObjectGetPropertyId(f, base, obj, Wide(base, name), id)))
@@ -598,7 +596,7 @@ void SetUnsignedProperty(Guest &g, uint8_t *base, uint32_t obj, const char *name
 }
 
 float FloatProperty(Guest &g, uint8_t *base, uint32_t obj, const char *name) {
-  auto &f = g.frame();
+  auto &f = g.ctx();
   const uint32_t id = g.Alloc(4);
   const uint32_t val = g.Alloc(20);
   if (Failed(XuiObjectGetPropertyId(f, base, obj, Wide(base, name), id)) ||
@@ -609,42 +607,36 @@ float FloatProperty(Guest &g, uint8_t *base, uint32_t obj, const char *name) {
 }
 
 uint32_t UserFocus(Guest &g, uint8_t *base, uint32_t page) {
-  return XuiElementGetUserFocus(g.frame(), base, base[page + kUser]);
+  return XuiElementGetUserFocus(g.ctx(), base, base[page + kUser]);
 }
 
 
-// The Display Settings tab's TV as a named XUI texture, the way sub_8254B270
-// gives the sliders their icons (the asset kept open, like theirs); made once,
-// once its bundle is loaded (opening a missing asset stops the game with the
-// dirty disc error).
+// The Display Settings tab's TV as a named XUI texture (as sub_8254B270 does
+// for the sliders' icons), made once its bundle is loaded.
 uint32_t GraphicsIcon(Guest &g, uint8_t *base) {
   static bool made = false;
   static uint32_t name = 0;
   if (made)
     return name;
-  auto &f = g.frame();
+  auto &f = g.ctx();
   const uint32_t aid = g.Alloc(16);
   const uint32_t texture = g.Alloc(4);
+  // No asset named pausemenudisplaysettings: no icon.
   if (!(GameAssetRefGetAid(f, base, kTvIconAsset, aid, 0) & 0xFF)) {
     made = true;
-    RNUT_WARN("graphics menu: no asset named pausemenudisplaysettings for the TV icon");
     return 0;
   }
+  // Not loaded yet: asked again later.
   const uint32_t query = g.Alloc(8);
   Store32(base, query, kAssetQueryVtable);
   Store32(base, query + 4, Load32(base, aid));
-  if (!(AssetQuery(f, base, query, kAnyProvider) & 0xFF)) {
-    RNUT_INFO("graphics menu: the TV icon isn't loaded yet (aid {:08X})", Load32(base, aid));
+  if (!(AssetQuery(f, base, query, kAnyProvider) & 0xFF))
     return 0;
-  }
   made = true;
   const uint32_t asset = AssetManOpenParams(f, base, aid, 0);
   const uint32_t icon = Wide(base, "tex://renutGraphicsIcon");
-  if (!asset || Failed(AddAssetTexture(f, base, asset, icon, texture, 0))) {
-    RNUT_WARN("graphics menu: couldn't make the TV icon");
+  if (!asset || Failed(AddAssetTexture(f, base, asset, icon, texture, 0)))
     return 0;
-  }
-  RNUT_INFO("graphics menu: TV icon ready");
   name = icon;
   return name;
 }
@@ -657,7 +649,7 @@ bool BigFontShown(const uint8_t *base, uint32_t page) {
 // Down from the row above GRAPHICS (the big font row when it shows, else
 // contrast) to GRAPHICS.
 void LinkLastRow(Guest &g, uint8_t *base, uint32_t page) {
-  auto &f = g.frame();
+  auto &f = g.ctx();
   if (BigFontShown(base, page))
     SetNavUpDown(f, base, Load32(base, page + kDisplayBigFont), Wide(base, "displayContrastSlider"),
                  Wide(base, kRowId));
@@ -672,7 +664,7 @@ void AddGraphicsRow(PPCContext &ctx, uint8_t *base, uint32_t page) {
   g_display_page = page;
   g_row = 0;
   Guest g(ctx, base);
-  auto &f = g.frame();
+  auto &f = g.ctx();
   const uint32_t contrast = Load32(base, page + kDisplayContrast);
   const uint32_t brightness = Load32(base, page + kDisplayBrightness);
   const bool big_font = BigFontShown(base, page);
@@ -684,17 +676,14 @@ void AddGraphicsRow(PPCContext &ctx, uint8_t *base, uint32_t page) {
   Store32(base, out, 0);
   XuiCreateObject(f, base, Wide(base, "XuiButton"), out);
   const uint32_t row = Load32(base, out);
-  if (!row) {
-    RNUT_WARN("graphics menu: couldn't make the GRAPHICS row");
+  if (!row)
     return;
-  }
   XuiElementAddChild(f, base, parent, row);
   SetStringProperty(g, base, row, "Id", kRowId);
   SetStringProperty(g, base, row, "Visual", kRowVisual);
 
-  // The box only fits the game's rows at its spacing: they and GRAPHICS share
-  // the span the game's took, the first half a row higher, a row and the new
-  // gap apart. GRAPHICS is as big as the sliders' rows.
+  // Respaces the game's rows and GRAPHICS to share the span the game's took,
+  // starting half a row higher; GRAPHICS is as big as the sliders' rows.
   const float width = FloatProperty(g, base, contrast, "Width");
   const float height = FloatProperty(g, base, contrast, "Height");
   std::vector<uint32_t> rows = {brightness, contrast};
@@ -733,10 +722,7 @@ void AddGraphicsRow(PPCContext &ctx, uint8_t *base, uint32_t page) {
   StoreFloat(base, position + 4, new_top + n * spacing);
   XuiElementSetPosition(f, base, row, position);
   if (width > 0.0f && height > 0.0f) {
-    f.ctx.r3.u64 = row;
-    f.ctx.f1.f64 = width;
-    f.ctx.f2.f64 = height;
-    __imp__sub_82A27180(f.ctx, base);
+    XuiElementSetBounds(f, base, row, double(width), double(height));
   }
 
   // XuiControlSetText's message.
@@ -744,9 +730,8 @@ void AddGraphicsRow(PPCContext &ctx, uint8_t *base, uint32_t page) {
   const uint32_t data = g.Alloc(0x30);
   MakeLabelMessage(f, base, message, data, Wide(base, kTitle));
   XuiSendMessage(f, base, row, message);
-  // The visual takes its icon from a list's second column, which a button
-  // doesn't have: the TV is an image of its own on the button, where the
-  // sliders' icons are, scaled to fit.
+  // A button has no icon column, so the TV is an image of its own on the
+  // button, where the sliders' icons are.
   const uint32_t icon = GraphicsIcon(g, base);
   Store32(base, out, 0);
   if (icon && height > 0.0f) {
@@ -759,10 +744,7 @@ void AddGraphicsRow(PPCContext &ctx, uint8_t *base, uint32_t page) {
     StoreFloat(base, position + 4, (height - side) * 0.5f - height * kIconRaise);
     StoreFloat(base, position + 8, 0.0f);
     XuiElementSetPosition(f, base, image, position);
-    f.ctx.r3.u64 = image;
-    f.ctx.f1.f64 = side;
-    f.ctx.f2.f64 = side;
-    __imp__sub_82A27180(f.ctx, base);
+    XuiElementSetBounds(f, base, image, double(side), double(side));
     SetUnsignedProperty(g, base, image, "SizeMode", kSizeModeFitCentred);
     XuiImageElementSetImagePath(f, base, image, icon);
   }
@@ -784,11 +766,10 @@ bool RowFocused(PPCContext &ctx, uint8_t *base, uint32_t page) {
   return UserFocus(g, base, page) == g_row;
 }
 
-// The menu list's rows: one per option, the selection on 'selected'. The rows
-// are made anew (the game's way, sub_82563058), so the list is focused again
-// as the init does: the focused row went with the old ones.
+// Remakes the menu list's rows (as sub_82563058 does), one per option, with
+// 'selected' selected and the list focused again.
 void FillList(Guest &g, uint8_t *base, uint32_t list, uint32_t selected, uint32_t user) {
-  auto &f = g.frame();
+  auto &f = g.ctx();
   const uint32_t handle = Load32(base, list + kListHandle);
   const uint32_t rows = Load32(base, list + kListRows);
   const uint32_t row_size = Load16(base, rows);
@@ -799,11 +780,8 @@ void FillList(Guest &g, uint8_t *base, uint32_t list, uint32_t selected, uint32_
   Store32(base, list + kListCount, rows_count);
   ListInsertItems(f, base, list, rows_count);
   selected = std::min(selected, rows_count ? rows_count - 1 : 0);
-  // The list gives its item controls to the rows on screen only, and setting
-  // its selection doesn't scroll (XuiList's XM_SET_CURSEL lays out with
-  // sub_82A38860(list, 0)): a row off screen has no item, and the list takes
-  // the focus itself (sub_82A2D540), which takes no input. So a row below the
-  // first screen is scrolled to first: the top row set to it.
+  // Setting the selection doesn't scroll, and an off-screen row has no item to
+  // focus, so the list is scrolled to the selected row first.
   if (selected)
     XuiListSetTopItem(f, base, handle, selected);
   XuiContainerSetCurSel(f, base, handle, selected);
@@ -813,7 +791,7 @@ void FillList(Guest &g, uint8_t *base, uint32_t list, uint32_t selected, uint32_
 // The page's prompts: A select, B 'back_key' (back, or the reNut tab's
 // categories: resume game, as the pause's tabs say).
 void SetInfoPrompts(Guest &g, uint8_t *base, uint32_t page, uint32_t back_key = kKeyBack) {
-  auto &f = g.frame();
+  auto &f = g.ctx();
   const uint32_t prompts = Load32(base, page + kInfoPrompts);
   if (prompts == kNone)
     return;
@@ -826,27 +804,22 @@ void SetInfoPrompts(Guest &g, uint8_t *base, uint32_t page, uint32_t back_key = 
 // Game Information as the graphics menu or the reNut tab.
 void SetUpPage(PPCContext &ctx, uint8_t *base, uint32_t page) {
   Guest g(ctx, base);
-  auto &f = g.frame();
+  auto &f = g.ctx();
   const uint32_t out = g.Alloc(4);
   XuiObjectFromHandle(f, base, Load32(base, page + kInfoMenuList), out);
   const uint32_t list = Load32(base, out);
-  if (!list) {
-    RNUT_WARN("graphics menu: Game Information has no menu list");
+  if (!list)
     return;
-  }
   g_info_page = page;
   g_info_list = list;
   g_exit_requested = false;
   g_back_requested = false;
   g_tab_step = 0;
-  g_focus_lost_logged = false;
   const bool renut = g_menu == Menu::kRenut;
   const bool categories = renut && g_category.empty();
   g_rows = renut ? RenutRows(g_category) : GraphicsRows();
   // The categories select the one last shown (back from it), a category's
-  // page its first setting (FillList scrolls to a row below the first
-  // screen: seen, row 5 selected unscrolled left the focus on the list
-  // itself, gameInformationList, and every input dead).
+  // page its first setting.
   uint32_t selected = 0;
   for (uint32_t i = 0; categories && i < g_rows.size(); ++i)
     if (g_rows[i].name == g_category_return)
@@ -854,17 +827,12 @@ void SetUpPage(PPCContext &ctx, uint8_t *base, uint32_t page) {
   g_category_return.clear();
   FillList(g, base, list, selected, base[page + kUser]);
   if (categories) {
-    // A tab: its tabs stay; A is the pause's (its aButton, as on Display
-    // Settings for GRAPHICS), which opens a category from the pause's own
-    // press, so the page's aButton is off as in the game's menu state
-    // (sub_82561B98(5)). Left / right change tab (the sub_823B33E8 hook).
+    // The categories keep the tabs; A is the pause's (it opens a category), so
+    // the page's aButton is off. Left / right change tab (sub_823B33E8 hook).
     ElementEnable(f, base, Load32(base, page + kInfoA), 0);
   } else {
-    // GRAPHICS and a category's page, as GRAPHICS is: the tabs off. GRAPHICS
-    // takes the page's hidden left / right buttons to change values; a
-    // category's page leaves them off (only A changes a value there), and its
-    // own back button: B is the pause's then, whose press shows the categories
-    // at once (the page's own could only once let go: kButtonPressed).
+    // Tabs off. GRAPHICS enables the hidden left / right buttons; a category's
+    // page disables its own back button so B is the pause's.
     ElementEnable(f, base, Load32(base, page + kInfoTabs), 0);
     if (!renut) {
       ElementEnable(f, base, Load32(base, page + kInfoLeft), 1);
@@ -892,10 +860,8 @@ void ForgetRenutPage() {
   g_tab_step = 0;
 }
 
-// The reNut tab shows a category's page ('category') or, "" (back from one),
-// the categories with it selected, as OpenGraphics / ExitGraphics show
-// GRAPHICS and Display Settings: from the pause's own press or update, the
-// page shown at once (Game Information again, made into the one asked for).
+// The reNut tab shows a category's page, or with "" the categories again with
+// the last one selected; called from the pause's own press or update.
 void ShowRenutPage(PPCContext &ctx, uint8_t *base, const std::string &category) {
   if (!g_info_page || g_menu != Menu::kRenut || g_host != Host::kPause)
     return;
@@ -906,7 +872,7 @@ void ShowRenutPage(PPCContext &ctx, uint8_t *base, const std::string &category) 
   g_info_list = 0;
   g_open_pending = true;
   Guest g(ctx, base);
-  auto &f = g.frame();
+  auto &f = g.ctx();
   // The tabs come back with the categories (a category's page had them off).
   if (category.empty())
     ElementEnable(f, base, Load32(base, page + kInfoTabs), 1);
@@ -918,13 +884,11 @@ void ShowRenutPage(PPCContext &ctx, uint8_t *base, const std::string &category) 
     SetInfoPrompts(g, base, g_info_page, category.empty() ? kPauseBackKey : kKeyBack);
 }
 
-// The reNut tab: the tab 'step' (-1, 1) along the tab bar, as the pause's
-// left / right do (sub_8258C948: the bar's selection moved, that tab's page
-// shown; the selection change updates the title and plays the move sound).
-// From the pause's update.
+// From the reNut tab, shows the tab 'step' (-1, 1) along the tab bar, as the
+// pause's left / right do (sub_8258C948). From the pause's update.
 void StepRenutTab(PPCContext &ctx, uint8_t *base, uint32_t pause, int step) {
   Guest g(ctx, base);
-  auto &f = g.frame();
+  auto &f = g.ctx();
   const uint32_t bar = Load32(base, pause + kPauseToolBar);
   const int32_t count = int32_t(Load32(base, kPauseTabCount));
   const int32_t from = int32_t(XuiContainerGetCurSel(f, base, bar));
@@ -932,7 +896,6 @@ void StepRenutTab(PPCContext &ctx, uint8_t *base, uint32_t pause, int step) {
   if (!bar || to < 0 || to >= count || count > int32_t(kPauseTabSlots))
     return;
   const uint32_t type = Load32(base, kPauseTabs + 4 * uint32_t(to));
-  RNUT_INFO("reNut tab: stick {} to tab {} (type {})", step < 0 ? "left" : "right", to, type);
   XuiContainerSetCurSel(f, base, bar, uint32_t(to));
   ForgetRenutPage();
   PauseShowPage(f, base, pause, type);
@@ -946,7 +909,7 @@ void OpenGraphics(PPCContext &ctx, uint8_t *base, Host host, uint32_t host_objec
   g_row = 0;
   g_display_page = 0;
   Guest g(ctx, base);
-  auto &f = g.frame();
+  auto &f = g.ctx();
   if (host == Host::kPause) {
     PlayUiSound(f, base, kSounds, 0);
     PauseShowPage(f, base, host_object, kPausePageInfo);  // the page opens now
@@ -969,7 +932,7 @@ void ExitGraphics(PPCContext &ctx, uint8_t *base) {
   g_exit_requested = false;
   g_focus_row = true;
   Guest g(ctx, base);
-  auto &f = g.frame();
+  auto &f = g.ctx();
   ElementEnable(f, base, Load32(base, page + kInfoTabs), 1);
   XuiTextElementSetText(f, base, Load32(base, page + kInfoSubtitle), page + kInfoSubtitleCopy);
   if (g_host == Host::kPause) {
@@ -982,7 +945,7 @@ void ExitGraphics(PPCContext &ctx, uint8_t *base) {
 
 void ChangeOption(PPCContext &ctx, uint8_t *base, uint32_t page, int dir) {
   Guest g(ctx, base);
-  auto &f = g.frame();
+  auto &f = g.ctx();
   const uint32_t selected = XuiContainerGetCurSel(f, base, Load32(base, page + kInfoMenuList));
   if (selected >= g_rows.size())
     return;
@@ -997,10 +960,8 @@ void ChangeOption(PPCContext &ctx, uint8_t *base, uint32_t page, int dir) {
   if (!StepOption(target.name, dir))
     return;
   PlayUiSound(f, base, kSounds, 2);
-  // Only this row changes, in place: making the rows anew loses the list's
-  // scrolling (the rows below the first screen went blank). Its record (what
-  // the list reads when the row comes into view) and, when it's on screen,
-  // its control.
+  // Updates only this row in place (remaking the rows loses the scrolling): its
+  // record and, when on screen, its control.
   const uint32_t handle = Load32(base, g_info_list + kListHandle);
   const uint32_t rows = Load32(base, g_info_list + kListRows);
   const uint32_t row = Load32(base, rows + 4) + Load16(base, rows) * selected;
@@ -1015,6 +976,8 @@ namespace renut::graphics_menu {
 
 void SetConfigPath(const std::filesystem::path &path) { g_config_path = path; }
 
+std::span<const CategorizedSetting> CategorizedSettings() { return kCategorized; }
+
 }  // namespace renut::graphics_menu
 
 // Display Settings' init, then GRAPHICS under its last row (the big font row,
@@ -1025,9 +988,8 @@ REX_HOOK_RAW(sub_82560958) {
   AddGraphicsRow(ctx, base, page);
 }
 
-// Leaving a row's editing puts back its navigation: the last row's down is
-// GRAPHICS (the game puts back only the sliders', contrast's down the big font
-// row).
+// Leaving a row's editing puts back its navigation; this relinks the last
+// row's down to GRAPHICS.
 REX_HOOK_RAW(sub_82560C58) {
   const uint32_t page = ctx.r3.u32;
   const uint32_t editing = ctx.r4.u32;
@@ -1048,7 +1010,7 @@ REX_HOOK_RAW(sub_82560DF8) {
     return;
   Guest g(ctx, base);
   if (UserFocus(g, base, page) == g_row)
-    PromptA(g.frame(), base, prompts, kKeySelect);
+    PromptA(g.ctx(), base, prompts, kKeySelect);
 }
 
 REX_HOOK_RAW(sub_8258DA40) {
@@ -1099,10 +1061,8 @@ REX_HOOK_RAW(sub_82561960) {
     return;
   }
   const uint32_t pressed = ctx.r4.u32;
-  // Handled, but on the reNut tab only the presses taken here: the others are
-  // left to the pause, as the game's handler does in its menu state. On the
-  // categories A is the pause's: the list's press goes on to it too (as
-  // GRAPHICS' row's does on Display Settings).
+  // Handled, except on the reNut tab where presses not taken here (and all on
+  // the categories) are left to the pause.
   const bool categories = g_menu == Menu::kRenut && g_category.empty();
   ctx.r3.u64 = 1;
   if (g_menu == Menu::kRenut &&
@@ -1139,10 +1099,8 @@ REX_HOOK_RAW(sub_82562CE8) {
   ctx.r3.u64 = 1;
 }
 
-// The pause's presses: B leaves GRAPHICS. On the reNut tab A on a category
-// shows its page and B there goes back to the categories (on them B resumes
-// the game, as on any tab), as Display Settings' GRAPHICS row and GRAPHICS'
-// B do: from the pause's own press.
+// The pause's presses: B leaves GRAPHICS; on the reNut tab A on a category
+// shows its page and B there goes back to the categories.
 REX_HOOK_RAW(sub_8258C948) {
   const uint32_t pause = ctx.r3.u32;
   const uint32_t pressed = ctx.r4.u32;
@@ -1161,7 +1119,7 @@ REX_HOOK_RAW(sub_8258C948) {
         (pressed == Load32(base, pause + kPauseA) || pressed == Load32(base, g_info_page + kInfoMenuList))) {
       Guest g(ctx, base);
       const uint32_t selected =
-          XuiContainerGetCurSel(g.frame(), base, Load32(base, g_info_page + kInfoMenuList));
+          XuiContainerGetCurSel(g.ctx(), base, Load32(base, g_info_page + kInfoMenuList));
       if (selected < g_rows.size() && g_rows[selected].kind == Row::Kind::kCategory) {
         const std::string category = g_rows[selected].name;
         ShowRenutPage(ctx, base, category);
@@ -1173,10 +1131,8 @@ REX_HOOK_RAW(sub_8258C948) {
   __imp__sub_8258C948(ctx, base);
 }
 
-// The pause's update: what the page's own presses and navigation asked for
-// (a tab changed, or back from a category, once the button pressed for it is
-// let go: kButtonPressed), and the reNut page's list focused again just after
-// it is shown.
+// The pause's update: carries out what the page's presses and navigation asked
+// for once the button is released, and refocuses the reNut page's list.
 REX_HOOK_RAW(sub_8258C7C0) {
   ++g_pause_updates;
   if (g_info_page && g_host == Host::kPause && g_host_object == ctx.r3.u32) {
@@ -1184,22 +1140,18 @@ REX_HOOK_RAW(sub_8258C7C0) {
       if (g_exit_requested)
         ExitGraphics(ctx, base);
     } else if (Guest g(ctx, base); [&] {
-                 const uint32_t focus = XuiElementGetUserFocus(g.frame(), base, base[g_info_page + kUser]);
+                 const uint32_t focus = XuiElementGetUserFocus(g.ctx(), base, base[g_info_page + kUser]);
                  return !focus || focus == Load32(base, g_info_page + kInfoMenuList);
                }()) {
       // No focus, or the list itself (its selected row off screen): the row
       // scrolled to and selected again, its item taking the focus.
       const uint32_t list = Load32(base, g_info_page + kInfoMenuList);
-      const uint32_t row = XuiContainerGetCurSel(g.frame(), base, list);
-      if (!g_focus_lost_logged)
-        RNUT_WARN("reNut tab: the player's focus was lost ({}, row {}); given back to the list",
-                  g_category.empty() ? "categories" : g_category, int32_t(row));
-      g_focus_lost_logged = true;
+      const uint32_t row = XuiContainerGetCurSel(g.ctx(), base, list);
       if (int32_t(row) > 0) {
-        XuiListSetTopItem(g.frame(), base, list, row);
-        XuiContainerSetCurSel(g.frame(), base, list, row);
+        XuiListSetTopItem(g.ctx(), base, list, row);
+        XuiContainerSetCurSel(g.ctx(), base, list, row);
       }
-      XuiElementSetFocus(g.frame(), base, list, base[g_info_page + kUser]);
+      XuiElementSetFocus(g.ctx(), base, list, base[g_info_page + kUser]);
     } else if (g_back_requested && !Load32(base, kButtonPressed)) {
       g_back_requested = false;
       ShowRenutPage(ctx, base, "");
@@ -1265,12 +1217,8 @@ REX_HOOK_RAW(sub_825A0458) {
   __imp__sub_825A0458(ctx, base);
 }
 
-// A page's navigation (XUIMessageControlNavigate: + 4 from, + 8 to) skips
-// disabled controls, and the sliders are disabled until edited: down from
-// brightness would pass contrast for GRAPHICS. It goes to contrast.
-//
-// On the reNut tab left / right change tab: the focus stays and the pause's
-// next update steps along the tab bar.
+// A page's navigation: down from brightness goes to (disabled) contrast, not
+// GRAPHICS; on the reNut tab left / right queue a tab change instead.
 REX_HOOK_RAW(sub_823B33E8) {
   const uint32_t page = ctx.r3.u32;
   const uint32_t navigate = ctx.r4.u32;

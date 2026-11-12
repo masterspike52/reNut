@@ -1,13 +1,6 @@
-/**
- * @file    gpu/d3d/hooks/hooks_common.h
- * @brief   No-op hook macros for guest D3D calls the host renderer does not model.
- *
- * Same shape as reblue's BD_NOOP / BD_NOOP_RETURN: REX_STUB logs on every
- * call, so it is for unimplemented placeholders; these are silent.
- */
 #pragma once
 
-#include <rex/hook.h>
+#include <rex/ppc/hook.h>
 
 // Intentional no-op with no log output.
 #define RENUT_NOOP(subroutine)                                                 \

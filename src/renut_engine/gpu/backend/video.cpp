@@ -1,20 +1,7 @@
-/**
- * @file    gpu/backend/video.cpp
- * @brief   Device creation, bindless tables, resource retirement and command
- *          list management for the native renderer.
- */
 #include "renut_engine/gpu/backend/video.h"
 
-#include <cstdio>
 #include <cstring>
-#include <filesystem>
-#include <system_error>
 #include <vector>
-
-#if defined(_WIN32)
-#include <io.h>
-#include <share.h>
-#endif
 
 #include <plume_render_interface.h>
 #include <plume_render_interface_builders.h>
@@ -22,8 +9,6 @@
 #include "renut_engine/perf/frame_stats.h"
 #include "renut_engine/gpu/backend/backend.h"
 #include "renut_engine/gpu/backend/command_recorder.h"
-#include "renut_engine/gpu/backend/gpu_profile.h"
-#include "renut_engine/gpu/log.h"
 #include "renut_engine/gpu/backend/native_window.h"
 #include "renut_engine/gpu/render/pipeline.h"
 #include "renut_engine/gpu/backend/render_thread.h"
@@ -76,10 +61,8 @@ bool BuildUtilityLayout(VideoState &s) {
   // includes them (plume's D3D12 backend draws sets from one global heap).
   s.texture_set = textures.create(s.device.get());
   s.sampler_set = samplers.create(s.device.get());
-  if (!s.texture_set || !s.sampler_set) {
-    RGPU_ERROR("Bindless descriptor set creation failed");
+  if (!s.texture_set || !s.sampler_set)
     return false;
-  }
   s.texture_slot_used.assign(kTextureDescriptorCount, false);
   s.sampler_slot_used.assign(kSamplerDescriptorCount, false);
   s.texture_slot_used[kNullTextureSlot] = true;
@@ -95,11 +78,7 @@ bool BuildUtilityLayout(VideoState &s) {
                              plume::RenderShaderStageFlag::PIXEL);  // b0, space2
   layout.end();
   s.utility_layout = layout.create(s.device.get());
-  if (!s.utility_layout) {
-    RGPU_ERROR("Utility pipeline layout creation failed");
-    return false;
-  }
-  return true;
+  return s.utility_layout != nullptr;
 }
 
 bool BuildSamplers(VideoState &s) {
@@ -116,10 +95,8 @@ bool BuildSamplers(VideoState &s) {
   point.mipmapMode = plume::RenderMipmapMode::NEAREST;
   s.point_clamp_sampler = s.device->createSampler(point);
 
-  if (!s.linear_clamp_sampler || !s.point_clamp_sampler) {
-    RGPU_ERROR("Sampler creation failed");
+  if (!s.linear_clamp_sampler || !s.point_clamp_sampler)
     return false;
-  }
   s.sampler_set->setSampler(kLinearClampSamplerSlot, s.linear_clamp_sampler.get());
   s.sampler_set->setSampler(kPointClampSamplerSlot, s.point_clamp_sampler.get());
   return true;
@@ -133,10 +110,8 @@ bool BuildNullTexture(VideoState &s) {
   s.null_texture_cube = s.device->createTexture(plume::RenderTextureDesc::Texture(
       plume::RenderTextureDimension::TEXTURE_2D, 1, 1, 1, 1, 6, kFormat,
       plume::RenderTextureFlag::CUBE));
-  if (!s.null_texture || !s.null_texture_3d || !s.null_texture_cube) {
-    RGPU_ERROR("Null texture creation failed");
+  if (!s.null_texture || !s.null_texture_3d || !s.null_texture_cube)
     return false;
-  }
   s.null_texture->setName("renut null texture");
   s.null_texture_3d->setName("renut null texture 3d");
   s.null_texture_cube->setName("renut null texture cube");
@@ -206,10 +181,8 @@ bool BuildPresentPipeline(VideoState &s) {
   desc.renderTargetBlend[0] = plume::RenderBlendDesc::Copy();
   desc.depthTargetFormat = plume::RenderFormat::UNKNOWN;
   s.present_pipeline = s.device->createGraphicsPipeline(desc);
-  if (!s.present_pipeline) {
-    RGPU_ERROR("Present pipeline creation failed");
+  if (!s.present_pipeline)
     return false;
-  }
   s.present_pipeline->setName("renut present");
   return true;
 }
@@ -236,10 +209,8 @@ bool BuildDepthResolvePipelines(VideoState &s) {
     desc.renderTargetBlend[1] = plume::RenderBlendDesc::Copy();
     desc.depthTargetFormat = plume::RenderFormat::UNKNOWN;
     s.depth_resolve_pipeline[i] = s.device->createGraphicsPipeline(desc);
-    if (!s.depth_resolve_pipeline[i]) {
-      RGPU_ERROR("Depth resolve pipeline creation failed");
+    if (!s.depth_resolve_pipeline[i])
       return false;
-    }
     s.depth_resolve_pipeline[i]->setName(i ? "renut depth resolve (msaa)" : "renut depth resolve");
   }
   return true;
@@ -248,11 +219,8 @@ bool BuildDepthResolvePipelines(VideoState &s) {
 // Optional: without geometry shaders rectangle lists stay triangle lists and
 // point sprites single pixels.
 void BuildRectangleListShader(VideoState &s) {
-  if (!s.device->getCapabilities().geometryShader) {
-    RGPU_WARN("No geometry shader support; rectangle lists are drawn as triangle lists and "
-              "point sprites as points");
+  if (!s.device->getCapabilities().geometryShader)
     return;
-  }
   s.rectangle_list_gs =
       CreateHostShader(s.device.get(), RENUT_HOST_SHADER(rectangle_list_gs), "rectangle_list_gs");
   s.point_sprite_gs =
@@ -283,12 +251,8 @@ void BuildStreamConvertPipeline(VideoState &s) {
     s.stream_convert_pipeline = s.device->createComputePipeline(plume::RenderComputePipelineDesc(
         s.stream_convert_layout.get(), s.stream_convert_cs.get(), 64, 1, 1));
   }
-  if (!s.stream_convert_pipeline) {
-    RGPU_WARN("Stream conversion pipeline creation failed; draws reading memexport results as "
-              "vertices wait for them");
-    return;
-  }
-  s.stream_convert_pipeline->setName("renut stream convert");
+  if (s.stream_convert_pipeline)
+    s.stream_convert_pipeline->setName("renut stream convert");
 }
 
 // See shaders/host/target_readback_cs.hlsl.
@@ -322,11 +286,8 @@ void BuildTargetReadbackPipeline(VideoState &s) {
     s.target_readback_pipeline = s.device->createComputePipeline(plume::RenderComputePipelineDesc(
         s.target_readback_layout.get(), s.target_readback_cs.get(), 8, 8, 1));
   }
-  if (!s.target_readback_pipeline) {
-    RGPU_WARN("Render target readback pipeline creation failed; photos stay black");
-    return;
-  }
-  s.target_readback_pipeline->setName("renut target readback");
+  if (s.target_readback_pipeline)
+    s.target_readback_pipeline->setName("renut target readback");
 }
 
 } // namespace
@@ -354,7 +315,6 @@ bool BuildSwapChainTargets(VideoState &s) {
     plume::RenderFramebufferDesc desc(&texture, 1);
     auto framebuffer = s.device->createFramebuffer(desc);
     if (!framebuffer) {
-      RGPU_ERROR("Swapchain framebuffer {} creation failed", i);
       s.swap_framebuffers.clear();
       return false;
     }
@@ -410,7 +370,6 @@ void CollectGpuTime(VideoState &s, uint32_t slot) {
 } // namespace
 
 void BeginListTiming(VideoState &s) {
-  gpu_profile::BeginList(s);
   s.timing_open = false;
   plume::RenderQueryPool *pool = s.timestamps[s.frame].get();
   uint32_t &lists = s.timed_lists[s.frame];
@@ -425,7 +384,6 @@ void BeginListTiming(VideoState &s) {
 }
 
 void EndListTiming(VideoState &s, bool last_in_frame) {
-  gpu_profile::EndList(s, last_in_frame);
   plume::RenderQueryPool *pool = s.timestamps[s.frame].get();
   if (!pool || !s.timing_open)
     return;
@@ -452,7 +410,6 @@ void WaitSlotLocked(VideoState &s, uint32_t slot) {
   s.submit_calls[slot] = 0;
   s.submitted[slot] = false;
   CollectGpuTime(s, slot);
-  gpu_profile::Collect(s, slot);
 }
 
 void WaitAllSubmitted(VideoState &s) {
@@ -549,52 +506,24 @@ bool Video::CreateHostDevice() {
   if (!GetNativeRenderWindow(render_window))
     return false;
 
-#if defined(_WIN32)
-  // plume reports its failures (vkQueueSubmit, swapchain creation, ...) on
-  // stderr, which a Windows GUI process without a console discards.
-  // Opened shared (freopen_s denies other readers), so it can be read while
-  // the game runs.
-  if (_fileno(stderr) < 0) {
-    std::error_code ec;
-    std::filesystem::create_directories("logs", ec);
-    FILE *file = nullptr;
-    if (freopen_s(&file, "NUL", "w", stderr) == 0) {
-      if (FILE *log = _fsopen("logs/plume_stderr.log", "w", _SH_DENYNO)) {
-        _dup2(_fileno(log), _fileno(stderr));
-        setvbuf(stderr, nullptr, _IONBF, 0);
-        RGPU_INFO("plume's error messages go to logs/plume_stderr.log");
-      }
-    }
-  }
-#endif
-
   s.render_interface = CreateRenderInterface(render_window);
-  if (!s.render_interface) {
-    RGPU_ERROR("{} render interface creation failed", BackendName(ActiveBackend()));
+  if (!s.render_interface)
     return false;
-  }
   s.device = s.render_interface->createDevice();
-  if (!s.device) {
-    RGPU_ERROR("{} device creation failed", BackendName(ActiveBackend()));
+  if (!s.device)
     return false;
-  }
   s.backend_description =
       std::string(BackendName(ActiveBackend())) + " on " + s.device->getDescription().name;
-  RGPU_INFO("Renderer: {}", s.backend_description);
 
   s.queue = s.device->createCommandQueue(plume::RenderCommandListType::DIRECT);
-  if (!s.queue) {
-    RGPU_ERROR("Command queue creation failed");
+  if (!s.queue)
     return false;
-  }
   for (uint32_t i = 0; i < kFramesInFlight; ++i) {
     s.command_lists[i] = s.queue->createCommandList();
     s.fences[i] = s.device->createCommandFence();
     s.acquire_semaphores[i] = s.device->createCommandSemaphore();
-    if (!s.command_lists[i] || !s.fences[i] || !s.acquire_semaphores[i]) {
-      RGPU_ERROR("Frame {} command objects creation failed", i);
+    if (!s.command_lists[i] || !s.fences[i] || !s.acquire_semaphores[i])
       return false;
-    }
     if (!s.uploads[i].Init(s.device.get(), i == 0 ? "upload ring 0" : "upload ring 1"))
       return false;
     if (s.device->getCapabilities().queryPools)
@@ -604,16 +533,7 @@ bool Video::CreateHostDevice() {
   }
 
   // One image beyond the frames in flight, so acquiring never waits on scanout.
-  // Vulkan paces the frames on the display (VK_KHR_present_wait, PresentLocked):
-  // with FIFO alone the frames queued up until the GPU stalled on a free image,
-  // the game made several frames in a few milliseconds and then waited 20-30 ms,
-  // and the camera moved unevenly at a steady 60 fps. The wait is for the
-  // present before last (a latency of one more frame, and one more image):
-  // waiting for the last one, every present that reached the display a refresh
-  // or two late (windowed, NVIDIA's Vulkan presents go through DXGI and the
-  // compositor) held the render thread, and the game behind it, 30-40 ms, a
-  // frame in ten at 4K and 59 Hz (trace 2026-10-24). D3D12 keeps its DXGI frame
-  // latency; plume's present wait there drops the sync interval to 0.
+  // Vulkan paces frames on the display with present wait (one more frame and image).
   s.present_wait = IsVulkan() && s.device->getCapabilities().presentWait;
   const uint32_t present_latency = s.present_wait ? kFramesInFlight + 1 : kFramesInFlight;
   plume::RenderSwapChainDesc swap_desc(render_window, kSwapChainFormat, present_latency + 1,
@@ -622,10 +542,8 @@ bool Video::CreateHostDevice() {
   // plume's Vulkan swapchain is created lazily by resize().
   if (s.swap_chain && IsVulkan())
     s.swap_chain->resize();
-  if (!s.swap_chain || s.swap_chain->isEmpty()) {
-    RGPU_ERROR("Swapchain creation failed");
+  if (!s.swap_chain || s.swap_chain->isEmpty())
     return false;
-  }
   if (!detail::BuildSwapChainTargets(s))
     return false;
 
@@ -685,6 +603,10 @@ void Video::RequestResize() {
   State().resize_requested.store(true, std::memory_order_release);
 }
 
+void Video::SetGraphicsSystem(rex::gpu::IGraphicsSystem *graphics) {
+  State().graphics.store(graphics, std::memory_order_release);
+}
+
 void Video::SetOverlayHook(OverlayHook hook) {
   auto &s = State();
   std::lock_guard lock(s.mutex);
@@ -728,8 +650,7 @@ uint32_t Video::AllocateTextureSlotLocked() {
       return i;
     }
   }
-  RGPU_ERROR("Bindless texture table full ({} slots)", kTextureDescriptorCount);
-  return kInvalidDescriptor;
+  return kInvalidDescriptor;  // the bindless texture table is full
 }
 
 void Video::SetTextureSlotLocked(uint32_t slot, plume::RenderTexture *texture,

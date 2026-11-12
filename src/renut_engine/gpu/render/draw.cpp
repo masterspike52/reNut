@@ -1,6 +1,3 @@
-/**
- * @file    gpu/render/draw.cpp
- */
 #include "renut_engine/gpu/render/draw.h"
 
 #include <algorithm>
@@ -18,12 +15,9 @@
 
 #include <plume_render_interface.h>
 
-#include <fmt/format.h>
 #include <xxhash.h>
 
 #include "renut_engine/gpu/backend/backend.h"
-#include "renut_engine/gpu/backend/gpu_profile.h"
-#include "renut_engine/gpu/backend/render_profile.h"
 #include "renut_engine/gpu/guest/command_buffers.h"
 #include "renut_engine/gpu/d3d/d3d.h"
 #include "renut_engine/gpu/render/ambient_occlusion.h"
@@ -32,9 +26,11 @@
 #include "renut_engine/gpu/render/parallel.h"
 #include "renut_engine/gpu/guest/guest_memory.h"
 #include "renut_engine/gpu/guest/guest_records.h"
-#include "renut_engine/gpu/log.h"
 #include "renut_engine/gpu/render/pipeline.h"
 #include "renut_engine/gpu/guest/resources.h"
+#include "renut_engine/gpu/render/shader_library.h"
+#include "renut_engine/gpu/render/shape_weights.h"
+#include "renut_engine/gpu/render/world_materials.h"
 #include "renut_engine/gpu/render/surfaces.h"
 #include "renut_engine/gpu/render/textures.h"
 #include "renut_engine/gpu/render/vertex_format.h"
@@ -70,9 +66,8 @@ struct SharedConstants {
   u32 texture_indices[3][32];  // 0: [2D, 3D, cube][fetch constant]
   u32 sampler_indices[32];     // 384
   u32 booleans[8];             // 512: VS bools 0-127, PS bools 128-255
-  // 544 / 568: screen-space draws (screen_space): what the Xenos viewport
-  // transform left of scale and offset, per axis, in pixels (see
-  // ComputeViewport).
+  // 544 / 568: screen-space draws: the leftover Xenos viewport scale and
+  // offset per axis, in pixels (see ComputeViewport).
   float screen_offset[2];      // 544
   float alpha_threshold;       // 552
   u32 alpha_test_func;         // 556: CompareFunction, 7 (always) when disabled
@@ -80,25 +75,22 @@ struct SharedConstants {
   float screen_scale[2];       // 568
   u32 vertex_fetch_slots[96];  // 576: per fetch index, copy offset | endian
   uint64_t memexport_address;  // 960: device address of the export buffer (SPIR-V)
-  // 968: 1 when the vertex shader's positions are in pixels (the viewport
-  // transform off) and it maps them to clip space itself; 0 when the host
-  // viewport does it.
+  // 968: 1 when the vertex shader's positions are in pixels and it maps them
+  // to clip space itself; 0 when the host viewport does it.
   u32 screen_space;
-  u32 pad_972;
+  u32 shape_count;  // 972: the draw's shape keys (FindShapes), 0 for none
+
   // 976: memexport windows: guest byte address, size, byte offset in the
   // export buffer. None yet, so memExport stores nothing.
   u32 memexport_streams[4][4];
-  // 1040: tessellated draws: patch kind (0 none, 1 triangles, 2 quads),
-  // segments per edge, first patch index; other draws: [3] what the host vertex
-  // ID lacks of the guest vertex index (renutVertexRegisters).
+  // 1040: patch kind (0 none, 1 triangles, 2 quads), segments per edge, first
+  // patch; other draws: [3] the guest vertex index's offset from the host ID.
   u32 tessellation[4];
-  // 1056: per vertex input the shader reads with vfetchBound, its element as the
-  // bound declaration describes it: stream fetch index, offset and stride in
+  // 1056: per vfetchBound input: stream fetch index, offset and stride in
   // dwords, D3DDECLTYPE (see DescribeBoundFetches).
   u32 bound_fetch[16][4];
-  // 1312: point sprites (point_sprite_gs.hlsl): the render state's point width
-  // and height, minimum and maximum size, in pixels (PA_SU_POINT_SIZE holds
-  // half the size in 12.4 fixed point, PA_SU_POINT_MINMAX the size).
+  // 1312: point sprites: width, height, minimum and maximum size in pixels
+  // (from PA_SU_POINT_SIZE / PA_SU_POINT_MINMAX).
   float point_state[4];
   // 1328: the size in guest pixels of what clip space spans (the host
   // viewport, which is 'resolution_scale' times that), and padding.
@@ -109,6 +101,11 @@ struct SharedConstants {
   // predicated to one tile has the tile's corner (ViewportState::pixel_origin).
   float pixel_origin[2];
   float pad_1352[2];
+  // 1360: user clip planes in clip space (m_ClipPlanes); 1456 the enabled
+  // ones (PA_CL_CLIP_CNTL UCP_ENA_0..5), none for screen-space draws.
+  float clip_planes[6][4];
+  u32 clip_plane_mask;
+  u32 pad_1460[3];
 };
 static_assert(offsetof(SharedConstants, sampler_indices) == 384);
 static_assert(offsetof(SharedConstants, booleans) == 512);
@@ -126,7 +123,9 @@ static_assert(offsetof(SharedConstants, point_state) == 1312);
 static_assert(offsetof(SharedConstants, viewport_size) == 1328);
 static_assert(offsetof(SharedConstants, resolution_scale) == 1336);
 static_assert(offsetof(SharedConstants, pixel_origin) == 1344);
-static_assert(sizeof(SharedConstants) == 1360);
+static_assert(offsetof(SharedConstants, clip_planes) == 1360);
+static_assert(offsetof(SharedConstants, clip_plane_mask) == 1456);
+static_assert(sizeof(SharedConstants) == 1472);
 
 // The guest D3DDevice a draw reads its state from: the live device, or a
 // recorded copy of its first kDeviceSnapshotSize bytes.
@@ -152,16 +151,14 @@ private:
   const u8 *bytes_;
 };
 
-// A shader stage's last float constant upload: the guest bytes of the registers
-// it holds, reused while the next draw's shader reads only registers it holds
-// with the same bytes.
+// A shader stage's last float constant upload, reused while the next draw reads
+// only registers it holds with the same bytes.
 struct ConstantUpload {
   UploadAllocation alloc;
   u32 valid[8] = {};  // registers written to alloc, bit i = register i
   u8 bytes[256 * 16];  // their guest (big-endian) bytes
-  // The replay (ReplayConstants::replay) whose draw last made 'valid' match
-  // its constants, since when that replay's dirty groups are the only ones
-  // that can differ; 0 for none.
+  // The replay whose draw last made 'valid' match its constants (only its
+  // dirty groups can differ since); 0 for none.
   uint64_t replay = 0;
 };
 
@@ -179,11 +176,8 @@ struct Bound {
   // starts at 0.
   uint32_t stencil_reference = 0;
 
-  // State as the draws last set it on the list, which most draws in a row
-  // share (the viewport, the zero stream, the memexport buffer): setting it
-  // again cost a driver call each. Both backends keep all of it across
-  // pipeline and framebuffer changes; D3D12 root descriptors are dropped with
-  // the root signature, so they go with 'layout'.
+  // State last set on the list, to skip redundant driver calls; root
+  // descriptors are dropped with the root signature, so they go with 'layout'.
   bool viewport_set = false;
   plume::RenderViewport viewport;
   plume::RenderRect scissor;
@@ -201,9 +195,8 @@ struct Bound {
 };
 Bound g_bound;
 
-// The last declaration a draw looked up by VA (otherwise a registry lookup
-// under its lock per draw): draws in a row mostly use the same one. Cleared
-// when a declaration goes (ForgetVertexDeclarationLocked).
+// The last declaration a draw looked up by VA, cached to skip the registry
+// lookup; cleared by ForgetVertexDeclarationLocked.
 u32 g_last_declaration_va = 0;
 VertexDeclarationRecord *g_last_declaration = nullptr;
 
@@ -273,8 +266,7 @@ void SetIndexBuffer(plume::RenderCommandList *cmd, const plume::RenderIndexBuffe
 }
 
 // The blend constant (RB_BLEND_RED..ALPHA) the draw's blend controls read, or
-// false if none reads it. The host has a single constant for BLEND_FACTOR, so a
-// colour factor that reads the constant alpha gets the alpha in rgb as well.
+// false if none does; constant-alpha colour factors get the alpha in rgb.
 bool DrawBlendConstant(const d3d::Device &dev, const PipelineKey &key, float rgba[4]) {
   constexpr u32 kConstantColor = u32(D3DBlend::BlendFactor);
   constexpr u32 kOneMinusConstantAlpha = u32(D3DBlend::InvConstantAlpha);
@@ -295,15 +287,8 @@ bool DrawBlendConstant(const d3d::Device &dev, const PipelineKey &key, float rgb
     return false;
   const d3d::ValuesPacket &v = dev.m_ValuesPacket;
   const float alpha = v.BlendAlpha;
+  // A blend reading both the constant colour and alpha gets the colour.
   const bool replicate_alpha = color_reads_alpha && !color_reads_color;
-  if (color_reads_alpha && color_reads_color) {
-    static bool logged = false;
-    if (!logged) {
-      logged = true;
-      RGPU_WARN("Blend control {:08X} reads both the constant colour and alpha; the host uses the colour",
-                key.blend_control[0]);
-    }
-  }
   rgba[0] = replicate_alpha ? alpha : float(v.BlendRed);
   rgba[1] = replicate_alpha ? alpha : float(v.BlendGreen);
   rgba[2] = replicate_alpha ? alpha : float(v.BlendBlue);
@@ -335,9 +320,7 @@ struct StreamKeyHash {
 };
 
 // Vertex data a draw reads from guest buffers, read when the ring is kicked
-// off (FlushVertexFillsLocked) rather than at the draw call: the GPU starts on
-// a draw only after the kick, and the game may still write the buffers the
-// draw uses until then.
+// off (FlushVertexFillsLocked) since the game may still write it until then.
 struct PendingStreamFill {
   HostVertexStream stream;
   const u8 *guest = nullptr;
@@ -358,11 +341,8 @@ std::vector<PendingStreamFill> g_stream_fills;
 size_t g_stream_fill_count = 0;
 std::vector<PendingCopy> g_copy_fills;
 
-// Fetch data copies (UploadVertexFetchData) queued since the last flush, by
-// guest bytes: they all read memory at the flush, so a later draw that reads
-// the same bytes takes the queued copy rather than another. Where in its
-// upload chunk the copy is (the draw's fetch slots count from the chunk's
-// start). A generation, bumped at each flush, retires them all at once.
+// Fetch data copies queued since the last flush, by guest bytes, so draws
+// reading the same bytes share one; the generation bumps at each flush.
 struct FetchCopy {
   const u8 *src = nullptr;
   u32 size = 0;
@@ -379,21 +359,12 @@ FetchCopy &FetchCopyFor(const u8 *src, u32 size) {
   return g_fetch_copies[(key * 0x9E3779B97F4A7C15ull) >> (64 - kFetchCopyBits)];
 }
 
-// Streams queued in g_stream_fills since the last flush. The fills all read
-// guest memory at the flush, so a later draw that reads the same guest
-// vertices through the same host layout draws from the upload already queued.
+// Streams queued in g_stream_fills since the last flush, shared by later draws
+// reading the same guest vertices through the same host layout.
 std::unordered_map<StreamKey, UploadAllocation, StreamKeyHash> g_queued_streams;
 
-// Converted streams (and index ranges, below) kept across frames. Most are
-// geometry the game never rewrites, which every draw would otherwise convert
-// again. A stream whose guest bytes hash the same at kStableFlushes flushes in
-// a row gets a persistent converted copy, which draws bind while the bytes
-// still hash the same, checked off the render thread once every
-// kCacheVerifyFrames frames a draw reads it: hashing every copy every frame
-// cost more than any other part of a draw. A stream the game rewrites
-// kMaxCacheDrops times is never cached again. A copy no draw has read for
-// kStreamCacheIdleFrames goes: turning back to a scene within that converts
-// nothing again.
+// Converted streams (and index ranges) kept across frames once their guest
+// bytes hash the same for kStableFlushes flushes, rechecked every few frames.
 constexpr u32 kStableFlushes = 3;
 constexpr uint64_t kCacheVerifyFrames = 4;
 constexpr u32 kMaxCacheDrops = 3;
@@ -412,23 +383,12 @@ struct PoolSpan {
   plume::RenderBufferReference Ref() const { return plume::RenderBufferReference(buffer, offset); }
 };
 
-// Where the cached copies live: a few large buffers in video memory that
-// copies are carved from, filled by the GPU (FlushPoolFillsLocked). A buffer
-// of its own per copy cost a driver allocation each, and a scene coming into
-// view made hundreds of copies in a frame. (They were upload buffers once:
-// then the GPU read every cached mesh over PCIe every frame, which a laptop's
-// GPU, behind a narrow link, felt most.) A freed span is reused once the frame
-// slot it was freed in has
-// finished on the GPU (DrainSlot), as retired resources are. A chunk left
-// with nothing in it is released (the first one stays): the copies of a
-// scene the game has left go after kStreamCacheIdleFrames, and their memory
-// with them.
+// Large video memory buffers the cached copies are carved from; freed spans
+// are reused once their frame slot finishes, and empty chunks are released.
 class CopyPool {
 public:
-  // Vertex and index copies have pools of their own: a D3D12 buffer is read
-  // in one state, and plume gives one with both flags the vertex buffer's.
-  // 'addressable': read by shaders by address (AddressableBufferFlags, known
-  // once the backend is).
+  // Vertex and index copies need separate pools (one D3D12 state per buffer).
+  // 'addressable': read by shaders by address (AddressableBufferFlags).
   CopyPool(plume::RenderBufferFlags flags, uint64_t chunk_size, const char *name,
            bool addressable = false)
       : flags_(flags), chunk_size_(chunk_size), name_(name), addressable_(addressable) {}
@@ -464,14 +424,6 @@ public:
       }
     }
     deferred_[slot].clear();
-  }
-
-  // Host memory the chunks hold.
-  uint64_t Bytes() const {
-    uint64_t bytes = 0;
-    for (const Chunk &chunk : chunks_)
-      bytes += chunk.size;
-    return bytes;
   }
 
 private:
@@ -551,16 +503,8 @@ CopyPool g_copy_pool(plume::RenderBufferFlag::VERTEX, 64ull << 20, "renut stream
 CopyPool g_index_pool(plume::RenderBufferFlag::INDEX, 32ull << 20, "renut index cache");
 CopyPool g_fetch_pool(plume::RenderBufferFlag::NONE, 64ull << 20, "renut fetch cache", true);
 
-// A direct-mapped memo of a node map's entries by key hash, in front of the
-// stream and index caches: draws look up the same keys every frame, and the
-// map's bucket and node chain were cache misses each time (a tenth of the
-// render thread). Here a repeat is one line and the entry itself, which the
-// draw reads anyway. The entries stay where they are until erased (the map is
-// node-based, a rehash moves none), so the memo is cleared whenever the map
-// erases any. Two ways to a set, the newer first: a frame's draws use several
-// thousand keys, and with one way the ones sharing a slot pushed each other
-// out, back to the map every time (2026-10-22 trace: the index memo alone
-// was 4% of the render thread).
+// A two-way set-associative memo of a node map's entries by key hash, in front
+// of the stream and index caches; must be cleared whenever the map erases.
 template <typename Map, typename Hash, u32 kBits>
 class EntryMemo {
 public:
@@ -621,9 +565,8 @@ using StreamCache = std::unordered_map<StreamKey, CachedStream, StreamKeyHash>;
 StreamCache g_stream_cache;
 EntryMemo<StreamCache, StreamKeyHash, 14> g_stream_memo;
 
-// A persistent copy waiting for its bytes: at the next flush the GPU copies
-// them from the upload memory the draw that made it filled with the same
-// bytes (FlushPoolFillsLocked), and only then do draws use it.
+// A persistent copy the GPU fills from its upload at the next flush
+// (FlushPoolFillsLocked); draws use it only after that.
 struct PoolFill {
   plume::RenderBufferReference source;
   PoolSpan span;
@@ -643,11 +586,8 @@ uint64_t HashGuestStream(const StreamKey &key) {
   return XXH3_64bits(key.guest, size_t(key.count) * key.stride);
 }
 
-// The cached copies' checks, hashed off the render thread: every copy's guest
-// bytes each kCacheVerifyFrames frames was a twentieth of its time. A copy
-// found stale is dropped when the render thread takes the results, at the next
-// frame (AdvanceStreamCacheFrameLocked), so a rewritten range can draw from
-// its old copy for about a frame longer than the check interval alone allows.
+// Hashes cached copies' guest bytes off the render thread; stale copies are
+// dropped when the results are taken (AdvanceStreamCacheFrameLocked).
 template <typename Key, uint64_t (*Hash)(const Key &)>
 class ContentVerifier {
 public:
@@ -719,16 +659,8 @@ private:
 };
 ContentVerifier<StreamKey, HashGuestStream> g_stream_verifier;
 
-// Buffers vertex shaders read by address (UploadVertexFetchData), kept in
-// video memory like the streams: most are geometry the game never rewrites,
-// and copying each of them into upload memory every frame was the largest
-// part of the flushes (a tenth of the renderer's CPU time with the helpers'
-// share, 2026-10-22), which the GPU then read over PCIe. A buffer that hashes
-// the same at kStableFlushes flushes in a row gets a copy the GPU fills from
-// that flush's upload copy (FlushPoolFillsLocked); a draw whose buffers all
-// have copies, in one pool buffer, reads them there. Copies are checked like
-// the streams'; one that keeps changing (kFetchChanges flushes in a row) is
-// not hashed again.
+// Buffers vertex shaders read by address (UploadVertexFetchData), cached in
+// video memory like the streams unless they keep changing (kFetchChanges).
 struct FetchKey {
   const u8 *src = nullptr;
   u32 size = 0;
@@ -863,10 +795,6 @@ void SyncBound(VideoState &s) {
   }
 }
 
-bool LogLimited(uint32_t &counter, uint32_t limit = 8) {
-  return counter++ < limit;
-}
-
 // Guest VA or GPU physical address to a host pointer.
 const u8 *AddressPtr(u32 address) {
   if (address < 0x20000000u)
@@ -890,9 +818,7 @@ plume::RenderPrimitiveTopology Topology(u32 primitive) {
   }
 }
 
-// ---------------------------------------------------------------------------
 // Render targets
-// ---------------------------------------------------------------------------
 
 struct Targets {
   HostSurface *colors[d3d::kMaxRenderTargets] = {};
@@ -929,12 +855,8 @@ bool GatherTargets(const GuestDevice &device, Targets &t) {
   if (!t.color_count && !t.depth)
     return false;
   const HostSurface *first = t.color_count ? t.colors[0] : t.depth;
-  // plume's Vulkan framebuffer is the size of the first color target, and its
-  // render pass loads and stores every attachment over all of it: one smaller
-  // than that is written past its end and the device is lost. N&B binds such
-  // sets (the garage's vehicle database: a 320x288 color target over a 288x180
-  // depth surface) and draws within the smaller one, which the console and
-  // D3D12 allow. Those attachments are grown to cover it.
+  // Vulkan framebuffers take the first color target's size, so smaller
+  // attachments are grown to cover it (else they're written past their end).
   if (IsVulkan() && t.color_count) {
     const uint32_t host_width = first->scale.Size(first->width);
     const uint32_t host_height = first->scale.Size(first->height);
@@ -945,40 +867,12 @@ bool GatherTargets(const GuestDevice &device, Targets &t) {
   t.width = first->width;
   t.height = first->height;
   t.scale = first->scale;
-  // A pass over targets rendered at different scales (graphics_options) would
-  // address them alike; the options pick only targets drawn on their own. The
-  // post-processing buffers render at 1x with the scene's depth still bound,
-  // untested (on the console too its pitch is not theirs), so only colors count.
-  bool mixed = false;
-  for (uint32_t i = 1; i < t.color_count; ++i)
-    mixed = mixed || t.colors[i]->scale != t.scale;
-  if (mixed) {
-    static uint32_t logged = 0;
-    if (LogLimited(logged, 8)) {
-      RGPU_WARN("Draw binds color targets of different render scales ({}x{} at {:.3g}x)",
-                first->width, first->height, t.scale.Factor());
-    }
-  }
   t.guest_width = d3d::SurfaceWidth(first->size_word);
   t.guest_height = d3d::SurfaceHeight(first->size_word);
   return true;
 }
 
-// gpu_profile: draws into 't', by their host size and attachments.
-uint32_t TargetsProfileLabel(const Targets &t) {
-  HostSurface *first = t.color_count ? t.colors[0] : t.depth;
-  const uint32_t variant = t.color_count ? (t.depth ? 1 : 0) : 2;
-  uint32_t &label = first->profile_labels[variant];
-  if (label == UINT32_MAX) {
-    static const char *const kKinds[3] = {"color", "color+depth", "depth"};
-    label = gpu_profile::Label(fmt::format("draws {}x{} {}", first->scale.Size(first->width),
-                                           first->scale.Size(first->height), kKinds[variant]));
-  }
-  return label;
-}
-
 bool BindTargets(const Targets &t) {
-  gpu_profile::Mark(State(), TargetsProfileLabel(t));
   for (uint32_t i = 0; i < t.color_count; ++i)
     TransitionSurfaceLocked(t.colors[i], plume::RenderTextureLayout::COLOR_WRITE);
   if (t.depth)
@@ -993,16 +887,8 @@ bool BindTargets(const Targets &t) {
   return true;
 }
 
-// A draw's host viewport and scissor. The game's D3D sets the viewport one of
-// two ways (N&B database):
-// - D3DDevice_SetViewport (0x82222F20) writes scale w/2, -h/2, maxZ - minZ
-//   and offset x + w/2, y + h/2, minZ, all enabled in PA_CL_VTE_CNTL: the
-//   host viewport is that rectangle, and the shaders pass positions through.
-// - D3DRS_VIEWPORTENABLE false (SetRenderState_ViewportEnable, 0x82205A80)
-//   disables the transform (and clipping): the vertices are in pixels. The
-//   host viewport then covers the target, and the vertex shader maps the
-//   pixels to clip space itself (screen_space; any enabled part of the
-//   transform comes along as screen_scale / screen_offset).
+// A draw's host viewport and scissor from the PA_CL_VTE_CNTL transform; with it
+// off, the vertex shader maps pixels to clip space itself (screen_space).
 struct ViewportState {
   // Host pixels (Targets::scale).
   plume::RenderViewport viewport;
@@ -1013,12 +899,8 @@ struct ViewportState {
   bool screen_space = false;
   float screen_scale[2] = {1.0f, 1.0f};
   float screen_offset[2] = {0.0f, 0.0f};
-  // Guest pixels: the pixel position (VPOS) the GPU gives the pixel shader is
-  // in the coordinates of the EDRAM it renders to. While tiling that is one
-  // tile, and N&B adds the tile's corner back from a per-tile constant (the
-  // deferred shadow pass, vs_f6965212d74a7552 / ps_d86a35e4f2b956b3: c0.x =
-  // 384 in the lower tile). The host renders every tile into one target, so a
-  // draw predicated to one tile has its position made relative to that tile.
+  // Guest pixels: the origin VPOS is relative to, the tile's corner for a draw
+  // predicated to one tile (the guest VPOS is per-tile EDRAM coordinates).
   float pixel_origin[2] = {0.0f, 0.0f};
 };
 
@@ -1063,13 +945,8 @@ ViewportState ComputeViewport(const GuestDevice &device, const Targets &t) {
     xo += float(wx);
     yo += float(wy);
   }
-  // A draw predicated to one tile renders into that tile's EDRAM only, which
-  // the GPU resolves to the tile's rect of the screen: it is cut to the rect.
-  // Most such draws are in the tile's own coordinates, a viewport the size of
-  // the tile-sized surface (N&B's per-tile scene command buffers: the vehicle
-  // parts), which the host offsets to the rect. A viewport larger than that
-  // surface addresses the whole screen (N&B's water, sub_823BA3A8, drawn once
-  // per tile with a full-screen viewport and that tile's constants): it stays.
+  // A draw predicated to one tile is cut to its rect and, unless its viewport
+  // spans the screen (N&B's water, sub_823BA3A8), offset there.
   ClearRect tile_rect{};
   const bool one_tile = PredicatedTile(device, tile_rect);
   const bool screen_wide = one_tile && (vte & 0x0F) == 0x0F && t.guest_width && t.guest_height &&
@@ -1090,9 +967,8 @@ ViewportState ComputeViewport(const GuestDevice &device, const Targets &t) {
     vs.pixel_origin[1] = float(tile_rect.y1);
   }
   const float min_z = std::clamp(zo, 0.0f, 1.0f), max_z = std::clamp(zo + zs, 0.0f, 1.0f);
-  // SetViewport's rectangle back from its scale and offset: x = offset - scale
-  // and width = 2 * scale; y = offset + scale and height = -2 * scale (the
-  // scale is negative: y goes down).
+  // SetViewport's rectangle back from its scale and offset (y scale is
+  // negative): x = offset - scale, width = 2 * scale.
   vs.screen_space = (vte & 0x0F) != 0x0F || !(xs > 0.0f) || !(ys < 0.0f);
   if (!vs.screen_space) {
     vs.viewport = plume::RenderViewport(xo - xs, yo + ys, 2.0f * xs, -2.0f * ys, min_z, max_z);
@@ -1109,10 +985,8 @@ ViewportState ComputeViewport(const GuestDevice &device, const Targets &t) {
   const u32 br = dev.m_WindowPacket.WindowScissorBR;
   int32_t sx1 = int32_t(tl & 0x7FFF) + wx + tx, sy1 = int32_t((tl >> 16) & 0x7FFF) + wy + ty;
   int32_t sx2 = int32_t(br & 0x7FFF) + wx + tx, sy2 = int32_t((br >> 16) & 0x7FFF) + wy + ty;
-  // A target grown for tiling: D3D bounds the window scissor by the tile-sized
-  // surface, and the GPU applies it per tile in window coordinates, so across
-  // the tiles that bound covers the whole target (a one-tile draw is cut to
-  // its tile below; one in tile coordinates has the bound offset there).
+  // A target grown for tiling: a scissor bound by the tile-sized surface
+  // covers the whole target across the tiles.
   if (!tile_local && t.guest_width && t.width > t.guest_width && sx2 >= int32_t(t.guest_width))
     sx2 = int32_t(t.width);
   if (!tile_local && t.guest_height && t.height > t.guest_height &&
@@ -1150,9 +1024,7 @@ ViewportState ComputeViewport(const GuestDevice &device, const Targets &t) {
   return vs;
 }
 
-// ---------------------------------------------------------------------------
 // Constants
-// ---------------------------------------------------------------------------
 
 // Where a draw's float constant registers are (ReplayConstants).
 struct FloatConstants {
@@ -1183,10 +1055,8 @@ FloatConstants DrawFloatConstants(const u8 *state, const ReplayConstants *replay
   return c;
 }
 
-// Float constants go by groups of four registers (64 bytes): the unit m_Pending
-// marks dirty, and the one a replayed draw takes from its snapshot or from the
-// running device (FloatConstants::Register), so a group's bytes are contiguous.
-// Bit 63 - group, as in m_Pending.
+// Float constants go by groups of four registers (64 bytes), the unit m_Pending
+// marks dirty (bit 63 - group).
 constexpr u32 kConstantGroupBytes = 4 * 16;
 
 // The groups holding a register the shader reads.
@@ -1207,11 +1077,8 @@ u32 GroupRegisters(const u32 used[8], u32 group) {
   return (used[group / 8] >> (group % 8 * 4)) & 0xFu;
 }
 
-// The registers a shader reads ('used', ShaderCacheEntry::floatConstants) as a
-// little-endian upload of all 256, reusing the last upload on this command list
-// when it holds them with the same bytes. Only the groups holding a register
-// the shader reads are written, whole: fixed-size copies the compiler keeps
-// inline, where a run of registers at a time cost a branch per register.
+// The registers a shader reads as a little-endian upload of all 256, reusing
+// the last upload when it holds them with the same bytes.
 UploadAllocation UploadFloatConstants(const FloatConstants &constants, const u32 used[8],
                                       ConstantUpload &last) {
   bool reuse = bool(last.alloc);
@@ -1284,9 +1151,8 @@ UploadAllocation UploadFloatConstants(const FloatConstants &constants, const u32
   return alloc;
 }
 
-// The fog object's composite (sub_82217628), with its depth of field in the
-// pixel shader: blur = min(saturate(distance outside the focus range * c192.x
-// (near) or c192.y (far)), c194.w).
+// The fog object's composite (sub_82217628), whose depth of field blur uses
+// c192.x / c192.y (near / far scale) and c194.w (max blur).
 constexpr uint64_t kFogCompositeVertexShader = 0x950F5CA8B083FA7Cull;
 constexpr u32 kDepthOfFieldScales = 192;
 constexpr u32 kDepthOfFieldMaxBlur = 194;
@@ -1297,9 +1163,8 @@ bool IsDepthOfFieldDraw(uint64_t vs_hash, const u32 ps_used[8]) {
   return vs_hash == kFogCompositeVertexShader && (ps_used[word] & bits) == bits;
 }
 
-// renut_depth_of_field: a copy of the upload UploadFloatConstants just made or
-// reused ('last' holds its registers) with the blur scaled by 'strength'.
-// 'last' keeps the game's values, for the draws after.
+// renut_depth_of_field: a copy of the last float constant upload with the blur
+// scaled by 'strength'; 'last' keeps the game's values.
 UploadAllocation ScaleDepthOfField(const ConstantUpload &last, float strength) {
   UploadAllocation alloc = Video::UploadsLocked().Allocate(256 * 16, 256);
   if (!alloc)
@@ -1317,9 +1182,198 @@ UploadAllocation ScaleDepthOfField(const ConstantUpload &last, float strength) {
   return alloc;
 }
 
-// The glow composite (ps_981a6a58f2abfa42): the scene plus its four bloom
-// levels weighted by c0 (1, 1.2, 1.6, 2), compressed where the sum passes 1.
-// renut_bloom scales those weights; the scene's own color is not one of them.
+// Shape keys of NutTool's models (NutTool's docs/renut-shapes.md): a draw whose stream 0 ends in the
+// footer, its deltas in the same buffer, and its weights from the Lua-set tables (shape_weights.h).
+constexpr u32 kShapeHeaderMagic = 0x524D5048u;  // "RMPH"
+constexpr u32 kShapeFooterMagic = 0x524D5046u;  // "RMPF"
+constexpr u32 kShapeHeaderSize = 32;
+constexpr u32 kShapeInfoRegister = 200;  // c200 = (deltaOffset, vertexCount, count), c201-c208 weights
+constexpr u32 kMaxShapes = 32;
+constexpr u32 kShapeDeltaBytes = 32;
+
+struct ShapeDraw {
+  u32 delta_offset = 0, vertex_count = 0, count = 0;
+  float weights[kMaxShapes] = {};
+};
+
+// NutTool's world materials (its docs/renut-materials.md): a record ending the draw's stream, after its
+// vertices and any shape keys', then {header offset, "RMTF"}.
+constexpr u32 kMaterialHeaderMagic = 0x524D5448u;  // "RMTH"
+constexpr u32 kMaterialFooterMagic = 0x524D5446u;  // "RMTF"
+constexpr u32 kMaterialRecordSize = 48;
+constexpr u32 kMaterialRegister = 240;  // c240 emissive rgb, glow; c241 opacity, cutoff, mode, flags
+// Flags: the alpha mode (bits 0-1), double-sided, unlit, an emissive texture in fetch constant 1; the
+// shader's own bit for a draw with a record.
+constexpr u32 kMaterialAlphaMask = 3, kMaterialCutout = 1, kMaterialBlend = 2, kMaterialAdd = 3;
+constexpr u32 kMaterialDoubleSided = 4, kMaterialUnlit = 8, kMaterialEmissiveTexture = 16, kMaterialPresent = 32;
+
+// Stream 0's guest bytes and size (as its vertex fetch constant has them).
+bool StreamZero(const GuestDevice &device, const u8 *&data, u32 &size) {
+  const u32 index = d3d::kFirstVertexFetchIndex + d3d::StreamFetchIndex(0);
+  const u32 address = device.VertexFetchWord(index, 0) & ~3u;
+  size = device.VertexFetchWord(index, 1) & 0x3FFFFFCu;
+  data = address ? GuestPhysicalPtr<const u8>(address) : nullptr;
+  return data && size >= 8;
+}
+
+u32 StreamWord(const u8 *data, u32 at) {
+  u32 v;
+  std::memcpy(&v, data + at, 4);
+  return std::byteswap(v);
+}
+
+// The material record's offset in stream 0 (0 for none).
+u32 MaterialRecord(const u8 *data, u32 size) {
+  if (size < kMaterialRecordSize + 8 || StreamWord(data, size - 4) != kMaterialFooterMagic)
+    return 0;
+  const u32 header = StreamWord(data, size - 8);
+  return header <= size - 8 - kMaterialRecordSize && StreamWord(data, header) == kMaterialHeaderMagic ? header : 0;
+}
+
+struct MaterialDraw {
+  u32 flags = 0;
+  float cutoff = 0.5f;
+  MaterialValues values;
+};
+
+// The draw's material, when its stream 0 has one, with what Lua set over it (world_materials.h).
+bool FindMaterial(const GuestDevice &device, MaterialDraw &material) {
+  const u8 *data;
+  u32 size;
+  if (!StreamZero(device, data, size))
+    return false;
+  const u32 header = MaterialRecord(data, size);
+  if (!header)
+    return false;
+  auto real = [&](u32 at) {
+    const u32 bits = StreamWord(data, header + at);
+    float f;
+    std::memcpy(&f, &bits, 4);
+    return std::isfinite(f) ? f : 0.0f;
+  };
+  material.flags = (StreamWord(data, header + 4) & (kMaterialAlphaMask | kMaterialDoubleSided | kMaterialUnlit |
+                                                     kMaterialEmissiveTexture)) | kMaterialPresent;
+  material.cutoff = real(16);
+  material.values.opacity = real(20);
+  for (u32 k = 0; k < 3; ++k)
+    material.values.emissive[k] = real(24 + 4 * k);
+  material.values.strength = real(36);
+  material.values.glow = real(40);
+  MaterialOverride(StreamWord(data, header + 8), StreamWord(data, header + 12), material.values);
+  return true;
+}
+
+// A copy of the pixel upload UploadFloatConstants just made or reused ('last') with the material's
+// registers set (a draw without a record gets the shader's old behaviour: cut out under half).
+UploadAllocation MaterialConstants(const ConstantUpload &last, const MaterialDraw *material) {
+  UploadAllocation alloc = Video::UploadsLocked().Allocate(256 * 16, 256);
+  if (!alloc)
+    return alloc;
+  u32 lanes[256 * 4];
+  std::memcpy(lanes, last.bytes, sizeof(lanes));
+  for (u32 &lane : lanes)
+    lane = std::byteswap(lane);
+  float values[8] = {0, 0, 0, -1, 1, 0.5f, 0, 0};
+  u32 mode = kMaterialCutout, flags = 0;
+  if (material) {
+    const MaterialValues &v = material->values;
+    for (u32 k = 0; k < 3; ++k)
+      values[k] = std::max(0.0f, v.emissive[k] * v.strength);
+    values[3] = v.glow;
+    values[4] = std::clamp(v.opacity, 0.0f, 1.0f);
+    values[5] = material->cutoff;
+    mode = material->flags & kMaterialAlphaMask;
+    flags = material->flags;
+  }
+  std::memcpy(values + 6, &mode, 4);
+  std::memcpy(values + 7, &flags, 4);
+  std::memcpy(lanes + kMaterialRegister * 4, values, sizeof(values));
+  std::memcpy(alloc.cpu, lanes, sizeof(lanes));
+  return alloc;
+}
+
+// The material's blending, depth writes and culling over the game's: see-through ones blend over
+// what is behind (keeping its glow) or add to it, without writing depth; double-sided ones aren't culled.
+void ApplyMaterialState(const MaterialDraw &material, PipelineKey &key) {
+  const u32 mode = material.flags & kMaterialAlphaMask;
+  // RB_BLENDCONTROL: colour src 0-4, op 5-7, dst 8-12; alpha src 16-20, op 21-23, dst 24-28.
+  if (mode == kMaterialBlend) {
+    key.blend_control[0] = u32(D3DBlend::SrcAlpha) | u32(D3DBlend::InvSrcAlpha) << 8 | u32(D3DBlend::Zero) << 16 |
+                           u32(D3DBlend::One) << 24;
+    key.depth_control &= ~4u;
+  } else if (mode == kMaterialAdd) {
+    key.blend_control[0] = u32(D3DBlend::One) | u32(D3DBlend::One) << 8 | u32(D3DBlend::One) << 16 |
+                           u32(D3DBlend::One) << 24;
+    key.depth_control &= ~4u;
+  }
+  if (material.flags & kMaterialDoubleSided)
+    key.mode_control &= ~3u;
+}
+
+// The draw's shape keys, when its stream 0 has them; `slot` names a part with weights of its own.
+bool FindShapes(const GuestDevice &device, ShapeDraw &shapes, u32 slot) {
+  const u8 *data;
+  u32 size;
+  if (!StreamZero(device, data, size))
+    return false;
+  // A material record comes after the shape keys': they end where it says.
+  if (const u32 material = MaterialRecord(data, size)) {
+    const u32 before = StreamWord(data, material + 44);
+    if (before > material)
+      return false;
+    size = before;
+  }
+  if (size < kShapeHeaderSize + 8)
+    return false;
+  auto word = [&](u32 at) { return StreamWord(data, at); };
+  if (word(size - 4) != kShapeFooterMagic)
+    return false;
+  const u32 header = word(size - 8);
+  if (header > size - 8 - kShapeHeaderSize || word(header) != kShapeHeaderMagic)
+    return false;
+  const u32 count = word(header + 12);
+  if (!count || count > kMaxShapes || header + kShapeHeaderSize + 4 * count > size - 8)
+    return false;
+  shapes.vertex_count = word(header + 4);
+  shapes.delta_offset = word(header + 8);
+  shapes.count = count;
+  if (uint64_t(shapes.delta_offset) + uint64_t(count) * shapes.vertex_count * kShapeDeltaBytes > header)
+    return false;
+  u32 indices[kMaxShapes];
+  for (u32 i = 0; i < count; ++i)
+    indices[i] = word(header + kShapeHeaderSize + 4 * i);
+  ShapeWeights(word(header + 16), indices, count, shapes.weights, slot);
+  return true;
+}
+
+// The part a block's draw is of: its pixel c28.w, which custom_parts.cpp sets to its shape slot.
+u32 ShapeSlot(const FloatConstants &ps_constants) {
+  const auto *paint = reinterpret_cast<const be_f32 *>(ps_constants.Register(28));
+  const float w = float(paint[3]);
+  return w >= 1.0f && w < 16777216.0f ? u32(w) : 0u;
+}
+
+// A copy of the upload UploadFloatConstants just made or reused ('last') with the shape registers set.
+UploadAllocation ShapeConstants(const ConstantUpload &last, const ShapeDraw &shapes) {
+  UploadAllocation alloc = Video::UploadsLocked().Allocate(256 * 16, 256);
+  if (!alloc)
+    return alloc;
+  u32 lanes[256 * 4];
+  std::memcpy(lanes, last.bytes, sizeof(lanes));
+  for (u32 &lane : lanes)
+    lane = std::byteswap(lane);
+  u32 *info = lanes + kShapeInfoRegister * 4;
+  info[0] = shapes.delta_offset;
+  info[1] = shapes.vertex_count;
+  info[2] = shapes.count;
+  info[3] = 0;
+  std::memcpy(info + 4, shapes.weights, sizeof(shapes.weights));
+  std::memcpy(alloc.cpu, lanes, sizeof(lanes));
+  return alloc;
+}
+
+// The glow composite (ps_981a6a58f2abfa42): the scene plus four bloom levels
+// weighted by c0, which renut_bloom scales.
 constexpr uint64_t kBloomCompositePixelShader = 0x981A6A58F2ABFA42ull;
 constexpr u32 kBloomWeights = 0;
 
@@ -1349,23 +1403,14 @@ TextureFetch DeviceTextureFetch(const d3d::Device &dev, u32 r) {
   return TextureFetch::FromGuest(dev.m_Constants.TextureFetch[r]);
 }
 
-// renut_shadow_softness's filter for a shadow map on its own (kShadowFilterShift
-// codes): Soft a bilinear compare, Softer four half a texel out, Softest four
-// a texel and a half out.
+// renut_shadow_softness's filter code (kShadowFilterShift) for a lone shadow
+// map: Soft bilinear, Softer / Softest four taps 0.5 / 1.5 texels out.
 u32 DefaultShadowFilterCode(u32 level) {
   return level == kShadowFilterWidest ? 4u : level == kShadowFilterWide ? 2u : level ? kShadowFilterCodeBilinear : 0u;
 }
 
-// N&B's shadowed materials (all 2104 shaders with its tap kernel) take the
-// sun's three cascades from fetch constants 13, 14 and 15, projected by c57 /
-// c58, c61 / c62 and c65 / c66 (uv = dot(position, row) * (0.5, -0.5) + 0.5).
-// Each cascade covers several times the world of the one before (s14 about
-// 2.8 times s13's, s15 about 14 times s14's in the docks), so a filter of the
-// same texels on each blurs the far ones many times wider, and where the view
-// passes from one cascade to the next the shadow's softness jumps: a line that
-// sweeps along the ground as the camera moves. Here every cascade gets the
-// same world radius: Softer and Softest's texels of the sharpest cascade,
-// fewer of a coarser one (down to a bilinear compare).
+// The sun's three shadow cascades (fetch constants 13-15, projected by c57,
+// c61, c65 rows): each gets the same world-space filter radius.
 constexpr u32 kSunCascadeFetch[3] = {13, 14, 15};
 constexpr u32 kSunCascadeRows[3] = {57, 61, 65};
 
@@ -1430,13 +1475,11 @@ void FillTextures(const GuestDevice &device, u32 fetch_mask, SharedConstants &sc
     const uint32_t dim = binding.dimension == TextureDimension::Tex3D  ? 1
                          : binding.dimension == TextureDimension::Cube ? 2
                                                                        : 0;
-    // Stacked textures go through the 3D fetches, flagged (tfetchStacked in
-    // shader_common.h), with the fetch constant's filter between layers and
-    // its Z address mode.
+    // Stacked textures go through the 3D fetches, flagged with the layer filter
+    // and Z address mode (tfetchStacked in shader_common.h).
     u32 index = binding.slot | binding.scale.code << kResolutionScaleShift;
-    // A shadow map's compares are filtered (renutShadowCompare in
-    // shader_common.h), as renut_shadow_softness asks; the sun's cascades
-    // are matched to each other after (MatchSunCascades).
+    // A shadow map's compares are filtered per renut_shadow_softness; the sun's
+    // cascades are matched afterwards (MatchSunCascades).
     if (binding.shadow_map && dim == 0)
       index |= DefaultShadowFilterCode(ShadowFilter()) << kShadowFilterShift;
     if (binding.stacked) {
@@ -1447,15 +1490,15 @@ void FillTextures(const GuestDevice &device, u32 fetch_mask, SharedConstants &sc
       }
       if (fetch.Address(2) == TextureAddress::Wrap)
         index |= kStackedLayerWrapBit;
+      // 2D fetches of it (the water's vertex displacement) read layer 0.
+      sc.texture_indices[0][r] = binding.layer_slot | binding.scale.code << kResolutionScaleShift;
     }
     sc.texture_indices[dim][r] = index;
     sc.sampler_indices[r] = SamplerSlotLocked(fetch, binding.lod_scale);
   }
 }
 
-// ---------------------------------------------------------------------------
 // Geometry
-// ---------------------------------------------------------------------------
 
 struct Geometry {
   bool indexed = false;
@@ -1507,12 +1550,8 @@ void ExpandIndices(u32 primitive) {
   }
 }
 
-// Guest index ranges kept across frames, rebased and in the host format, like
-// the vertex streams (g_stream_cache): most draws read index buffers the game
-// never rewrites. A range that hashes the same in kStableFlushes frames in a
-// row gets a persistent copy, which draws use while the range still hashes the
-// same, checked like the streams' (CacheCheckDue, off the render thread), and
-// a range rewritten kMaxCacheDrops times is never cached again.
+// Guest index ranges kept across frames, rebased and in the host format, cached
+// and checked like the vertex streams (g_stream_cache).
 struct IndexKey {
   const u8 *src;
   u32 count, primitive, endian;
@@ -1586,9 +1625,8 @@ bool CachedIndexDraw(const IndexKey &key, const DrawCall &call, Geometry &g) {
   return true;
 }
 
-// After a draw read the range into g_indices and wrote them rebased to
-// 'source': count how long it has held, and give a range that has held long
-// enough its persistent copy (filled from 'source' by the GPU).
+// After a draw wrote its rebased indices to 'source': gives a range that has
+// held long enough its persistent copy, filled from 'source' by the GPU.
 void TrackIndices(const IndexKey &key, u32 lo, u32 max_index,
                   const plume::RenderBufferReference &source) {
   CachedIndices &c = g_index_memo.Get(g_index_cache, key, true)->second;
@@ -1622,9 +1660,6 @@ void TrackIndices(const IndexKey &key, u32 lo, u32 max_index,
 
 bool PrepareGeometry(const GuestDevice &device, const DrawCall &call, Geometry &g) {
   const bool expand = call.primitive == kTriangleFan || call.primitive == kQuadList;
-  static uint32_t rect_logged = 0;
-  if (call.primitive == kRectangleList && !State().rectangle_list_gs && LogLimited(rect_logged, 1))
-    RGPU_WARN("Rectangle lists are drawn as triangle lists");
 
   u32 lo = 0, max_index = 0;  // host indices are g_indices - lo, the largest max_index
   IndexKey index_key{};
@@ -1691,11 +1726,8 @@ bool PrepareGeometry(const GuestDevice &device, const DrawCall &call, Geometry &
   }
 
   if (call.indexed || expand) {
-    // The host indices are rebased to the range rather than drawn with a base
-    // vertex of -lo: D3D12's SV_VertexID leaves the base vertex out (Vulkan's
-    // vertex index includes it), and vertex shaders that fetch by address
-    // take the guest index from the vertex ID (renutVertexRegisters).
-    // 16-bit when every index fits, like the guest's own format mostly is.
+    // Host indices are rebased to the range (D3D12's SV_VertexID omits the base
+    // vertex), 16-bit when every index fits.
     const bool wide = max_index > 0xFFFE;
     const u32 bytes = u32(g_indices.size()) * (wide ? 4 : 2);
     UploadAllocation alloc = Video::UploadsLocked().Allocate(bytes, 16);
@@ -1720,32 +1752,23 @@ bool PrepareGeometry(const GuestDevice &device, const DrawCall &call, Geometry &
   return true;
 }
 
-// Tessellated draws (DrawCall::tessellation): the patches become instances of a
-// grid the vertex shader places (renutVertexRegisters in shader_common.h), at
-// one level for the whole draw, the highest any patch edge asks for.
+// Tessellated draws: the patches become instances of a grid the vertex shader
+// places, at the highest level any patch edge asks for.
 bool PrepareTessellation(const GuestDevice &device, const DrawCall &call, Geometry &g,
                          u32 tessellation[4]) {
   const bool triangles = call.primitive == kTrianglePatch;
-  if (!triangles && call.primitive != kQuadPatch) {
-    static uint32_t logged = 0;
-    if (LogLimited(logged, 1))
-      RGPU_WARN("Tessellated primitive {} not drawn", call.primitive);
-    return false;
-  }
+  if (!triangles && call.primitive != kQuadPatch)
+    return false;  // not drawn
   // Segments per edge are the tessellation level plus one.
   const float min_level = std::max(device.F32(d3d::kDeviceOffsetMinTessellationLevel), 0.0f) + 1.0f;
   const float max_level =
       std::max(device.F32(d3d::kDeviceOffsetMaxTessellationLevel) + 1.0f, min_level);
   float level = max_level;
-  // The count is the patch count. (N&B's water: each section's patch stream is
-  // sized 36 bytes x the count it draws, and its factor pass exports one
-  // patch's edge factors per invocation.)
+  // The count is the patch count.
   const u32 patches = call.count;
   if ((device.U32(d3d::kDeviceOffsetTessellationControl) & 3) == 2) {
     // Adaptive: the index buffer holds each patch's edge factors (floats), from
-    // the start index on. When a memexport draw in flight writes them, these
-    // are from a frame or two before (DrawNeedsExportFlush does not wait for
-    // them).
+    // the start index on.
     const u32 edges = triangles ? 3 : 4;
     // Without them, the maximum level.
     const auto *ib = GuestPtr<const d3d::IndexBuffer>(device.U32(d3d::kDeviceOffsetIndexBuffer));
@@ -1790,11 +1813,8 @@ struct StreamSource {
   u32 cpu_address = 0;       // guest VA of data, when read through the vertex buffer
 };
 
-// 'shader_strides': the strides in the vertex shader's microcode when the draw
-// fetches as the shader was bound (or baked), with no declaration set on the
-// device. The GPU uses those, whatever SetStreamSource was given; D3D patches
-// the stream strides in only when it binds the shader to a device
-// declaration.
+// 'shader_strides': the vertex shader microcode's strides, which the GPU uses
+// when no declaration is set on the device.
 StreamSource GetStreamSource(const GuestDevice &device, const DrawCall &call,
                              const ShaderRecord &vs, const u32 *shader_strides, u32 stream) {
   StreamSource src;
@@ -1820,9 +1840,8 @@ StreamSource GetStreamSource(const GuestDevice &device, const DrawCall &call,
   const u32 size = w1 & 0x3FFFFFCu;
   const u32 gpu_address = w0 & ~3u;
   src.data = gpu_address ? GuestPhysicalPtr<const u8>(gpu_address) : nullptr;
-  // Read through the vertex buffer's CPU address, where the game wrote it,
-  // when the fetch constant is the one SetStreamSource made from that buffer
-  // (its GPU address plus the stream offset).
+  // Read through the vertex buffer's CPU address when the fetch constant is
+  // the one SetStreamSource made from that buffer.
   if (const auto *vb = GuestPtr<const d3d::VertexBuffer>(
           device.U32(d3d::kDeviceOffsetStreamSources + stream * 4))) {
     const u32 cpu_base = u32(vb->Format.dword[0]) & ~3u;
@@ -1838,8 +1857,7 @@ StreamSource GetStreamSource(const GuestDevice &device, const DrawCall &call,
 }
 
 // Host vertices of the draw's streams built on the GPU from export windows
-// (ConvertExportedStreamsLocked), from its first vertex; 'bytes' 0 for the
-// others.
+// (ConvertExportedStreamsLocked); 'bytes' 0 for the others.
 struct GpuStreams {
   plume::RenderBufferReference ref[kMaxVertexStreams];
   u32 bytes[kMaxVertexStreams] = {};
@@ -1907,8 +1925,7 @@ bool BindStreams(const GuestDevice &device, const DrawCall &call, const ShaderRe
         // A copy taken at the call (queued.cpp).
         ConvertVertices(hs, guest, src.stride, count, src.endian, static_cast<u8 *>(alloc.cpu));
       } else {
-        // Into an entry kept from an earlier flush when there is one: its
-        // element list keeps its memory.
+        // Reuses an entry kept from an earlier flush when there is one.
         if (g_stream_fill_count == g_stream_fills.size())
           g_stream_fills.emplace_back();
         PendingStreamFill &fill = g_stream_fills[g_stream_fill_count++];
@@ -1944,17 +1961,15 @@ bool BindStreams(const GuestDevice &device, const DrawCall &call, const ShaderRe
   return true;
 }
 
-// The vertex inputs the shader reads from its declaration by an index other
-// than the vertex index (vfetchBound): each described from the declaration's
-// element for it. Returns the fetch constants (bit i = index 64 + i) whose
-// buffers those reads need copied.
+// Describes the shader's vfetchBound inputs from the declaration; returns the
+// fetch constants (bit i = index 64 + i) whose buffers they need copied.
 u32 DescribeBoundFetches(const GuestDevice &device, const DrawCall &call, const ShaderRecord &vs,
                          const VertexDeclarationRecord &declaration, const u32 *shader_strides,
                          SharedConstants &sc) {
   if (!vs.entry)
     return 0;
   u32 mask = 0;
-  const ShaderVertexInput *inputs = g_shaderVertexInputs + vs.entry->vertexInputOffset;
+  const ShaderVertexInput *inputs = ShaderVertexInputs(*vs.entry);
   const u32 count = std::min<u32>(vs.entry->vertexInputCount, kMaxBoundFetches);
   for (u32 i = 0; i < count; ++i) {
     if (!(inputs[i].flags & kVertexInputBoundFetch))
@@ -1983,12 +1998,8 @@ bool FetchFromExportWindow(const GuestDevice &device, const DrawCall &call, u32 
 bool EnsureBuffer(std::unique_ptr<plume::RenderBuffer> &buffer, uint64_t &capacity, uint64_t size,
                   const plume::RenderBufferDesc &desc_template, const char *name);
 
-// Copies the buffers of the fetch constants the vertex shader reads by address
-// into one allocation and fills their SharedConstants slots. A buffer whose
-// newest data is in a pending export's window comes from there instead: then
-// the whole fetch data is put together on the GPU, in the slot's
-// gpu_fetch_data, and the returned allocation's ref and gpu_address point
-// there. Records copies: before the framebuffer is bound.
+// Copies the buffers the vertex shader reads by address into one allocation (or
+// assembles them on the GPU from export windows); call before binding targets.
 UploadAllocation UploadVertexFetchData(const GuestDevice &device, const DrawCall &call, u32 mask,
                                        SharedConstants &sc) {
   struct Copy {
@@ -2076,9 +2087,8 @@ UploadAllocation UploadVertexFetchData(const GuestDevice &device, const DrawCall
   UploadAllocation alloc = Video::UploadsLocked().Allocate(total, 256);
   if (!alloc)
     return alloc;
-  // Without exports the slots count from the start of the upload chunk, so a
-  // buffer an earlier draw has queued a copy of in the same chunk is read
-  // there (FetchCopy) and not copied again.
+  // Without exports the slots count from the upload chunk's start, so a copy
+  // already queued in the same chunk is reused (FetchCopy).
   const bool shared = !any_exported;
   const uint64_t chunk_offset = shared ? alloc.ref.offset : 0;
   u32 offset = 0;
@@ -2116,9 +2126,8 @@ UploadAllocation UploadVertexFetchData(const GuestDevice &device, const DrawCall
   }
   sc.vertex_fetch_data = alloc.gpu_address;
 
-  // The guest buffers' copies from the upload, the exported ones from their
-  // windows (raw bytes, as guest memory would hold them), each into its own
-  // part of the region.
+  // Assembles the fetch data on the GPU: guest buffers from the upload, exported
+  // ones from their windows.
   auto &s = State();
   uint64_t &used = s.gpu_fetch_data_used[s.frame];
   if (!s.gpu_fetch_data[s.frame] || used + total > s.gpu_fetch_data_capacity[s.frame]) {
@@ -2174,18 +2183,8 @@ UploadAllocation UploadVertexFetchData(const GuestDevice &device, const DrawCall
   return alloc;
 }
 
-// ---------------------------------------------------------------------------
-
-// The host depth bias for the guest's polygon offset, which is in units of
-// depth. N&B sets 0.001 around decal materials (sub_8237D1B8, material flag
-// 0x2000) so they win over the surface they lie on, such as the stone arches
-// laid on walls, and 1e-5 in sub_822FF3E0; it never sets a slope scale.
-// On D24FS8 (the scene's 20e4 float depth) the offset is taken relative to
-// the polygon's exponent, as float depth biases are, so offset * 2^23 units
-// of the host's D32_FLOAT bias by the same: 0.001 lifts the arches about
-// 2.4e-7 at their depth, over the 1e-7 their mesh differs from the wall by.
-// On D24S8 the offset is a fixed part of the depth range, which float depth
-// cannot express in units, so a bias far over it is clamped down to it.
+// The host depth bias for the guest's polygon offset: offset * 2^23 units on
+// D24FS8, and on D24S8 a large bias clamped down to the offset.
 void SetDepthBias(const d3d::Device &dev, const HostSurface &depth, PipelineKey &key) {
   const u32 mode = u32(dev.m_ControlPacket.ModeControl);
   if (!(mode & 0x1800))
@@ -2240,12 +2239,8 @@ PipelineKey MakeKey(const GuestDevice &device, const ShaderRecord *vs, const Sha
   if (primitive == kRectangleList) {
     if (State().rectangle_list_gs)
       key.rectangle_list = 1;
-    // Rectangles are not culled. N&B's D3D clears through rectangles
-    // (ClearRects_D3D, 0x822043D8) whose corners run clockwise on screen, under
-    // whatever cull mode the game left set: with back faces culled and
-    // counterclockwise front faces (after hitting some enemies) the clear of
-    // the post-process surface was culled, so its resolve took the previous
-    // frame's final image back into the bloom, which grew to white.
+    // Rectangles are not culled: the game's clears (ClearRects_D3D, 0x822043D8)
+    // draw them under whatever cull mode was left set.
     key.mode_control &= ~3u;
   }
   if (primitive == kPointList && State().point_sprite_gs)
@@ -2256,19 +2251,12 @@ PipelineKey MakeKey(const GuestDevice &device, const ShaderRecord *vs, const Sha
     // the control points, so it is not culled.
     key.mode_control &= ~3u;
   }
+  SanitizePipelineKey(key);
   return key;
 }
 
-// ---------------------------------------------------------------------------
-// Memexport. N&B fills vertex buffers (and other data) from vertex shaders that
-// write to memory: `mad eA, index, const0100, stream` then eM# (see memExport in
-// shader_common.h). A draw whose shaders do gets a window in the export buffer
-// per stream constant it uses, seeded from guest memory so unwritten bytes keep
-// their value; after the draw the windows are copied to the readback buffer,
-// and before anything reads that memory (a draw that reads it, a kickoff or
-// present) the list is submitted and waited, and the
-// results are written to guest memory, where every other path reads them from.
-// Waiting at every draw instead cost a GPU round trip per export draw.
+// Memexport: export draws write into per-stream windows of the export buffer,
+// copied back to guest memory before anything reads that memory.
 
 struct MemExportStream {
   u32 base = 0;  // guest physical byte address
@@ -2278,9 +2266,8 @@ struct MemExportStream {
   u32 num_format = 0;  // SurfaceNumberFormat
 };
 
-// Bytes per element of a memexport format: the game's bits per pixel for a
-// format of single texels in whole dwords, which is what the shaders write
-// (memExport in shader_common.h); 0 for any other.
+// Bytes per element of a memexport format (single texels in whole dwords), or
+// 0 for any other.
 u32 MemExportElementSize(u32 format) {
   const GpuTextureFormat f = GpuTextureFormat(format & 0x3F);
   u32 block_width, block_height;
@@ -2294,11 +2281,8 @@ u32 MemExportElementSize(u32 format) {
 constexpr u32 kMaxMemExportStreams = 4;
 constexpr u32 kMaxMemExportBytes = 64u << 20;
 
-// The streams the shader's stream constants describe, laid out as N&B's own
-// export passes build them (sub_82317020 before D3DDevice_EndExport): x the
-// GPU address in dwords (bits 0-29) tagged 01 in bits 30-31, z the endian in
-// bits 0-2, the format in 8-13 and the number format in 16-18, w the element
-// count in bits 0-22 (y, z and w carry 0x4B high bits to stay floats).
+// The streams the shader's stream constants describe: x dword address tagged 01
+// in bits 30-31, z endian / format / number format, w element count.
 void GatherMemExportStreams(const ShaderCacheEntry *entry, const FloatConstants &constants,
                             MemExportStream *streams, u32 &count) {
   if (!entry)
@@ -2311,15 +2295,8 @@ void GatherMemExportStreams(const ShaderCacheEntry *entry, const FloatConstants 
       const u32 x = words[0], z = words[2], w = words[3];
       const u32 element = MemExportElementSize((z >> 8) & 0x3F);
       const u32 elements = w & 0x7FFFFF;
-      if ((x >> 30) != 1 || !element || !elements) {
-        static uint32_t logged = 0;
-        if ((x >> 30) == 1 && LogLimited(logged, 8)) {
-          RGPU_WARN("Memexport stream in c{} not exported: {:08X} {:08X} {:08X} {:08X} (format "
-                    "{}, {} elements)",
-                    r, x, u32(words[1]), z, w, (z >> 8) & 0x3F, elements);
-        }
+      if ((x >> 30) != 1 || !element || !elements)
         continue;
-      }
       MemExportStream stream;
       stream.base = (x & 0x3FFFFFFF) * 4;
       stream.size = std::min(elements * element, kMaxMemExportBytes);
@@ -2345,20 +2322,16 @@ struct PendingExport {
   // readback buffer (the same offset in both).
   uint64_t offset = 0;
 };
-// The exports a slot's lists made. They reach guest memory once the slot's
-// fence is waited (detail::CompleteMemExportsLocked), a frame later; until
-// then their windows stay in the slot's export buffer, where the next frame's
-// draws seed from them on the GPU (SeedFromPendingExportsLocked).
+// The exports a slot's lists made, written to guest memory once its fence is
+// waited (detail::CompleteMemExportsLocked).
 struct SlotExports {
   std::vector<PendingExport> pending;
   uint64_t used = 0;
 };
 SlotExports g_exports[kFramesInFlight];
 
-// The 64 KiB granules of physical memory any pending export writes: most
-// ranges a draw reads touch none, and skip the lists (PendingExportSlots runs
-// for every draw's streams and textures while exports are pending, which is
-// always).
+// The 64 KiB granules of physical memory any pending export writes, a quick
+// reject for PendingExportSlots.
 constexpr u32 kExportGranuleShift = 16;
 constexpr u32 kExportGranules = 0x20000000u >> kExportGranuleShift;
 uint64_t g_export_granules[kExportGranules / 64];
@@ -2412,8 +2385,7 @@ bool AnyPendingExports() {
 }
 
 // A GPU physical address, or a guest VA in the physical windows, as a physical
-// address (other VAs come out as unrelated addresses, which at worst flush the
-// exports early).
+// address.
 u32 PhysicalAddress(u32 address) {
   return address >= 0x20000000u ? d3d::CpuToGpuAddress(address) & 0x1FFFFFFFu : address;
 }
@@ -2438,9 +2410,8 @@ u32 PendingExportSlots(u32 address, u32 size) {
   return slots;
 }
 
-// The pending export window holding the newest data of all of [base, base +
-// size) (physical): the newest pending export overlapping it, if it covers it
-// whole. Its slot and the offset of 'base' in that slot's export buffer.
+// The newest pending export window overlapping physical [base, base + size),
+// if it covers it whole: its slot and the offset of 'base' in its buffer.
 bool FindExportWindow(u32 base, u32 size, u32 &slot, uint64_t &offset) {
   const auto &s = State();
   // Oldest slot first, and a slot's exports in the order they were drawn.
@@ -2462,9 +2433,8 @@ bool FindExportWindow(u32 base, u32 size, u32 &slot, uint64_t &offset) {
   return true;
 }
 
-// Whether UploadVertexFetchData copies the buffer of fetch constant
-// 'fetch_index' (read by vfetchMemory / vfetchBound) from a pending export's
-// window on the GPU, which it does when the window holds all of it.
+// Whether fetch constant 'fetch_index''s buffer is copied from a pending
+// export's window on the GPU, which it is when the window holds all of it.
 bool FetchFromExportWindow(const GuestDevice &device, const DrawCall &call, u32 fetch_index,
                            u32 &slot, uint64_t &offset) {
   if (call.up_vertices && fetch_index == d3d::kFirstVertexFetchIndex + d3d::StreamFetchIndex(0))
@@ -2486,11 +2456,8 @@ struct ExportedStream {
   u32 elements[2 * kStreamConvertMaxElements] = {};  // StreamConvertPush::elements
 };
 
-// Whether a draw can read vertex stream 'stream' from a pending export's
-// window instead of guest memory: the window holds the newest data of all of
-// the stream's buffer (FindExportWindow), and stream_convert_cs can build its
-// host layout (word-aligned elements, few enough of them). Shader reads
-// through vfetchBound get the window's bytes too (UploadVertexFetchData).
+// Whether vertex stream 'stream' can be built by stream_convert_cs from a
+// pending export window holding all of its buffer, instead of guest memory.
 bool FindExportedStream(const GuestDevice &device, const DrawCall &call, const ShaderRecord &vs,
                         const u32 *shader_strides, const VertexDeclarationRecord &declaration,
                         u32 stream, ExportedStream &out) {
@@ -2535,12 +2502,8 @@ bool FindExportedStream(const GuestDevice &device, const DrawCall &call, const S
   return true;
 }
 
-// Whether a pending export writes anywhere a texture's data could be: an
-// over-estimate of its base and mip data from the size alone (each level in
-// whole 32x32x4 tiles at 16 bytes a texel, twice over, and the padding of a
-// mip chain's small levels), tested against the granule bitmap before the
-// exact extent (TextureGuestExtent), whose memo lookup per texture per draw
-// cost more than the rest of DrawNeedsExportFlush.
+// Whether a pending export writes anywhere a texture's data could be, by a
+// cheap over-estimate of its extent checked against the granule bitmap.
 bool ExportsNearTexture(const TextureFetch &fetch) {
   u32 width, height, depth;
   fetch.Size(width, height, depth);
@@ -2566,13 +2529,8 @@ enum class ExportRead : u32 {
   Capacity,  // its exports would not fit the readback buffer beside theirs
 };
 
-// Whether pending exports must reach guest memory before a draw, and whose
-// ('slots', a mask): it reads memory they write (its vertex streams, bound or
-// read by address, indices or textures), or its exports would not fit this
-// slot's buffers beside theirs (growing them would lose their windows). Any
-// other draw can be recorded while they are still on the GPU, and so can one
-// whose streams are built from the export windows (FindExportedStream) or
-// whose own exports are seeded from them (SeedFromPendingExportsLocked).
+// Whether pending exports ('slots', a mask) must reach guest memory before a
+// draw: it reads memory they write, or its exports wouldn't fit beside theirs.
 ExportRead DrawNeedsExportFlush(const GuestDevice &device, const DrawCall &call,
                                 const ShaderRecord &vs, const ShaderRecord *ps,
                                 const VertexDeclarationRecord &declaration,
@@ -2594,16 +2552,14 @@ ExportRead DrawNeedsExportFlush(const GuestDevice &device, const DrawCall &call,
     if (stream >= kMaxVertexStreams || (streams_checked & (1u << stream)))
       continue;
     streams_checked |= 1u << stream;
-    // A Begin/DrawVerticesUP draw's stream 0 is its own vertices, whatever
-    // buffer the fetch constant still names: nothing of it is read from
-    // memory.
+    // A Begin/DrawVerticesUP draw's stream 0 is its own vertices, not read
+    // from memory.
     if (stream == 0 && call.up_vertices)
       continue;
     const u32 fetch_index = d3d::kFirstVertexFetchIndex + d3d::StreamFetchIndex(stream);
     if (const u32 found_slots = fetch_slots(fetch_index)) {
       // A stream the host layout reads is built from the export window; one it
-      // does not (no host input) is read only by vfetchBound, whose copy the
-      // window supplies (UploadVertexFetchData).
+      // does not is read only by vfetchBound, whose copy the window supplies.
       ExportedStream exported;
       u32 slot;
       uint64_t offset;
@@ -2626,10 +2582,8 @@ ExportRead DrawNeedsExportFlush(const GuestDevice &device, const DrawCall &call,
       }
     }
   }
-  // A tessellated draw's "indices" are only adaptive edge factors, which set
-  // its level (PrepareTessellation): the ones in guest memory, from a frame
-  // before, set it as well. N&B's water computes them with memexport before
-  // each draw, and waiting for them was two GPU round trips a frame.
+  // A tessellated draw's "indices" are only edge factors, so the previous
+  // frame's values in guest memory are good enough.
   if (call.indexed && !call.up_indices && !call.tessellation) {
     const auto *ib = GuestPtr<const d3d::IndexBuffer>(device.U32(d3d::kDeviceOffsetIndexBuffer));
     if (ib) {
@@ -2716,14 +2670,8 @@ struct SeedPiece {
   u32 size = 0;
 };
 
-// Guest memory lacks what the pending exports will write there, the older
-// slots' and this slot's own earlier draws': copies their windows over the
-// parts of the draw's windows they overlap, each byte from the newest export
-// of it (the copies of one batch are unordered, so no two overlap). Waiting
-// for this slot's instead cost a GPU round trip per such draw, the whole
-// frame's GPU work so far. A slot's own windows pass through its scratch
-// buffer, as a buffer cannot be copied into itself. The copies wait for the
-// guest seed through the buffer's unordered-access state in between.
+// Copies pending exports' windows over the parts of the draw's windows they
+// overlap, each byte from its newest export (guest memory lacks them yet).
 bool SeedFromPendingExportsLocked(VideoState &s, plume::RenderBuffer *buffer,
                                   const MemExportStream *streams, u32 count, const u32 *offsets) {
   static std::vector<SeedPiece> pieces;
@@ -2846,10 +2794,8 @@ bool SeedFromPendingExportsLocked(VideoState &s, plume::RenderBuffer *buffer,
   return true;
 }
 
-// Seeds the draw's export windows from guest memory (and the older slots'
-// pending exports) and fills its stream table. The windows follow the slot's
-// earlier ones in its export buffer, which keeps them for later draws' seeds;
-// returns their offsets.
+// Seeds the draw's export windows (after the slot's earlier ones) from guest
+// memory and pending exports, fills its stream table and returns their offsets.
 bool PrepareMemExportLocked(VideoState &s, const MemExportStream *streams, u32 count,
                             SharedConstants &sc, u32 *offsets) {
   const uint64_t used = g_exports[s.frame].used;
@@ -2905,10 +2851,8 @@ void FinishMemExportLocked(VideoState &s, const MemExportStream *streams, u32 co
                 plume::RenderBufferBarrier(buffer, plume::RenderBufferAccess::WRITE));
 }
 
-// Brings the pending exports of 'slots' to guest memory, with those of every
-// older slot (so a later export of the same memory lands last): waits for the
-// older slots' fences, and submits the open list and waits for it when the
-// current slot is one of them.
+// Brings the pending exports of 'slots' and every older slot to guest memory,
+// waiting for their fences (submitting the open list for the current slot).
 void WaitForExportsLocked(u32 slots) {
   auto &s = State();
   u32 last = 0;  // in age order: 1 is the oldest slot, kFramesInFlight the current one
@@ -2928,19 +2872,15 @@ void WaitForExportsLocked(u32 slots) {
   }
 }
 
-// Builds the host vertices of the draw's streams whose newest data is in a
-// pending export's window (FindExportedStream; DrawNeedsExportFlush did not
-// wait for those) with stream_convert_cs, into the slot's stream buffer.
-// Records dispatches: before the framebuffer is bound.
+// Builds with stream_convert_cs the draw's streams whose newest data is in a
+// pending export window; records dispatches, so call before binding targets.
 bool ConvertExportedStreamsLocked(VideoState &s, const GuestDevice &device, const DrawCall &call,
                                   const ShaderRecord &vs, const u32 *shader_strides,
                                   const VertexDeclarationRecord &declaration, const Geometry &g,
                                   GpuStreams &out) {
   if (!s.stream_convert_pipeline || !AnyPendingExports())
     return true;
-  // The streams whose memory a pending export writes, first: exports are
-  // pending nearly always, and for most draws none is (the jobs below are
-  // big to set up).
+  // First a cheap pass for the streams whose memory a pending export writes.
   u32 pending = 0;
   for (u32 stream = 0; stream < kMaxVertexStreams; ++stream) {
     if (!declaration.layout.streams[stream].used)
@@ -3019,8 +2959,6 @@ bool ConvertExportedStreamsLocked(VideoState &s, const GuestDevice &device, cons
           plume::RenderBufferBarrier(s.memexport_buffer[slot].get(), plume::RenderBufferAccess::WRITE);
     }
   }
-  static const uint32_t kProfileLabel = gpu_profile::Label("exported stream conversion");
-  gpu_profile::Mark(s, kProfileLabel);
   cmd->barriers(plume::RenderBarrierStage::COMPUTE, barriers, barrier_count);
   cmd->setComputePipelineLayout(s.stream_convert_layout.get());
   cmd->setPipeline(s.stream_convert_pipeline.get());
@@ -3052,10 +2990,8 @@ bool ConvertExportedStreamsLocked(VideoState &s, const GuestDevice &device, cons
   return true;
 }
 
-// The GPU fills the persistent copies made since the last flush from the
-// upload memory their draws filled (PoolFill), and the cache entries take
-// them: draws from here on bind them. Records copies, which end any render
-// pass. Without an open list (none were made then) they are let go.
+// Records the GPU copies filling the persistent copies made since the last
+// flush, after which draws bind them; without an open list they are let go.
 void FlushPoolFillsLocked() {
   if (g_stream_pool_fills.empty() && g_index_pool_fills.empty() && g_fetch_pool_fills.empty())
     return;
@@ -3220,8 +3156,6 @@ bool DrawStateLocked(const u8 *device_state, const DrawCall &call, const ReplayC
   const GuestDevice device(device_state);
   if (!device.valid())
     return false;
-  render_profile::Stages stages;
-  stages.Enter(render_profile::Stage::kShaders);
 
   const u32 vs_va = device.U32(d3d::kDeviceOffsetVertexShader);
   auto *vs = FindShaderLocked(vs_va, RecordKind::VertexShader);
@@ -3247,21 +3181,13 @@ bool DrawStateLocked(const u8 *device_state, const DrawCall &call, const ReplayC
   } else {
     declaration = &NoDeclaration();
   }
-  if (!vs || !declaration) {
-    static uint32_t logged = 0;
-    if (LogLimited(logged, 16)) {
-      const u32 va = vs ? declaration_va : vs_va;
-      const auto *words = GuestPtr<const be_u32>(va);
-      RGPU_WARN("Draw dropped: {} {:08X} is not one the renderer knows (words {:08X} {:08X})",
-                vs ? "vertex declaration" : "vertex shader", va, words ? u32(words[0]) : 0,
-                words ? u32(words[1]) : 0);
-    }
+  // A vertex shader or declaration the renderer doesn't know: the draw is
+  // dropped.
+  if (!vs || !declaration)
     return false;
-  }
 
   // Earlier memexport results reach guest memory before this draw reads them
   // (WaitForExportsLocked may submit the list: before anything is recorded).
-  stages.Enter(render_profile::Stage::kExportWait);
   const FloatConstants vs_constants = DrawFloatConstants(device_state, replay, false);
   const FloatConstants ps_constants = DrawFloatConstants(device_state, replay, true);
   // Waiting for an older slot's results leaves the current slot's, which the
@@ -3272,17 +3198,8 @@ bool DrawStateLocked(const u8 *device_state, const DrawCall &call, const ReplayC
                                                  shader_strides, vs_constants, ps_constants, slots);
     if (read == ExportRead::None)
       break;
-    static uint32_t wait_logged = 0;
-    if (LogLimited(wait_logged)) {
-      static constexpr const char *kReadNames[] = {"none",    "vertex stream", "vertex fetch", "indices",
-                                                   "texture", "capacity"};
-      RGPU_WARN("Draw waits for memexport results ({}; VS {:016X}, PS {:016X}{})",
-                kReadNames[u32(read)], vs->hash, ps ? ps->hash : 0,
-                (slots & (1u << s.frame)) ? ", this frame's: GPU round trip" : "");
-    }
     WaitForExportsLocked(slots);
   }
-  stages.Enter(render_profile::Stage::kShaders);
   if (!Video::EnsureCommandListLocked())
     return false;
   SyncBound(s);
@@ -3295,18 +3212,20 @@ bool DrawStateLocked(const u8 *device_state, const DrawCall &call, const ReplayC
   Targets targets;
   if (!GatherTargets(device, targets))
     return false;
-
   // Everything that records copies or barriers comes before the framebuffer.
-  stages.Enter(render_profile::Stage::kTextures);
   SharedConstants sc;
   std::memset(&sc, 0, sizeof(sc));
-  const u32 texture_mask =
-      (vs->entry ? vs->entry->textureFetchMask : 0) | (ps && ps->entry ? ps->entry->textureFetchMask : 0);
+  // NutTool's world materials: the draw's record, whose emissive texture is in fetch constant 1.
+  const bool world_ps = ps && ps->entry && IsWorldPixelShader(*ps->entry);
+  MaterialDraw material;
+  const bool has_material = world_ps && FindMaterial(device, material);
+  const u32 texture_mask = (vs->entry ? vs->entry->textureFetchMask : 0) |
+                           (ps && ps->entry ? ps->entry->textureFetchMask : 0) |
+                           (has_material && (material.flags & kMaterialEmissiveTexture) ? 2u : 0u);
   FillTextures(device, texture_mask, sc);
   if (ps && ps->entry)
     MatchSunCascades(device.dev(), ps_constants, ps->entry->floatConstants, sc);
 
-  stages.Enter(render_profile::Stage::kConstants);
   const d3d::Device &dev = device.dev();
   const u8 *bools = reinterpret_cast<const u8 *>(&dev.m_Constants.VertexShaderB[0]);
   SwapEndian(2, bools, sc.booleans, sizeof(sc.booleans));
@@ -3314,8 +3233,7 @@ bool DrawStateLocked(const u8 *device_state, const DrawCall &call, const ReplayC
   sc.alpha_test_func = (color_control & 8) ? (color_control & 7) : 7;
   sc.alpha_threshold = dev.m_ValuesPacket.AlphaRef;
   // renut_alpha_to_coverage: a GREATER or GEQUAL alpha test into a
-  // multisampled target that does not blend (the game's cut-outs: leaves,
-  // grass, fences) becomes coverage.
+  // multisampled target that does not blend becomes coverage.
   const bool alpha_to_coverage = AlphaToCoverage() && (sc.alpha_test_func == 4 || sc.alpha_test_func == 6) &&
                                  targets.color_count && targets.colors[0]->samples != plume::RenderSampleCount::COUNT_1 &&
                                  !BlendsColor(dev.m_ControlPacket.BlendControl0);
@@ -3323,6 +3241,16 @@ bool DrawStateLocked(const u8 *device_state, const DrawCall &call, const ReplayC
     sc.alpha_test_func |= kAlphaTestToCoverage;
   const ViewportState viewport = ComputeViewport(device, targets);
   sc.screen_space = viewport.screen_space ? 1 : 0;
+  // PA_CL_CLIP_CNTL: UCP_ENA_0..5 in bits 0-5, CLIP_DISABLE (bit 16) turns
+  // them off too; N&B's water reflection clips at the water this way.
+  const u32 clip_control = dev.m_ControlPacket.ClipControl;
+  if (!viewport.screen_space && !(clip_control & 0x10000) && (clip_control & 0x3F)) {
+    sc.clip_plane_mask = clip_control & 0x3F;
+    for (u32 plane = 0; plane < 6; ++plane) {
+      for (u32 i = 0; i < 4; ++i)
+        sc.clip_planes[plane][i] = float(dev.m_ClipPlanes[plane][i]);
+    }
+  }
   std::memcpy(sc.screen_scale, viewport.screen_scale, sizeof(sc.screen_scale));
   std::memcpy(sc.screen_offset, viewport.screen_offset, sizeof(sc.screen_offset));
   sc.viewport_size[0] = viewport.guest_size[0];
@@ -3330,10 +3258,8 @@ bool DrawStateLocked(const u8 *device_state, const DrawCall &call, const ReplayC
   sc.resolution_scale = targets.scale.Factor();
   std::memcpy(sc.pixel_origin, viewport.pixel_origin, sizeof(sc.pixel_origin));
   if (call.primitive == kPointList) {
-    // PA_SU_POINT_SIZE: height 0-15, width 16-31, half the size in 12.4 fixed
-    // point (SetRenderState_PointSize 0x8264C6C0 stores the size * 8);
-    // PA_SU_POINT_MINMAX: minimum 0-15, maximum 16-31, the size in 12.4
-    // (SetRenderState_PointSizeMin 0x8264C720 stores the minimum * 16).
+    // PA_SU_POINT_SIZE: height 0-15, width 16-31, half size in 12.4 fixed point;
+    // PA_SU_POINT_MINMAX: minimum 0-15, maximum 16-31, size in 12.4.
     const auto *tessellator = reinterpret_cast<const be_u32 *>(dev.m_TessellatorPacket);
     const u32 point_size = tessellator[0], point_min_max = tessellator[1];
     sc.point_state[0] = float(point_size >> 16) / 8.0f;
@@ -3342,7 +3268,6 @@ bool DrawStateLocked(const u8 *device_state, const DrawCall &call, const ReplayC
     sc.point_state[3] = float(point_min_max >> 16) / 16.0f;
   }
 
-  stages.Enter(render_profile::Stage::kGeometry);
   Geometry geometry;
   if (call.tessellation ? !PrepareTessellation(device, call, geometry, sc.tessellation)
                         : !PrepareGeometry(device, call, geometry)) {
@@ -3352,23 +3277,32 @@ bool DrawStateLocked(const u8 *device_state, const DrawCall &call, const ReplayC
   // it in PrepareGeometry); the guest's r0.x is the vertex index itself.
   if (!call.tessellation)
     sc.tessellation[3] = geometry.first_vertex;
-  stages.Enter(render_profile::Stage::kVertexFetch);
   GpuStreams gpu_streams;
   if (!ConvertExportedStreamsLocked(s, device, call, *vs, shader_strides, *declaration, geometry,
                                     gpu_streams)) {
     return false;
   }
 
-  const u32 fetch_mask = (vs->entry ? vs->entry->vertexFetchMemoryMask : 0) |
+  // NutTool's shape keys: stream 0 read by address too, for their deltas.
+  ShapeDraw shapes;
+  const bool shaped = vs->entry && IsShapedVertexShader(*vs->entry) &&
+                      FindShapes(device, shapes, IsPartVertexShader(*vs->entry) ? ShapeSlot(ps_constants) : 0u);
+  if (shaped)
+    sc.shape_count = shapes.count;
+  const u32 shape_fetch = shaped ? 1u << (d3d::kFirstVertexFetchIndex + d3d::StreamFetchIndex(0) - 64) : 0u;
+  const u32 fetch_mask = (vs->entry ? vs->entry->vertexFetchMemoryMask : 0) | shape_fetch |
                          DescribeBoundFetches(device, call, *vs, *declaration, shader_strides, sc);
   UploadAllocation fetch_alloc = UploadVertexFetchData(device, call, fetch_mask, sc);
-  stages.Enter(render_profile::Stage::kConstants);
   static constexpr u32 kAllRegisters[8] = {~0u, ~0u, ~0u, ~0u, ~0u, ~0u, ~0u, ~0u};
   static constexpr u32 kNoRegisters[8] = {};
   const u32 *vs_used = vs->entry ? vs->entry->floatConstants : kAllRegisters;
   const u32 *ps_used = !ps ? kNoRegisters : ps->entry ? ps->entry->floatConstants : kAllRegisters;
   UploadAllocation vs_alloc = UploadFloatConstants(vs_constants, vs_used, g_bound.vs_constants);
+  if (vs_alloc && shaped)
+    vs_alloc = ShapeConstants(g_bound.vs_constants, shapes);
   UploadAllocation ps_alloc = UploadFloatConstants(ps_constants, ps_used, g_bound.ps_constants);
+  if (ps_alloc && world_ps)
+    ps_alloc = MaterialConstants(g_bound.ps_constants, has_material ? &material : nullptr);
   if (ps_alloc && ps && DepthOfFieldStrength() != 1.0f && IsDepthOfFieldDraw(vs->hash, ps_used))
     ps_alloc = ScaleDepthOfField(g_bound.ps_constants, DepthOfFieldStrength());
   if (ps_alloc && ps && BloomStrength() != 1.0f && IsBloomDraw(ps->hash, ps_used))
@@ -3391,20 +3325,16 @@ bool DrawStateLocked(const u8 *device_state, const DrawCall &call, const ReplayC
   if (!fetch_alloc.ref.ref || !vs_alloc || !ps_alloc || !sc_alloc || !memexport)
     return false;
 
-  stages.Enter(render_profile::Stage::kPipeline);
   PipelineKey key = MakeKey(device, vs, ps, declaration, targets, call.primitive, geometry.per_instance);
   if (alpha_to_coverage)
     key.alpha_to_coverage = 1;
-  // A draw that exports to memory (N&B's water) is never left out: what it
-  // writes is read on.
-  plume::RenderPipeline *pipeline =
-      GetPipelineLocked(key, {host_vs, host_ps, &declaration->layout, export_count == 0});
+  if (has_material)
+    ApplyMaterialState(material, key);
+  plume::RenderPipeline *pipeline = GetPipelineLocked(key, {host_vs, host_ps, &declaration->layout});
   if (!pipeline)
     return false;
-  stages.Enter(render_profile::Stage::kTargets);
   if (!BindTargets(targets))
     return false;
-  stages.Enter(render_profile::Stage::kRecord);
   plume::RenderCommandList *cmd = s.command_list;
   SetViewport(cmd, viewport.viewport, viewport.scissor, targets.color_count);
 
@@ -3426,9 +3356,7 @@ bool DrawStateLocked(const u8 *device_state, const DrawCall &call, const ReplayC
     if (IsVulkan())
       g_bound.blend_constant_set = false;
   }
-  // RB_STENCILREFMASK's reference (D3D12 has one for both faces). N&B's
-  // silhouettes (the Jinjo Bingo prize previewer, sub_823E7558) mark the model
-  // with reference 1 and draw black where the stencil equals it.
+  // RB_STENCILREFMASK's reference (D3D12 has one for both faces).
   if (!IsVulkan() && g_bound.stencil_reference != (key.stencil_ref_mask & 0xFF)) {
     g_bound.stencil_reference = key.stencil_ref_mask & 0xFF;
     SetStencilReference(cmd, g_bound.stencil_reference);
@@ -3436,17 +3364,10 @@ bool DrawStateLocked(const u8 *device_state, const DrawCall &call, const ReplayC
   float blend_constant[4];
   if (DrawBlendConstant(dev, key, blend_constant) &&
       !(g_bound.blend_constant_set &&
-        std::memcmp(blend_constant, g_bound.blend_constant, sizeof(blend_constant)) == 0)) {
-    if (SetBlendConstant(cmd, blend_constant)) {
-      std::memcpy(g_bound.blend_constant, blend_constant, sizeof(blend_constant));
-      g_bound.blend_constant_set = true;
-    } else {
-      static bool logged = false;
-      if (!logged) {
-        logged = true;
-        RGPU_WARN("Draws blend with the blend constant, which this backend cannot set");
-      }
-    }
+        std::memcmp(blend_constant, g_bound.blend_constant, sizeof(blend_constant)) == 0) &&
+      SetBlendConstant(cmd, blend_constant)) {
+    std::memcpy(g_bound.blend_constant, blend_constant, sizeof(blend_constant));
+    g_bound.blend_constant_set = true;
   }
   if (IsVulkan()) {
     const DrawPushConstants push{vs_alloc.gpu_address, ps_alloc.gpu_address, sc_alloc.gpu_address};
@@ -3459,13 +3380,10 @@ bool DrawStateLocked(const u8 *device_state, const DrawCall &call, const ReplayC
     SetRootDescriptor(cmd, plume::RenderBufferReference(memexport), kDrawRootMemExport);
   }
 
-  stages.Enter(render_profile::Stage::kStreams);
   if (!BindStreams(device, call, *vs, shader_strides, declaration->layout,
                    declaration->layout_hash, geometry, gpu_streams)) {
     return false;
   }
-  stages.Enter(render_profile::Stage::kRecord);
-  render_profile::CountDraw();
   if (geometry.indexed) {
     SetIndexBuffer(cmd, geometry.index_view);
     cmd->drawIndexedInstanced(geometry.index_count, 1, 0, 0, 0);
@@ -3594,24 +3512,10 @@ void AdvanceStreamCacheFrameLocked() {
   });
 }
 
-StreamCacheMemory StreamCacheMemoryLocked() {
-  StreamCacheMemory usage;
-  usage.pool_bytes = g_copy_pool.Bytes() + g_index_pool.Bytes() + g_fetch_pool.Bytes();
-  usage.cached_bytes = g_stream_cache_bytes;
-  usage.streams = g_stream_cache.size();
-  usage.index_ranges = g_index_cache.size();
-  return usage;
-}
-
 namespace {
 
-// Clears on explicit targets (framebuffer bound as for a draw). A color clear
-// reaches the targets over the same EDRAM in other host formats too
-// (ColorAliasesLocked): on the console the clear writes the memory, whatever
-// format a surface reads it as. N&B's paint shop clears its glow buffer
-// through the 8-bit view of that EDRAM, then adds the glow particles through a
-// 16-bit float view; the float target kept the frames before, and the glow
-// piled up into drips.
+// Clears on explicit targets; a color clear also reaches the targets aliasing
+// the same EDRAM in other host formats (ColorAliasesLocked).
 void ClearTargets(const Targets &t, u32 flags, const plume::RenderRect &rect, const float color[4],
                   float depth, u32 stencil) {
   if (rect.right <= rect.left || rect.bottom <= rect.top || !BindTargets(t))
@@ -3653,8 +3557,7 @@ void ClearTargets(const Targets &t, u32 flags, const plume::RenderRect &rect, co
 }
 
 // Depth resolve (shaders/host/depth_resolve.hlsli): 'src' of the depth target
-// to ('dest_x', 'dest_y') of the destination and of its guest words, in guest
-// pixels (the destination is of the surface's scale).
+// to ('dest_x', 'dest_y') of the destination and its guest words (guest pixels).
 bool ResolveDepth(HostSurface *surface, HostTexture *dest, const ClearRect &src, i32 dest_x,
                   i32 dest_y) {
   const RenderScale scale = surface->scale;
@@ -3666,8 +3569,6 @@ bool ResolveDepth(HostSurface *surface, HostTexture *dest, const ClearRect &src,
     return false;
   }
   plume::RenderCommandList *cmd = s.command_list;
-  static const uint32_t kProfileLabel = gpu_profile::Label("depth resolves");
-  gpu_profile::Mark(s, kProfileLabel);
   TransitionSurfaceLocked(surface, plume::RenderTextureLayout::SHADER_READ);
   TransitionTextureLocked(dest, plume::RenderTextureLayout::COLOR_WRITE);
   TransitionTextureLocked(dest->words.get(), plume::RenderTextureLayout::COLOR_WRITE);
@@ -3718,7 +3619,6 @@ plume::RenderRect ClampRect(const ClearRect *rect, uint32_t width, uint32_t heig
 
 void ClearStateLocked(const u8 *device_state, u32 flags, const ClearRect *rect,
                       const float color[4], float depth, u32 stencil) {
-  render_profile::Scope profile(render_profile::Stage::kClear);
   auto &s = State();
   if (!Video::EnsureCommandListLocked())
     return;
@@ -3736,9 +3636,8 @@ void ClearStateLocked(const u8 *device_state, u32 flags, const ClearRect *rect,
   const float vw = device.F32(0x3178), vh = device.F32(0x317C);
   if (vw > 0.0f && vh > 0.0f) {
     int32_t vx2 = int32_t(vx + vw), vy2 = int32_t(vy + vh);
-    // A target grown for tiling: D3D bounds the viewport by the tile-sized
-    // surface, which covers the whole target across the tiles (as for the
-    // scissor in ComputeViewport).
+    // A target grown for tiling: a viewport bound by the tile-sized surface
+    // covers the whole target (as in ComputeViewport).
     if (targets.width > targets.guest_width && vx2 >= int32_t(targets.guest_width))
       vx2 = int32_t(targets.width);
     if (targets.height > targets.guest_height && vy2 >= int32_t(targets.guest_height))
@@ -3758,10 +3657,7 @@ void ResolveStateLocked(const u8 *device_state, u32 flags, const ClearRect *sour
                         u32 dest_texture_va, const d3d::TextureFetchConstant *dest_format,
                         i32 dest_x, i32 dest_y, u32 dest_level, u32 dest_slice,
                         const float clear_color[4], float clear_depth, u32 clear_stencil) {
-  render_profile::Scope profile(render_profile::Stage::kResolve);
   auto &s = State();
-  static const uint32_t kProfileLabel = gpu_profile::Label("resolves");
-  gpu_profile::Mark(s, kProfileLabel);
   // Pending memexport results stay on the GPU: a resolve writes host textures
   // only, and a clear reads no memory.
   if (!Video::EnsureCommandListLocked())
@@ -3776,7 +3672,6 @@ void ResolveStateLocked(const u8 *device_state, u32 flags, const ClearRect *sour
                                     : device.U32(d3d::kDeviceOffsetRenderTargets + source * 4);
   HostSurface *surface = GetHostSurfaceLocked(source_va);
   plume::RenderCommandList *cmd = s.command_list;
-  static uint32_t depth_logged = 0;
 
   // The source rect within the target and the destination level.
   auto fit = [&](const HostTexture *dest, ClearRect &src) {
@@ -3803,12 +3698,7 @@ void ResolveStateLocked(const u8 *device_state, u32 flags, const ClearRect *sour
       ClearRect src;
       if (dest)
         dest->shadow_map = surface->shadow_map;
-      if (!dest) {
-        if (LogLimited(depth_logged, 2)) {
-          RGPU_WARN("Depth resolve into {:08X} (level {}, slice {}) not done", dest_texture_va,
-                    dest_level, dest_slice);
-        }
-      } else if (fit(dest, src) && ResolveDepth(surface, dest, src, dest_x, dest_y)) {
+      if (dest && fit(dest, src) && ResolveDepth(surface, dest, src, dest_x, dest_y)) {
         // renut_ssao: the scene's depth is in; its occlusion goes into the
         // color target the scene was drawn into.
         HostSurface *color = FindHostSurfaceLocked(device.U32(d3d::kDeviceOffsetRenderTargets));
@@ -3844,11 +3734,8 @@ void ResolveStateLocked(const u8 *device_state, u32 flags, const ClearRect *sour
                                           int32_t(host_y) + (rect.bottom - rect.top));
         const bool multisampled = surface->samples != plume::RenderSampleCount::COUNT_1;
         if (multisampled && dest->extra_levels && IsVulkan()) {
-          // A destination with host levels takes it through a single-level
-          // target (ResolveStagingLocked): plume's Vulkan resolve writes every
-          // level of its destination (D3D12's writes level 0 only, and
-          // resolves in place below). Without one (device lost) nothing of
-          // the resolve lands.
+          // Through a single-level staging target (ResolveStagingLocked), as
+          // plume's Vulkan resolve writes every level of its destination.
           if (HostTexture *staging = ResolveStagingLocked(dest)) {
             TransitionSurfaceLocked(surface, plume::RenderTextureLayout::RESOLVE_SOURCE);
             TransitionTextureLocked(staging, plume::RenderTextureLayout::RESOLVE_DEST);
@@ -3924,8 +3811,6 @@ bool ReadRenderTargetLocked(const u8 *device_state, u32 source, u32 &width, u32 
   height = std::min(height, surface->height);
   if (!width || !height)
     return false;
-  static const uint32_t kProfileLabel = gpu_profile::Label("render target readback");
-  gpu_profile::Mark(s, kProfileLabel);
 
   // A single-sampled copy of the rect, which the shader reads by its slot.
   const RenderScale scale = surface->scale;

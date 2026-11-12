@@ -1,16 +1,12 @@
-/**
- * @file    gpu/guest/callbacks.cpp
- */
 #include "renut_engine/gpu/guest/callbacks.h"
 
 #include <deque>
 #include <mutex>
 #include <vector>
 
-#include <rex/hook.h>
-#include <rex/ppc.h>
+#include <rex/kernel/title_runtime.h>
+#include <rex/ppc/hook.h>
 
-#include "renut_engine/gpu/log.h"
 #include "renut_engine/gpu/backend/render_thread.h"
 #include "renut_engine/gpu/render/textures.h"
 
@@ -39,9 +35,8 @@ void InsertCallback(u32 function, u32 context) {
     seq = ++g_last_seq;
     g_callbacks.push_back({seq, function, context});
   }
-  // The linear textures of the work before it are read now, not when the
-  // command list is submitted: after the callback the game may rewrite them
-  // (the XMV player's frames).
+  // Reads the linear textures of the work before it now, since the game may
+  // rewrite them after the callback (the XMV player's frames).
   render_thread::Queue([] { FlushTextureFillsLocked(); });
   render_thread::QueueCallbackMarker(seq);
 }
@@ -64,13 +59,13 @@ void RunReadyCallbacks() {
     }
     g_running = true;
   }
-  for (const Callback &callback : ready) {
-    PPCFunc *function = rex::runtime::ResolveIndirectFunction(callback.function);
-    if (!function) {
-      RGPU_ERROR("InsertCallback: no guest function at {:08X}", callback.function);
-      continue;
+  // Only on a guest thread, and only a function that exists (ResolveFunction would trap).
+  rex::kernel::TitleRuntime *runtime = REX_RUNTIME();
+  if (runtime && rex::ppc::GetBoundThread().ctx) {
+    for (const Callback &callback : ready) {
+      if (const rex::Result<PPCFunc *> function = runtime->FindFunction(callback.function))
+        rex::ppc::HostToGuestCall<void>(*function, callback.context);
     }
-    rex::ppc::GuestToHostFunction<void>(function, callback.context);
   }
   {
     std::lock_guard lock(g_mutex);

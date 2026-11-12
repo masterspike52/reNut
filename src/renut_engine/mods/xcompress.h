@@ -1,9 +1,6 @@
 #pragma once
-// The game's xcompress (0x0FF512ED, LZX) bundle container, and the "expanded"
-// form of a game file that .nbpatch deltas are made against (NB Studio's
-// PatchPackage.Expand): an xcompress file decompressed, or a Bundle/50
-// streaming archive followed by every xcompress entry inside it,
-// decompressed, in entry order.
+// The game's xcompress (0x0FF512ED, LZX) container, and the "expanded" game file that
+// .nbpatch deltas are made against (decompressed, plus a Bundle/50 archive's entries).
 
 #include <cstdint>
 #include <optional>

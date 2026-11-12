@@ -5,17 +5,39 @@
 #include <mutex>
 #include <thread>
 
-#include <rex/cvar.h>
-#include <rex/hook.h>
+#include <rex/ppc/hook.h>
+#include <rex/setting.h>
+#include <rexcrash/rexcrash.h>
+#include <rexfabric/rexfabric.h>
 
-REXCVAR_DEFINE_BOOL(fps_overlay, false, "Nuts&Bolts/Performance",
-    "Shows the FPS overlay (toggle with F1).");
-REXCVAR_DEFINE_DOUBLE(fps_overlay_size, 34.0, "Nuts&Bolts/Performance",
-    "Text size of the FPS overlay's frame rate, in pixels; the rest scales with it.");
+#include "renut_engine/app/renut_settings.h"
+#include "renut_engine/online/net_api.h"
+
+namespace {
+struct FrameStatsSettings final : rex::SettingOwner {
+    FrameStatsSettings() : rex::SettingOwner(renut::settings::kScope) { renut::settings::Add(*this); }
+    REX_SETTING(bool, fps_overlay, false, "Shows the FPS overlay (toggle with F1).");
+    REX_SETTING(f64, fps_overlay_size, 34.0,
+                "Text size of the FPS overlay's frame rate, in pixels; the rest scales with it.");
+};
+FrameStatsSettings &g_frame_stats_settings = *new FrameStatsSettings();  // never freed, registered by RenutApp::OnConfigure
+}  // namespace
 
 void renutFrameLimit();  // frameHooks.cpp
 
 namespace renut::frame_stats {
+
+bool FpsOverlayEnabled() {
+    return g_frame_stats_settings.fps_overlay.Get();
+}
+
+void SetFpsOverlayEnabled(bool on) {
+    (void)g_frame_stats_settings.fps_overlay.Set(on);
+}
+
+double FpsOverlaySize() {
+    return g_frame_stats_settings.fps_overlay_size.Get();
+}
 
 namespace {
 
@@ -87,6 +109,7 @@ void OnGameThreadWait(double ms) {
 }
 
 void OnGameFrame() {
+    rexcrash::OnPresent();  // the frame rate crash reports carry
     const Clock::time_point now = Clock::now();
     std::lock_guard lock(g_mutex);
     if (g_have_frame) {
@@ -143,24 +166,27 @@ Snapshot Get() {
 
 // The game's update, then its render. Timed here, and the frame cap applied
 // after the render.
-REX_EXTERN(__imp__appMainTickPreDraw);
-REX_HOOK_RAW(appMainTickPreDraw) {
+REX_EXTERN(__imp__rex_appMainTickPreDraw);
+REX_HOOK_RAW(rex_appMainTickPreDraw) {
     {
         std::lock_guard lock(renut::frame_stats::g_mutex);
         renut::frame_stats::g_wait_ms = 0.0;
         renut::frame_stats::g_game_thread = std::this_thread::get_id();
     }
     const auto start = renut::frame_stats::Clock::now();
-    __imp__appMainTickPreDraw(ctx, base);
+    __imp__rex_appMainTickPreDraw(ctx, base);
     const double ms = renut::frame_stats::MsSince(start);
-    std::lock_guard lock(renut::frame_stats::g_mutex);
-    renut::frame_stats::g_update_ms = ms;
+    {
+        std::lock_guard lock(renut::frame_stats::g_mutex);
+        renut::frame_stats::g_update_ms = ms;
+    }
+    renut::online::net_api::Tick(ctx, base);  // renut.net's messages, after the game's update
 }
 
-REX_EXTERN(__imp__appMainDraw);
-REX_HOOK_RAW(appMainDraw) {
+REX_EXTERN(__imp__rex_appMainDraw);
+REX_HOOK_RAW(rex_appMainDraw) {
     const auto start = renut::frame_stats::Clock::now();
-    __imp__appMainDraw(ctx, base);
+    __imp__rex_appMainDraw(ctx, base);
     const double ms = renut::frame_stats::MsSince(start);
     {
         std::lock_guard lock(renut::frame_stats::g_mutex);
@@ -168,5 +194,7 @@ REX_HOOK_RAW(appMainDraw) {
         renut::frame_stats::g_cpu.Add(std::max(
             renut::frame_stats::g_update_ms + ms - renut::frame_stats::g_wait_ms, 0.0));
     }
+    // The mods' frame event (RexFabric), on the game thread after its render.
+    rexfabric::Tick();
     renutFrameLimit();
 }

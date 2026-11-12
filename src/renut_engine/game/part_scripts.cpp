@@ -1,30 +1,11 @@
-/**
- * @file    game/part_scripts.cpp
- * @brief   Lua scripts of mods' new kinds of parts (see part_scripts.h).
- *
- * One Lua state, on the game thread. Each script's chunk runs once, with an
- * environment table of its own (its _ENV: the sandbox's functions, then the
- * script's globals and events); each part instance is a table in the
- * registry, keyed by its guest address.
- *
- * Vehicles (NB Studio's Showdown Town co-op research, verified there by
- * moving vehicles in a running game): a whole vehicle is one Havok rigid body,
- * [vehicle + 0x7C0] (0 while a part breaking off rebuilds it); its motion
- * state's position is at body + 0x110, with the 3x3 rotation's columns (the
- * vehicle's right, up and forward axes; parts are authored +Z front) in the
- * 0x30 bytes before it, centres of mass at + 0x10 / + 0x20 from it, the
- * orientation quaternion at + 0x40, linear velocity at + 0x90 and angular
- * velocity at + 0xA0. A teleport moves the position and both centres of mass
- * together.
- */
 #include "renut_engine/game/part_scripts.h"
 
-#include <rex/system/function_dispatcher.h>
-#include <rex/system/kernel_state.h>
-#include <rex/system/xmemory.h>
+#include <rex/kernel/guest_memory.h>
+#include <rex/kernel/title_runtime.h>
 #include <rex/types.h>
 
 #include <cmath>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <string>
@@ -35,7 +16,7 @@
 #include "lua.h"
 #include "lualib.h"
 
-#include "renut_engine/app/renut_logging.h"
+#include "renut_engine/game/part_classes.h"
 #include "renut_engine/mods/custom_parts.h"
 
 namespace renut::game::part_scripts {
@@ -44,7 +25,8 @@ namespace {
 using renut::mods::CustomPart;
 using renut::mods::JsonValue;
 
-// Guest data: the vehicle's rigid body (see the file comment).
+// Guest data: the vehicle's Havok rigid body ([vehicle + 0x7C0]) and its motion
+// state (body + 0x110: position, rotation before it, velocities after).
 constexpr uint32_t kVehicleBody = 0x7C0;
 constexpr uint32_t kBodyMotion = 0x110;
 constexpr int32_t kMotionRotation = -0x30;  // columns: right, up, forward
@@ -52,19 +34,14 @@ constexpr uint32_t kMotionCentres[] = {0x10, 0x20};
 constexpr uint32_t kMotionVelocity = 0x90;
 constexpr uint32_t kMotionAngularVelocity = 0xA0;
 
-// Effects (IDA): sub_823A9100(level, const u32 *aid, const vec4 *pos,
-// double life (0: the effect's own), int, const vec4 *dir, int) spawns a
-// particle effect through the level's effect system (level + 3120; its time
-// scale at + 2868). Callers pass an entity's level, entity + 76 (sub_822A3F70;
-// the horn reads its vehicle's the same way). Effect names are game asset refs (gameAssetRefGetAid, 0x82223868):
-// a list of tables at kAssetRefs, {?, next, count, entries}, entries
-// {char name[64], u32 aid}.
+// Effects: sub_823A9100(level, const u32 *aid, const vec4 *pos, double life, -,
+// const vec4 *dir, int, callback, callback data) spawns a particle effect (names: asset refs).
 constexpr uint32_t kSpawnEffect = 0x823A9100;
+constexpr double kEffectOwnLife = -1.0;  // flt_820FF2E8: the effect's own length
 constexpr uint32_t kEntityLevel = 76;      // entity + 76: the level it is in
 constexpr uint32_t kLevelEffects = 3120;   // level + 3120: its effect system
-// Whether an asset is there, without asking the asset manager for it (an
-// asset it can't find stops the game): sub_821DDBF0(&query, 0xFF), the query
-// {off_82001AF0, aid} (any provider). The game builds it inline, as here.
+// sub_821DDBF0(&query {off_82001AF0, aid}, 0xFF): whether an asset exists,
+// without opening it (a missing asset stops the game).
 constexpr uint32_t kAssetQuery = 0x821DDBF0;
 constexpr uint32_t kAssetQueryVtable = 0x82001AF0;
 constexpr uint32_t kAnyProvider = 0xFF;
@@ -342,74 +319,25 @@ uint32_t AssetRefAid(const char *name) {
   return 0;
 }
 
-// fx.play(effect, position): the game's particle effect there. 'effect' is an
-// asset ref name, or an asset id ("0x4B32520C", or a number), as
-// renut_log_effects lists them. An effect the current level hasn't loaded is
-// skipped (logged once): true when it played.
+// fx.play(effect, position): plays a particle effect (asset ref name or asset
+// id) there; true when it played, false when the level hasn't loaded it.
 int FxPlay(lua_State *L) {
   if (!g_ctx || !g_vehicle)
     return luaL_error(L, "fx.play: the part is on no vehicle (effects need one to belong to)");
-  uint32_t aid = 0;
+  std::string effect;
   if (lua_type(L, 1) == LUA_TNUMBER) {
-    aid = uint32_t(lua_tointeger(L, 1));
+    char hex[16];
+    std::snprintf(hex, sizeof(hex), "0x%X", unsigned(lua_tointeger(L, 1)));
+    effect = hex;
   } else {
-    const char *name = luaL_checkstring(L, 1);
-    char *end = nullptr;
-    if ((name[0] == '0' && (name[1] == 'x' || name[1] == 'X')) &&
-        (aid = uint32_t(std::strtoul(name + 2, &end, 16)), end && !*end)) {
-      // an asset id
-    } else if (!(aid = AssetRefAid(name))) {
-      return luaL_error(L, "fx.play: the game has no effect named '%s'", name);
-    }
+    effect = luaL_checkstring(L, 1);
   }
   const Vec p = CheckVec(L, 2);
-  if (!Finite(p))
-    return luaL_error(L, "fx.play: not a finite position");
-  if (!g_fx_scratch && !(g_fx_scratch = REX_KERNEL_MEMORY()->SystemHeapAlloc(32, 16)))
-    return luaL_error(L, "fx.play: no guest memory");
-  StoreWord(g_fx_scratch + 16, aid);
-  // The asset query at + 24: {vtable, aid}.
-  StoreWord(g_fx_scratch + 24, kAssetQueryVtable);
-  StoreWord(g_fx_scratch + 28, aid);
-  PPCContext &ctx = *g_ctx;
-  auto *dispatcher = REX_KERNEL_STATE()->function_dispatcher();
-  ctx.r3.u64 = g_fx_scratch + 24;
-  ctx.r4.u64 = kAnyProvider;
-  if (::PPCFunc *exists = dispatcher->GetFunction(kAssetQuery))
-    exists(ctx, g_base);
-  if (!(ctx.r3.u32 & 0xFF)) {
-    static std::unordered_map<uint32_t, bool> logged;
-    if (!logged[aid]) {
-      logged[aid] = true;
-      RNUT_WARN("Part scripts: effect {:08X} isn't loaded here; fx.play skips it", aid);
-    }
-    lua_pushboolean(L, 0);
-    return 1;
-  }
-  // The effect belongs to the vehicle's level.
-  const uint32_t level = Load32(g_vehicle + kEntityLevel);
-  if (level < 0x40000000 || level >= 0xC0000000 || !Load32(level + kLevelEffects)) {
-    static bool logged = false;
-    if (!logged) {
-      logged = true;
-      RNUT_WARN("Part scripts: the vehicle's level ({:08X}) has no effect system; fx.play skips its effects",
-                level);
-    }
-    lua_pushboolean(L, 0);
-    return 1;
-  }
-  WriteVec(g_fx_scratch, p);
-  StoreFloat(g_fx_scratch + 12, 1.0f);
-  ctx.r3.u64 = level;
-  ctx.r4.u64 = g_fx_scratch + 16;
-  ctx.r5.u64 = g_fx_scratch;
-  ctx.f1.f64 = 0.0;
-  ctx.r6.u64 = 0;
-  ctx.r7.u64 = 0;
-  ctx.r8.u64 = 0;
-  if (::PPCFunc *spawn = dispatcher->GetFunction(kSpawnEffect))
-    spawn(ctx, g_base);
-  lua_pushboolean(L, 1);
+  std::string error;
+  const auto played = PlayEffect(*g_ctx, g_base, g_vehicle, effect, p.x, p.y, p.z, luaL_optnumber(L, 3, 0), &error);
+  if (!played)
+    return luaL_error(L, "fx.play: %s", error.c_str());
+  lua_pushboolean(L, *played);
   return 1;
 }
 
@@ -431,20 +359,8 @@ int PartVehicle(lua_State *L) {
 
 // --- the sandbox ------------------------------------------------------------
 
-int Log(lua_State *L) {
-  std::string text;
-  const int n = lua_gettop(L);
-  for (int i = 1; i <= n; ++i) {
-    if (i > 1)
-      text += ' ';
-    text += luaL_tolstring(L, i, nullptr);
-    lua_pop(L, 1);
-  }
-  lua_Debug where{};
-  std::string source = "script";
-  if (lua_getstack(L, 1, &where) && lua_getinfo(L, "Sl", &where))
-    source = std::string(where.short_src) + ":" + std::to_string(where.currentline);
-  RNUT_INFO("[{}] {}", source, text);
+// log and print: nothing, kept so scripts that call them still run.
+int Log(lua_State *) {
   return 0;
 }
 
@@ -574,7 +490,6 @@ Script *ScriptOf(const CustomPart &part) {
   }
   const std::string name = "@" + Name(part);
   if (luaL_loadbufferx(L, part.script_source.data(), part.script_source.size(), name.c_str(), "t") != LUA_OK) {
-    RNUT_ERROR("Part script {}: {}", Name(part), lua_tostring(L, -1));
     lua_pop(L, 1);
     script.stopped = true;
     return nullptr;
@@ -588,12 +503,10 @@ Script *ScriptOf(const CustomPart &part) {
   const int status = lua_pcall(L, 0, 0, 0);
   lua_sethook(L, nullptr, 0, 0);
   if (status != LUA_OK) {
-    RNUT_ERROR("Part script {}: {}", Name(part), lua_tostring(L, -1));
     lua_pop(L, 1);
     script.stopped = true;
     return nullptr;
   }
-  RNUT_INFO("Part script {} loaded", Name(part));
   return &script;
 }
 
@@ -650,12 +563,9 @@ void Call(PPCContext &ctx, uint8_t *base, const CustomPart &part, uint32_t insta
   const int status = lua_pcall(L, 1 + nargs, 0, 0);
   lua_sethook(L, nullptr, 0, 0);
   if (status != LUA_OK) {
-    RNUT_WARN("Part script {}: {}: {}", Name(part), name, lua_tostring(L, -1));
     lua_pop(L, 1);
-    if (++script->errors >= kMaxErrors) {
+    if (++script->errors >= kMaxErrors)
       script->stopped = true;
-      RNUT_ERROR("Part script {} failed {} times; it is stopped", Name(part), kMaxErrors);
-    }
   }
   lua_pop(L, 1);  // the environment
 }
@@ -663,6 +573,65 @@ void Call(PPCContext &ctx, uint8_t *base, const CustomPart &part, uint32_t insta
 auto NoArgs = [](lua_State *) {};
 
 } // namespace
+
+std::optional<bool> PlayEffect(PPCContext &ctx, uint8_t *base, uint32_t entity, const std::string &effect,
+                               double x, double y, double z, double seconds, std::string *error) {
+  g_base = base;
+  uint32_t aid = 0;
+  const char *name = effect.c_str();
+  char *end = nullptr;
+  if ((name[0] == '0' && (name[1] == 'x' || name[1] == 'X')) &&
+      (aid = uint32_t(std::strtoul(name + 2, &end, 16)), end && !*end)) {
+    // an asset id
+  } else if (!(aid = AssetRefAid(name))) {
+    *error = "the game has no effect named '" + effect + "'";
+    return std::nullopt;
+  }
+  const Vec p{x, y, z};
+  if (!Finite(p)) {
+    *error = "not a finite position";
+    return std::nullopt;
+  }
+  if (rex::kernel::GuestMemory *memory = REX_GUEST_MEMORY(); !g_fx_scratch && memory)
+    g_fx_scratch =
+        memory->Allocate(32, 16, rex::kernel::GuestProtect::kReadWrite, rex::kernel::GuestHeap::kSystem).value_or(0);
+  if (!g_fx_scratch) {
+    *error = "no guest memory";
+    return std::nullopt;
+  }
+  StoreWord(g_fx_scratch + 16, aid);
+  // The asset query at + 24: {vtable, aid}.
+  StoreWord(g_fx_scratch + 24, kAssetQueryVtable);
+  StoreWord(g_fx_scratch + 28, aid);
+  ctx.r3.u64 = g_fx_scratch + 24;
+  ctx.r4.u64 = kAnyProvider;
+  if (::PPCFunc *exists = renut::game::GuestFunction(kAssetQuery))
+    exists(ctx, base);
+  if (!(ctx.r3.u32 & 0xFF))
+    return false;
+  // The effect belongs to the entity's level, which needs an effect system.
+  const uint32_t level = Load32(entity + kEntityLevel);
+  if (level < 0x40000000 || level >= 0xC0000000 || !Load32(level + kLevelEffects)) {
+    *error = "no level with effects to play it in";
+    return std::nullopt;
+  }
+  WriteVec(g_fx_scratch, p);
+  StoreFloat(g_fx_scratch + 12, 1.0f);
+  ctx.r3.u64 = level;
+  ctx.r4.u64 = g_fx_scratch + 16;
+  ctx.r5.u64 = g_fx_scratch;
+  // How long it plays: kEffectOwnLife (as the game asks for one-shot effects), or seconds.
+  ctx.f1.f64 = seconds > 0 ? seconds : kEffectOwnLife;
+  ctx.r6.u64 = 0;
+  ctx.r7.u64 = 0;  // direction
+  ctx.r8.u64 = 0;
+  // r9 / r10 reach the effect as its expiry callback and that callback's data: none.
+  ctx.r9.u64 = 0;
+  ctx.r10.u64 = 0;
+  if (::PPCFunc *spawn = renut::game::GuestFunction(kSpawnEffect))
+    spawn(ctx, base);
+  return true;
+}
 
 void Spawn(PPCContext &ctx, uint8_t *base, const CustomPart &part, uint32_t instance) {
   Call(ctx, base, part, instance, 0, "on_spawn", 0, NoArgs);

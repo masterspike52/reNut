@@ -1,8 +1,3 @@
-/**
- * @file    game/flag_editor.h
- * @brief   Player 1's game flags and counters, by the game's own names
- *          (flag_editor.cpp; the window is ui/flag_editor_dialog.h, F7).
- */
 #pragma once
 
 #include <cstdint>
@@ -27,9 +22,8 @@ bool HasProfile();
 // shows already.
 int32_t Get(Table table, uint32_t index);
 
-// Changes player 1's value on the game's next frame, and marks the profile
-// changed so the game's next save keeps it. False (and nothing changes) in an
-// online session whose host doesn't allow cheats.
+// Changes player 1's value on the game's next frame (marked for saving); false
+// in an online session whose host doesn't allow cheats.
 bool Set(Table table, uint32_t index, int32_t value);
 
 // An online session whose host doesn't allow cheats: Set changes nothing.

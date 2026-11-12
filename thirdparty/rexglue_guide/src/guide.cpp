@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cctype>
 #include <chrono>
 #include <climits>
 #include <deque>
@@ -12,22 +13,24 @@
 #include <functional>
 #include <mutex>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
-#include <rex/cvar.h>
-#include <rex/filesystem.h>
-#include <rex/rex_app.h>
-#include <rex/system/kernel_state.h>
-#include <rex/ui/imgui_drawer.h>
-#include <rex/ui/keybinds.h>
-#include <rex/ui/overlay/achievement_icon_cache.h>
+#include <rex/logging/logger.h>
+#include <rex/platform/file.h>
+#include <rex/setting.h>
+#include <rex/settings_registry.h>
+#include <rex/ui/ui_system.h>
+#include <rex/utility.h>
 
 #include "audio.h"
+#include "guest.h"
 #include "guide_dialog.h"
 #include "imgui.h"
 #include "imgui_internal.h"
 #include "live.h"
+#include "log.h"
 
 namespace rexglue_guide {
 
@@ -36,16 +39,80 @@ using assets::Sound;
 
 namespace {
 
+// The Guide's settings, scope "guide".
+class GuideSettings final : public rex::SettingOwner {
+ public:
+  GuideSettings() : rex::SettingOwner("guide") {}
+  REX_SETTING(std::string, bind, "F10", "Open the Guide", rex::kKeyChord);
+};
+
+GuideSettings& Settings() {
+  static GuideSettings* settings = new GuideSettings();
+  return *settings;
+}
+
+// A key chord's text ("F10", "Ctrl+Shift+G") as an ImGui key and its modifiers.
+struct Chord {
+  ImGuiKey key = ImGuiKey_None;
+  bool ctrl = false, shift = false, alt = false;
+};
+
+bool SameText(std::string_view a, std::string_view b) {
+  return a.size() == b.size() && std::equal(a.begin(), a.end(), b.begin(), [](char x, char y) {
+           return std::tolower(static_cast<unsigned char>(x)) == std::tolower(static_cast<unsigned char>(y));
+         });
+}
+
+Chord ParseChord(std::string_view text) {
+  Chord chord;
+  while (!text.empty()) {
+    const size_t plus = text.find('+', 1);
+    const std::string_view part = text.substr(0, plus);
+    text = plus == std::string_view::npos ? std::string_view() : text.substr(plus + 1);
+    if (SameText(part, "ctrl") || SameText(part, "control")) {
+      chord.ctrl = true;
+    } else if (SameText(part, "shift")) {
+      chord.shift = true;
+    } else if (SameText(part, "alt")) {
+      chord.alt = true;
+    } else {
+      chord.key = ImGuiKey_None;
+      for (int k = ImGuiKey_NamedKey_BEGIN; k < ImGuiKey_NamedKey_END; ++k) {
+        if (SameText(part, ImGui::GetKeyName(ImGuiKey(k)))) {
+          chord.key = ImGuiKey(k);
+          break;
+        }
+      }
+      if (chord.key == ImGuiKey_None) return {};
+    }
+  }
+  return chord;
+}
+
+// The guide.bind chord was pressed this frame.
+bool GuideKeyPressed(const ImGuiIO& io) {
+  static std::string parsed_text;
+  static Chord chord;
+  const std::string text = Settings().bind.Get();
+  if (text != parsed_text) {
+    parsed_text = text;
+    chord = ParseChord(text);
+  }
+  return chord.key != ImGuiKey_None && ImGui::IsKeyPressed(chord.key, false) && io.KeyCtrl == chord.ctrl &&
+         io.KeyShift == chord.shift && io.KeyAlt == chord.alt;
+}
+
 // The XUID of the gamer card a title asked for (XShowGamerCardUI), until the
 // Guide opens on it; 0 for none.
 std::atomic<uint64_t> g_gamercard_request{0};
+std::atomic<bool> g_signin_request{false};
 
 // Titles' text entry (XamShowKeyboardUI) waiting for the on-screen keyboard.
 std::mutex g_title_keyboard_mutex;
 std::deque<KeyboardRequest> g_title_keyboards;
 
-rex::ui::ImGuiDrawer* g_drawer = nullptr;
 GuideDialog* g_dialog = nullptr;
+rex::ScopeGuard g_dialog_guard;  // removes it from the UI system
 
 // Config::leaderboard_block, for the game's threads (set once, at Install), and
 // when the player was last told a score wasn't posted (steady-clock seconds).
@@ -64,21 +131,19 @@ std::vector<Credit>& AppCredits() {
   return credits;
 }
 
-GuideDialog::GuideDialog(rex::ReXApp* app, rex::ui::ImGuiDrawer* drawer, Config config)
-    : rex::ui::ImGuiDialog(drawer),
-      app_(app),
+GuideDialog::GuideDialog(rex::ui::IUISystem& ui, Config config)
+    : ui_(ui),
       config_(std::move(config)),
-      textures_(config_.immediate_drawer) {
+      textures_(config_.create_texture, config_.destroy_texture) {
   // REXGLUE_GUIDE_DATA lets a second copy on the same PC use another account.
   if (const char* dir = std::getenv("REXGLUE_GUIDE_DATA"); dir && *dir) config_.data_dir = dir;
-  if (config_.data_dir.empty()) config_.data_dir = rex::filesystem::GetExecutableFolder() / "guide";
+  if (config_.data_dir.empty()) config_.data_dir = rex::platform::GetExecutableFolder() / "guide";
   if (config_.title_name.empty()) config_.title_name = "This Game";
   LoadPreferences();
   LayoutBlades();
   backend_ = &BackendFor(0);
   textures_.server_gamerpic = [this](int gamerpic) { return backend_->ServerGamerpic(gamerpic); };
-  if (app_) input_.SetUiThread(&app_->app_context());
-  rex::ui::RegisterBind("bind_guide", "F10", "Open the Guide", [this] { toggle_requested_ = true; });
+  input_.SetUiThread(&ui_);
 }
 
 GuideDialog::~GuideDialog() {
@@ -93,10 +158,7 @@ GuideDialog::~GuideDialog() {
     g_title_keyboards.clear();
   }
   for (int user = 0; user < live::kMaxUsers; ++user) live::Attach(user, nullptr);
-  rex::ui::UnregisterBind("bind_guide");
-  if (achievement_listener_) {
-    if (auto* kernel = REX_KERNEL_STATE()) kernel->achievements().UnregisterCallback(achievement_listener_);
-  }
+  DropAchievementListener();
 }
 
 void GuideDialog::CaptureMouse() {
@@ -121,17 +183,15 @@ void GuideDialog::PumpTitleKeyboards() {
   keyboard_.Open(std::move(next));
 }
 
-void GuideDialog::OnDraw(ImGuiIO& io) {
-  // A host that compiles its own ImGui into the executable (reNut, for its
-  // overlay) runs the Guide's ImGui calls on that copy, whose current context
-  // is the host's, not this drawer's: drawing there broke the host's frames.
-  // Draw in the drawer's context, then hand the host's back.
+bool GuideDialog::Draw(ImGuiIO& io) {
+  // Draws in the UI system's context, then hands back whichever was current.
   struct ContextScope {
     ImGuiContext* previous = ImGui::GetCurrentContext();
     explicit ContextScope(ImGuiContext* ctx) { ImGui::SetCurrentContext(ctx); }
     ~ContextScope() { ImGui::SetCurrentContext(previous); }
   } context_scope(io.Ctx);
 
+  if (GuideKeyPressed(io)) toggle_requested_ = true;
   const float dt = std::min(io.DeltaTime, 0.1f);
   time_ += dt;
   display_ = io.DisplaySize;
@@ -171,7 +231,7 @@ void GuideDialog::OnDraw(ImGuiIO& io) {
     window_holds_input_ = false;
     DrawServerWarning(ImGui::GetForegroundDrawList());
     DrawToasts(ImGui::GetForegroundDrawList(), dt);
-    return;
+    return true;
   }
 
   // The on-screen keyboard has the input, over the Guide when that's up (its
@@ -203,7 +263,7 @@ void GuideDialog::OnDraw(ImGuiIO& io) {
     DrawServerWarning(ImGui::GetForegroundDrawList());
     DrawToasts(ImGui::GetForegroundDrawList(), dt);
     textures_.EndFrame();
-    return;
+    return true;
   }
 
   if (toggle_requested_.exchange(false)) {
@@ -223,6 +283,7 @@ void GuideDialog::OnDraw(ImGuiIO& io) {
     }
   }
   if (const uint64_t xuid = g_gamercard_request.exchange(0)) ShowTitleGamercard(xuid);
+  if (g_signin_request.exchange(false)) ShowTitleSignIn();
 
   if (screen_ != Screen::kClosed) {
     open_t_ = closing_ ? std::max(0.0f, open_t_ - dt / 0.14f) : std::min(1.0f, open_t_ + dt / 0.18f);
@@ -230,9 +291,7 @@ void GuideDialog::OnDraw(ImGuiIO& io) {
       screen_ = Screen::kClosed;
       closing_ = false;
       drain_ = true;
-      if (std::exchange(title_ui_, false)) {
-        if (auto* kernel = REX_KERNEL_STATE()) kernel->BroadcastNotification(kNotifySystemUi, 0);
-      }
+      if (std::exchange(title_ui_, false)) guest::Broadcast(kNotifySystemUi, 0);
     }
   }
   if (screen_ != Screen::kClosed) {
@@ -248,6 +307,7 @@ void GuideDialog::OnDraw(ImGuiIO& io) {
   DrawServerWarning(ImGui::GetForegroundDrawList());
   DrawToasts(ImGui::GetForegroundDrawList(), dt);
   textures_.EndFrame();
+  return true;
 }
 
 void GuideDialog::Startup() {
@@ -264,7 +324,7 @@ void GuideDialog::Startup() {
       if (r.ok) SignedInToast();
       else OpenSignIn();
     });
-  } else {
+  } else if (!config_.sign_in_at_startup || config_.sign_in_at_startup()) {
     OpenSignIn();
   }
 }
@@ -405,6 +465,12 @@ void GuideDialog::SwitchBlade(int delta) {
   audio::Play(delta < 0 ? Sound::kPageLeft : Sound::kPageRight);
 }
 
+rex::Result<void> Configure(rex::SettingsRegistry& settings) {
+  REX_TRY_VOID(settings.Register(Settings()));
+  settings.AddAlias("bind_guide", "guide.bind");
+  return rex::GetLogger().AddCategories(rex::log::kGuideLog);
+}
+
 void ConfigureFonts(ImFontAtlas* atlas) {
   ui::ConfigureFonts(atlas);
 }
@@ -414,22 +480,17 @@ void AddCredit(std::string who, std::string what) {
   AppCredits().push_back({std::move(who), std::move(what)});
 }
 
-void Install(rex::ReXApp* app, rex::ui::ImGuiDrawer* drawer, Config config) {
-  if (g_dialog || !drawer) return;
-  // The Guide answers every Live and network import itself. Keep the SDK's own
-  // web Live client (which starts lazily) from running alongside it; a no-op
-  // on SDKs without that setting.
-  rex::cvar::SetFlagByName("xlive_web_enabled", "false");
-  g_drawer = drawer;
+void Install(rex::ui::IUISystem& ui, Config config) {
+  if (g_dialog) return;
   g_leaderboard_block = config.leaderboard_block;
   g_build = config.build;
-  g_dialog = new GuideDialog(app, drawer, std::move(config));
-  drawer->AddDialog(g_dialog);
+  g_dialog = new GuideDialog(ui, std::move(config));
+  g_dialog_guard = ui.AddDialog(*g_dialog);
 }
 
 void Shutdown() {
   if (g_dialog) {
-    g_drawer->RemoveDialog(g_dialog);
+    g_dialog_guard.Reset();
     delete g_dialog;
     g_dialog = nullptr;
   }
@@ -453,6 +514,10 @@ bool SignedIn(int user) {
 
 void live::RequestGamercard(uint64_t xuid) {
   g_gamercard_request = xuid;
+}
+
+void live::RequestSignIn() {
+  g_signin_request = true;
 }
 
 const std::string& live::Build() {

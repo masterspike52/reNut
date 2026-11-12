@@ -1,28 +1,3 @@
-/**
- * @file    gpu/backend/command_recorder.h
- * @brief   A command list that hands its calls to a thread of their own
- *          (renut_threaded_recording).
- *
- * The render thread's work is the game's draws turned into host calls, and a
- * fifth of it was the host API's own: the driver behind setPipeline, the
- * barriers, copies and the rest of a list's calls (xperf, a GTX 1650 laptop,
- * 2026-10-22). A CommandRecorder stands in for a frame slot's backend list:
- * each call is written to memory, by value, and a recording thread makes the
- * real call on the backend list a batch at a time, while the render thread
- * works on the next draws. Finish waits for the thread to catch up. The
- * frame's submission and present are calls the thread makes after the list's
- * (RecordCall), so the render thread goes on to the next frame; a submission
- * in the middle of a frame (SubmitAndWaitLocked) finishes the list first.
- *
- * What a call refers to (pipelines, buffers, textures, framebuffers, sets,
- * query pools) must outlive the call reaching the backend list, which the
- * renderer's objects do: they are retired until the slot's fence (or kept),
- * and the fence is only waited after the list has been finished and
- * submitted. Push constants are copied, so they need their size.
- *
- * Calls come from one thread at a time (the render thread, or the UI thread
- * drawing the overlay while the render thread waits for it).
- */
 #pragma once
 
 #include <cstddef>
@@ -55,9 +30,8 @@ public:
   // Returns once every call made so far has been made on the backend list.
   void Finish();
 
-  // Runs 'call' on the recording thread once the calls recorded before it
-  // have been made (the queue's submission of an ended list, a present), and
-  // hands it over at once. The token is for WaitForCall.
+  // Runs 'call' (a submission, a present) on the recording thread after the calls
+  // recorded before it; the returned token is for WaitForCall.
   uint64_t RecordCall(std::function<void()> call);
   // Returns once the call RecordCall gave 'token' for has run (0: at once).
   static void WaitForCall(uint64_t token);

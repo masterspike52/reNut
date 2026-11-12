@@ -10,11 +10,8 @@
 #include <string>
 #include <vector>
 
-// The flag editor (F5): player 1's game flags (normal, global, volatile) and
-// counters (notes, jiggies, Jinjo tokens, scores, timers...) by the game's own
-// names, a tab each. A group and a search narrow the list; a flag is ticked
-// on or off, a count typed (Enter). Changes go in on the game's next frame
-// and are saved with its next save (game/flag_editor.cpp).
+// The flag editor (F5): player 1's game flags and counters by the game's own names,
+// a tab per table, applied on the next frame (game/flag_editor.cpp).
 class FlagEditorDialog : public renut::gpu::overlay::Dialog {
 public:
     void Draw() override {
@@ -55,9 +52,8 @@ private:
     static constexpr ImVec4 kOrange{1.0f, 0.75f, 0.3f, 1.0f};
     static constexpr const char* kTabNames[] = {"Flags", "Global flags", "Volatile flags", "Counters"};
 
-    // A table's names, looked at once: without the table's prefix
-    // ("gameFlag_Normal_"), in lower case for the search, and grouped by their
-    // first word ("Garage", "ShowdownTown", "Score"...).
+    // A table's names without their prefix ("gameFlag_Normal_"), lower-cased for
+    // search and grouped by first word.
     struct View {
         size_t prefix = 0;
         std::vector<std::string> lower;

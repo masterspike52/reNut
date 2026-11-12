@@ -1,9 +1,5 @@
-// One host level of a scaled resolve destination (textures.cpp,
-// UpdateResolveMipsLocked): each texel is the average of the param0 x param0
-// texels of the level above it covers (level 0, or the previous level's
-// scratch target). The source is read with Load through a view without the
-// fetch swizzle, so any color format works. present_vs draws the fullscreen
-// triangle; the scissor limits it to the resolved area.
+// One host mip level of a scaled resolve destination: each texel is the average
+// of the param0 x param0 texels it covers in the level above.
 #include "utility.hlsli"
 
 float4 main(float4 position : SV_Position) : SV_Target0

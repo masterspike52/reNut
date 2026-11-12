@@ -1,13 +1,9 @@
-/**
- * @file    gpu/render/vertex_format.cpp
- */
 #include "renut_engine/gpu/render/vertex_format.h"
 
 #include <algorithm>
 #include <cmath>
 #include <cstring>
 
-#include "renut_engine/gpu/log.h"
 #include "shader_common.h"
 
 namespace renut::gpu {
@@ -120,9 +116,8 @@ bool Is16BitFormat(u32 format) {
          format == k16_16_16_16_Float;
 }
 
-// A 16-bit element bound with each pair of components exchanged (BoundDeclType)
-// reads natively once the halves of its words are swapped: makes 'type' the
-// native swizzle and returns true if so.
+// Whether a 16-bit element bound with each pair of components exchanged reads
+// natively with its words' halves swapped; if so gives 'type' that swizzle.
 bool UnswapHalves(DeclType &type, u32 components) {
   if (!Is16BitFormat(type.format))
     return false;
@@ -229,9 +224,8 @@ float DecodeComponent(u32 word, u32 shift, u32 bits, const DeclType &type) {
   return float(raw) / (bits == 32 ? 4294967295.0f : float((1u << bits) - 1u));
 }
 
-// Expands one element of 'count' vertices to four floats: 'decode' fills the
-// format's components (before swizzle) of the first slots of c[6], which start
-// as 0, 0, 0, 1 followed by the swizzle constants 0 and 1.
+// Expands one element of 'count' vertices to four floats; 'decode' fills the
+// format's components into c[6] = {0, 0, 0, 1, 0, 1} before the swizzle.
 template <typename Decode>
 void ExpandLoop(const u8 *src, u32 src_stride, u8 *dst, u32 dst_stride, u32 count,
                 const u8 swizzle[4], Decode decode) {
@@ -247,10 +241,7 @@ void ExpandLoop(const u8 *src, u32 src_stride, u8 *dst, u32 dst_stride, u32 coun
 }
 
 // Decodes an element's components with the format and endian mode fixed for
-// the whole loop. Packed components count from the low bits of the swapped
-// word, 16-bit ones too: with the usual 8in32 fetch, x is the second halfword
-// in memory. The bound swizzle (BoundDeclType) or the shader's own (.yx,
-// .yxwz) swaps them back.
+// the whole loop, packed components counting from the swapped word's low bits.
 template <u32 kEndian>
 void ExpandElement(const HostVertexElement &e, const u8 *src, u32 src_stride, u8 *dst,
                    u32 dst_stride, u32 count) {
@@ -421,11 +412,8 @@ HostVertexLayout BuildHostVertexLayout(const GuestVertexElement *elements, u32 c
       continue;
     host.type = DeclType::Decode(u32(element.Type));
     FormatInfo info;
-    if (!GetFormatInfo(host.type.format, info)) {
-      RGPU_WARN("Vertex element {}{} uses unhandled vertex format {} (type {:08X})",
-                UsageSemantic(host.usage), host.usage_index, host.type.format, u32(element.Type));
-      continue;
-    }
+    if (!GetFormatInfo(host.type.format, info))
+      continue;  // a vertex format not handled
     host.guest_offset = u16(element.Offset);
     DeclType copy_type = host.type;
     host.swap_halves = UnswapHalves(copy_type, info.components);
@@ -460,9 +448,8 @@ HostVertexLayout BuildHostVertexLayout(const GuestVertexElement *elements, u32 c
     s.host_stride = offset;
   }
 
-  // D3D12 rejects a pipeline whose vertex shader reads an input the layout
-  // lacks, and which inputs a shader reads is not known here, so every other
-  // location reads zeros from a stride-0 stream.
+  // Every other input location reads zeros from a stride-0 stream, as D3D12
+  // rejects a vertex shader input the layout lacks.
   struct Row {
     u8 usage;
     u8 index;
@@ -579,16 +566,11 @@ void ConvertVertices(const HostVertexStream &stream, const u8 *guest, u32 guest_
   constexpr u32 kSwapHalves = 3;
   if (copy_only && same_layout) {
     // The host vertices are the guest vertices with their words swapped.
-    // (Elements whose halves swap too take the chunked path below: a second
-    // pass would read back upload memory, which is uncached.)
     SwapWords(guest, host, size_t(vertex_count) * guest_stride / 4, endian);
     return;
   }
-  // One element of every vertex at a time, each in a loop with its format and
-  // endian mode fixed: deciding them per vertex cost more than the conversion.
-  // A chunk of vertices is built in cache and then copied out in one go: the
-  // destination is upload memory, write-combined, where the scattered writes
-  // of one element would be slow.
+  // One element of every vertex at a time, a chunk built in cache and then
+  // copied out in one go to the write-combined upload memory.
   constexpr u32 kChunkBytes = 16 * 1024;
   alignas(64) u8 chunk[kChunkBytes];
   const u32 host_stride = stream.host_stride;

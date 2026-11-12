@@ -1,59 +1,44 @@
-/**
- * @file    game/status_dials.cpp
- * @brief   Colours for the filled part of the garage's stat dials (power, ammo,
- *          fuel, weight, parts, strength) and the speedometer, set by colour
- *          code. The dial types seen: power, ammo, ammoedit, fuel, fueledit,
- *          weight, parts, strength, mapspeedo.
- *
- * N&B (TU3, IDA): the dials are XuiClass_StatusDial_c elements (EditorDisplay_c's
- * powerDial … strengthDial; sub_825B3D80, sub_825C3238). Each takes its look
- * from its DialType's 64-byte record in the statusdials asset (sub_823B4978;
- * the type's name is kept at + 228) and draws itself every frame into its own
- * target (sub_821FF250): an arc of the dial's texture in up to three pieces
- * (sub_82200770), the filled part, the step past it and the rest, with pixel
- * shader constant c0 (device + 0x1780) multiplying what it draws: 1 a
- * channel, more while the dial flashes (0x821FF738..48 store it, 0x821FF760
- * draws). The colour multiplies c0 there, tinting the dial's fill (the clear
- * rest stays clear). The pieces' vertex colours don't work for this: the
- * shader doesn't take them as a tint (red came out light blue, or white).
- */
-#include <rex/cvar.h>
-#include <rex/hook.h>
-#include <rex/system/kernel_state.h>
+#include <rex/kernel/memory_view.h>
+#include <rex/kernel/title_runtime.h>
+#include <rex/ppc/context.h>
+#include <rex/setting.h>
 #include <rex/types.h>
 
 #include <cctype>
 #include <cstdint>
 #include <cstring>
-#include <mutex>
+#include <optional>
 #include <string>
-#include <unordered_set>
 
-#include "renut_engine/app/renut_logging.h"
-
-REXCVAR_DEFINE_STRING(dial_fill_color_power, "#FFFFFF", "Nuts&Bolts/Garage",
-                      "Colour of the power dial's fill, a colour code like #FF0000 (red); #FFFFFF "
-                      "leaves the game's");
-REXCVAR_DEFINE_STRING(dial_fill_color_ammo, "#FFFFFF", "Nuts&Bolts/Garage",
-                      "Colour of the ammo dial's fill, a colour code like #FF0000 (red); #FFFFFF "
-                      "leaves the game's");
-REXCVAR_DEFINE_STRING(dial_fill_color_fuel, "#FFFFFF", "Nuts&Bolts/Garage",
-                      "Colour of the fuel dial's fill, a colour code like #FF0000 (red); #FFFFFF "
-                      "leaves the game's");
-REXCVAR_DEFINE_STRING(dial_fill_color_weight, "#FFFFFF", "Nuts&Bolts/Garage",
-                      "Colour of the weight dial's fill, a colour code like #FF0000 (red); #FFFFFF "
-                      "leaves the game's");
-REXCVAR_DEFINE_STRING(dial_fill_color_parts, "#FFFFFF", "Nuts&Bolts/Garage",
-                      "Colour of the parts (capacity) dial's fill, a colour code like #FF0000 (red); "
-                      "#FFFFFF leaves the game's");
-REXCVAR_DEFINE_STRING(dial_fill_color_strength, "#FFFFFF", "Nuts&Bolts/Garage",
-                      "Colour of the strength dial's fill, a colour code like #FF0000 (red); #FFFFFF "
-                      "leaves the game's");
-REXCVAR_DEFINE_STRING(dial_fill_color_speed, "#FFFFFF", "Nuts&Bolts/Garage",
-                      "Colour of the speedometer's fill (driving), a colour code like #FF0000 (red); "
-                      "#FFFFFF leaves the game's");
+#include "renut_engine/app/renut_settings.h"
 
 namespace {
+
+struct StatusDialSettings final : rex::SettingOwner {
+  StatusDialSettings() : rex::SettingOwner(renut::settings::kScope) { renut::settings::Add(*this); }
+  REX_SETTING(std::string, dial_fill_color_power, "#FFFFFF",
+              "Colour of the power dial's fill, a colour code like #FF0000 (red); #FFFFFF "
+              "leaves the game's");
+  REX_SETTING(std::string, dial_fill_color_ammo, "#FFFFFF",
+              "Colour of the ammo dial's fill, a colour code like #FF0000 (red); #FFFFFF "
+              "leaves the game's");
+  REX_SETTING(std::string, dial_fill_color_fuel, "#FFFFFF",
+              "Colour of the fuel dial's fill, a colour code like #FF0000 (red); #FFFFFF "
+              "leaves the game's");
+  REX_SETTING(std::string, dial_fill_color_weight, "#FFFFFF",
+              "Colour of the weight dial's fill, a colour code like #FF0000 (red); #FFFFFF "
+              "leaves the game's");
+  REX_SETTING(std::string, dial_fill_color_parts, "#FFFFFF",
+              "Colour of the parts (capacity) dial's fill, a colour code like #FF0000 (red); "
+              "#FFFFFF leaves the game's");
+  REX_SETTING(std::string, dial_fill_color_strength, "#FFFFFF",
+              "Colour of the strength dial's fill, a colour code like #FF0000 (red); #FFFFFF "
+              "leaves the game's");
+  REX_SETTING(std::string, dial_fill_color_speed, "#FFFFFF",
+              "Colour of the speedometer's fill (driving), a colour code like #FF0000 (red); "
+              "#FFFFFF leaves the game's");
+};
+StatusDialSettings &g_dials = *new StatusDialSettings();  // never freed, registered by RenutApp::OnConfigure
 
 // The dial's DialType name (statusdials record name), 16 bytes at + 228.
 constexpr uint32_t kDialTypeName = 228;
@@ -88,32 +73,23 @@ bool ParseColour(const std::string &code, float (&rgba)[4]) {
 }
 
 // The colour code set for a dial type, or nothing for a type of no stat here.
-const std::string *ColourFor(const std::string &type) {
+std::optional<std::string> ColourFor(const std::string &type) {
   if (type.find("speedo") != std::string::npos)
-    return &REXCVAR_GET(dial_fill_color_speed);
+    return g_dials.dial_fill_color_speed.Get();
   if (type.find("power") != std::string::npos)
-    return &REXCVAR_GET(dial_fill_color_power);
+    return g_dials.dial_fill_color_power.Get();
   if (type.find("ammo") != std::string::npos)
-    return &REXCVAR_GET(dial_fill_color_ammo);
+    return g_dials.dial_fill_color_ammo.Get();
   if (type.find("fuel") != std::string::npos)
-    return &REXCVAR_GET(dial_fill_color_fuel);
+    return g_dials.dial_fill_color_fuel.Get();
   if (type.find("weight") != std::string::npos)
-    return &REXCVAR_GET(dial_fill_color_weight);
+    return g_dials.dial_fill_color_weight.Get();
   if (type.find("part") != std::string::npos)
-    return &REXCVAR_GET(dial_fill_color_parts);
+    return g_dials.dial_fill_color_parts.Get();
   if (type.find("strength") != std::string::npos || type.find("armour") != std::string::npos ||
       type.find("health") != std::string::npos)
-    return &REXCVAR_GET(dial_fill_color_strength);
-  return nullptr;
-}
-
-// Logs each dial type once, so a type the names above miss shows up.
-void NoteType(const std::string &type, bool matched) {
-  static std::mutex mutex;
-  static std::unordered_set<std::string> seen;
-  std::lock_guard lock(mutex);
-  if (seen.insert(type).second)
-    RNUT_INFO("Status dial type '{}'{}", type, matched ? "" : " (no fill colour setting)");
+    return g_dials.dial_fill_color_strength.Get();
+  return std::nullopt;
 }
 
 }  // namespace
@@ -121,17 +97,16 @@ void NoteType(const std::string &type, bool matched) {
 // sub_821FF250 at 0x821FF758, before the arc's draw: c0 is stored and marked
 // for upload; r9 is the device, r30 the dial.
 void StatusDial_fill_colour(PPCRegister &r9, PPCRegister &r30) {
-  auto *memory = REX_KERNEL_MEMORY();
-  const char *name = memory->TranslateVirtual<const char *>(r30.u32 + kDialTypeName);
+  const rex::kernel::MemoryView memory = REX_GUEST_MEMORY()->GetView();
+  const char *name = memory.TranslateVirtual<const char *>(r30.u32 + kDialTypeName);
   std::string type(name, strnlen(name, kDialTypeNameSize));
   for (char &c : type)
     c = char(std::tolower(static_cast<unsigned char>(c)));
-  const std::string *code = ColourFor(type);
-  NoteType(type, code != nullptr);
+  const std::optional<std::string> code = ColourFor(type);
   float rgba[4];
   if (!code || !ParseColour(*code, rgba))
     return;
-  auto *c0 = memory->TranslateVirtual<uint32_t *>(r9.u32 + kPixelConstant0);
+  auto *c0 = memory.TranslateVirtual<uint32_t *>(r9.u32 + kPixelConstant0);
   for (int i = 0; i < 4; ++i) {
     float value;
     const uint32_t bits = rex::byte_swap(c0[i]);

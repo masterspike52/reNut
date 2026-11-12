@@ -1,9 +1,5 @@
-// renut_ssao (render/ambient_occlusion.h): screen-space ambient occlusion from
-// the scene's resolved depth, drawn with present_vs. Bindings as utility.hlsli's
-// (bindless textures t0, space0; samplers s0, space1), with a push block of its
-// own (b0, space2) whose first fields are UtilityPush's scale and translate,
-// which present_vs reads. Must match AmbientOcclusionPush in
-// ambient_occlusion.cpp.
+// renut_ssao: screen-space ambient occlusion from the scene's resolved depth, drawn
+// with present_vs. Push block (b0, space2) must match ambient_occlusion.cpp's.
 
 struct AmbientOcclusionPush
 {

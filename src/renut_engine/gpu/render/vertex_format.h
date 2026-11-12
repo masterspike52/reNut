@@ -1,15 +1,3 @@
-/**
- * @file    gpu/render/vertex_format.h
- * @brief   Xbox 360 vertex declarations and how their elements reach the host
- *          input assembler.
- *
- * N&B's D3D patches each vertex shader's vfetch formats from the bound
- * declaration at draw time; the recompiled shaders instead take every element
- * as float4 from the input layout. So each element is laid out on the host in
- * a format whose input-assembler result equals what the patched Xenos fetch
- * would produce: the guest bytes pass through (endian-swapped) when a host
- * format decodes them identically, otherwise they are expanded to floats.
- */
 #pragma once
 
 #include <cstdint>
@@ -40,10 +28,8 @@ constexpr u32 kMaxVertexStreams = 16;
 constexpr u32 kZeroStreamSlot = kMaxVertexStreams;
 constexpr u32 kZeroStreamSize = 16;
 
-// Fields of an Xbox 360 D3DDECLTYPE, e.g. FLOAT3 = 0x2A23B9:
-// bits 0-5 Xenos vertex format, bits 6-7 the data's endian (1 8in16, 2 8in32),
-// bit 8 signed, bit 9 integer (else normalised), bits 10-21 four 3-bit fetch
-// swizzles (0-3 XYZW, 4 = 0, 5 = 1).
+// Fields of an Xbox 360 D3DDECLTYPE (e.g. FLOAT3 = 0x2A23B9): bits 0-5 format,
+// 6-7 endian, 8 signed, 9 integer, 10-21 four 3-bit swizzles (4 = 0, 5 = 1).
 struct DeclType {
   u32 format = 0;
   bool is_signed = false;
@@ -54,16 +40,11 @@ struct DeclType {
   static DeclType Decode(u32 type);
 };
 
-// The type with the swizzle D3D binds it with. Elements whose data is 8in16
-// (FLOAT16_n, SHORTn, ...) are fetched with the stream's 8in32 swap, which
-// exchanges each pair of 16-bit components, so D3D swaps x/y and z/w in their
-// swizzle (PatchVertexShaderToMatchVertexDeclaration).
+// The type with the swizzle D3D binds it with: 8in16 elements get x/y and z/w
+// swapped (PatchVertexShaderToMatchVertexDeclaration).
 u32 BoundDeclType(u32 type);
 
-// How one element is written into the host vertex buffer. Every Xenos vertex
-// format is built from 32-bit words whose first component sits in the low bits
-// once the fetch constant's endian swap is applied, which is also how a
-// little-endian host format reads a word.
+// How one element is written into the host vertex buffer.
 enum class ElementConversion : u8 {
   Copy32,       // each word endian-swapped and stored little-endian
   ExpandFloat,  // decoded (and swizzled) to four 32-bit floats on the CPU
@@ -100,14 +81,12 @@ struct HostVertexLayout {
 
 HostVertexLayout BuildHostVertexLayout(const GuestVertexElement *elements, u32 count);
 
-// D3DDECLTYPE bits for a vertex fetch of 'format' (GPUVERTEXFORMAT) reading its
-// components in order (the shader applies its own swizzle), or kDeclTypeUnused
-// for a format the layout builder does not handle.
+// D3DDECLTYPE bits for an in-order vertex fetch of 'format' (GPUVERTEXFORMAT),
+// or kDeclTypeUnused for a format the layout builder does not handle.
 u32 FetchDeclType(u32 format, bool is_signed, bool is_integer);
 
-// Converts 'vertex_count' vertices of one stream from guest bytes (big-endian,
-// guest stride) into the host layout. 'endian' is the Xenos swap mode from the
-// stream's vertex fetch constant (usually 2 = 8in32).
+// Converts 'vertex_count' guest vertices of one stream into the host layout;
+// 'endian' is the stream's vertex fetch constant swap mode (usually 2 = 8in32).
 void ConvertVertices(const HostVertexStream &stream, const u8 *guest, u32 guest_stride,
                      u32 vertex_count, u32 endian, u8 *host);
 

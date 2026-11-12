@@ -1,11 +1,3 @@
-/**
- * @file    gpu/d3d/d3d.h
- * @brief   Guest D3D (Xbox 360 XDK) layouts as used by Banjo-Kazooie: Nuts & Bolts.
- *
- * Offsets come from N&B's own default.xex IDB (typed D3DDevice / D3DConstants /
- * GPU_*PACKET and resource structs); every one is static_asserted. Only fields
- * the renderer reads or maintains are named.
- */
 #pragma once
 
 #include <cstddef>
@@ -14,13 +6,10 @@
 
 namespace renut::gpu::d3d {
 
-// ---------------------------------------------------------------------------
 // Resources
-// ---------------------------------------------------------------------------
 
-// D3DRESOURCETYPE as N&B's XDK defines it (differs from other XDK versions).
-// Common's low 4 bits hold the base type; the 16+ values are what
-// D3DResource_GetType reports for texture variants.
+// D3DRESOURCETYPE as N&B's XDK defines it; Common's low 4 bits hold the base
+// type, and the 16+ values are what D3DResource_GetType reports for textures.
 enum class ResourceType : u32 {
   VertexBuffer = 1,
   IndexBuffer = 2,
@@ -57,10 +46,8 @@ struct TextureFetchConstant {
 };
 static_assert(sizeof(TextureFetchConstant) == 24);
 
-// A texture header holds the CPU addresses of its base and mip data; the
-// GPU address is what D3DDevice_SetTexture (0x8222F410) writes into the
-// device's fetch constant: the low 29 bits, plus 4 KB for the 0xE0000000
-// (4 KB page) physical view, which starts at physical 0x1000.
+// GPU address D3DDevice_SetTexture (0x8222F410) writes for a CPU address: the
+// low 29 bits, plus 4 KB for the 0xE0000000 physical view.
 constexpr u32 CpuToGpuAddress(u32 cpu_address) {
   return (cpu_address & 0x1FFFFFFFu) + (((cpu_address >> 20) + 0x200u) & 0x1000u);
 }
@@ -119,9 +106,7 @@ struct ShaderContainer {
 };
 static_assert(sizeof(ShaderContainer) == 0x24);
 
-// ---------------------------------------------------------------------------
 // Device
-// ---------------------------------------------------------------------------
 
 constexpr u32 kTextureFetchSlots = 26;
 constexpr u32 kVertexFetchConstants = 18;
@@ -271,9 +256,8 @@ constexpr u32 kDeviceOffsetCreationThreadId = 10888;  // GetCurrentThreadId()
 constexpr u32 kDeviceOffsetIsTitleProcess = 10892;    // KeGetCurrentProcessType() == 2
 constexpr u32 kDeviceOffsetBehaviorFlags = 23980;     // Direct3D_CreateDevice arg 4
 
-// Bound objects the Set* calls store in the CDevice-private area (guest VAs).
-// TU3's CDevice grew by 4 bytes from 0x2AC0 and by 8 from 0x2E30; the fields
-// from 0x3390 on are where they were.
+// Bound objects the Set* calls store in the CDevice-private area (guest VAs);
+// TU3's CDevice grew by 4 bytes from 0x2AC0 and by 8 from 0x2E30.
 constexpr u32 kDeviceOffsetVertexDeclaration = 0x2E30;  // SetVertexDeclaration
 constexpr u32 kDeviceOffsetIndexBuffer = 0x309C;        // SetIndices
 constexpr u32 kDeviceOffsetRenderTargets = 0x30A0;      // SetRenderTarget, [4]
@@ -283,27 +267,22 @@ constexpr u32 kDeviceOffsetStreamStrides = 0x30F8;      // SetStreamSource, u8[1
 constexpr u32 kDeviceOffsetTextures = 0x3108;           // SetTexture, [kTextureFetchSlots]
 constexpr u32 kDeviceOffsetPixelShader = 0x319C;        // SetPixelShader
 constexpr u32 kDeviceOffsetVertexShader = 0x31A0;       // SetVertexShader
-// In m_TessellatorPacket, which holds registers 0x2280 on: VGT_HOS_CNTL
-// (tessellation mode in bits 0-1: 0 discrete, 1 continuous, 2 adaptive) and
-// the float VGT_HOS_MAX_TESS_LEVEL / VGT_HOS_MIN_TESS_LEVEL.
+// In m_TessellatorPacket: VGT_HOS_CNTL (mode in bits 0-1: 0 discrete,
+// 1 continuous, 2 adaptive) and the float max / min tessellation levels.
 constexpr u32 kDeviceOffsetTessellationControl = 0x2978;
 constexpr u32 kDeviceOffsetMaxTessellationLevel = 0x297C;
 constexpr u32 kDeviceOffsetMinTessellationLevel = 0x2980;
-// In m_PointPacket: the float PA_SU_POLY_OFFSET_FRONT_OFFSET / BACK_OFFSET
-// (SetRenderState_DepthBias 0x821CAFA8 stores the bias in both and enables
-// them with PA_SU_SC_MODE_CNTL bits 11 and 12).
+// In m_PointPacket: the float PA_SU_POLY_OFFSET_FRONT / BACK_OFFSET that
+// SetRenderState_DepthBias (0x821CAFA8) stores the bias in.
 constexpr u32 kDeviceOffsetDepthBiasFront = 0x2A54;
 constexpr u32 kDeviceOffsetDepthBiasBack = 0x2A5C;
-// Tile predication mask of the draws that follow, ~0 for none
-// (D3DDevice_SetPredication 0x821F9A48 and SetCommandBufferPredication).
-// Bits 2i and 2i+1 run the commands in tile i's pass of predicated tiling (Z
-// and render).
+// Tile predication mask of the draws that follow, ~0 for none; bits 2i and
+// 2i+1 run them in tile i's Z and render passes (SetPredication 0x821F9A48).
 constexpr u32 kDeviceOffsetPredication = 0x31AC;
 // D3DCommandBuffer being recorded (BeginCommandBuffer sets, End clears).
 constexpr u32 kDeviceOffsetCommandBuffer = 13516;
-// The leading part of the device the draw, clear and resolve paths read (up
-// to and including kDeviceOffsetPredication); a copy of it stands in for the
-// device when a recorded command buffer is replayed.
+// Leading part of the device the draw, clear and resolve paths read; a copy of
+// it stands in for the device when a recorded command buffer is replayed.
 constexpr u32 kDeviceSnapshotSize = 0x31B0;
 static_assert(kDeviceOffsetVertexShader + 4 <= kDeviceSnapshotSize);
 static_assert(kDeviceOffsetPredication + 4 <= kDeviceSnapshotSize);

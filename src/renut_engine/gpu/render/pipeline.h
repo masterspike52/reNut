@@ -1,20 +1,3 @@
-/**
- * @file    gpu/render/pipeline.h
- * @brief   The pipeline layout of the recompiled guest shaders and the
- *          pipeline cache.
- *
- * Binding contract (shader_common.h, RENUT_RECOMP):
- *   set 0/1/2  bindless Texture2D / Texture3D / TextureCube (one shared table)
- *   set 3      bindless samplers
- *   set 4      the texture table again, as Texture2DArray (stacked textures)
- *   D3D12      b0/b1/b2 space4 root CBVs: VS constants, PS constants,
- *              SharedConstants; t0 space5 root SRV: this draw's vertex fetch
- *              data (ByteAddressBuffer); u0 space6 root UAV: the
- *              memexport buffer
- *   Vulkan     push constants: the three constant buffers' device addresses;
- *              vertex fetch data is read through its address in
- *              SharedConstants
- */
 #pragma once
 
 #include <cstdint>
@@ -74,50 +57,22 @@ struct PipelineInputs {
   plume::RenderShader *vertex_shader = nullptr;
   plume::RenderShader *pixel_shader = nullptr;
   const HostVertexLayout *layout = nullptr;  // the declaration's (key.layout_hash)
-  // The draw may be left out while the pipeline is built (renut_async_pipelines,
-  // behind the jiggy wall): GetPipelineLocked then returns nullptr for now.
-  bool may_wait_a_frame = false;
 };
 
 // Built pipeline for the key, compiling it on first use unless the built-in
-// pipeline list (below) built it ahead. nullptr on failure (logged once per
-// key).
+// pipeline list (below) built it ahead. nullptr on failure (kept for the key).
 plume::RenderPipeline *GetPipelineLocked(const PipelineKey &key, const PipelineInputs &inputs);
 
-// The built-in pipeline list (pipeline_cache_data.inc, from
-// tools/pipeline_cache.py): worker threads build the listed pipelines before
-// the game draws with them, so a scene costs no compile on the render thread.
-// A listed pipeline is built once the game has made its shaders
-// (PipelineShaderLoaded), so only what the levels played this session use is
-// built. The pipelines draws build themselves can be captured for the list
-// (renut_pipeline_capture). Start once the draw layout and host shaders exist;
-// Stop at shutdown.
+// Start/stop the workers that build the built-in list's pipelines
+// (pipeline_cache_data.inc) ahead, each once the game has made its shaders.
 void StartPipelinePrebuild();
 void StopPipelinePrebuild();
 
 // The game made a shader object of this cache entry (any thread, any time).
 void PipelineShaderLoaded(const ShaderCacheEntry *entry);
 
-// Whether the workers still have pipelines to build for the shaders the game
-// has made, or a draw left out lately waits for one (renut_async_pipelines;
-// false when off). The jiggy wall stays shut meanwhile
-// (game/jiggy_wall_hold.cpp). Any thread.
-bool PipelineBuildsPending();
-
-// While the jiggy wall is held for them, the workers run at normal priority
-// instead of below it. Any thread.
-void BoostPipelineBuilds(bool boost);
-
-// For the memory report: pipelines the draws use, pipelines built ahead from
-// the list that no draw has asked for yet (all of them stay built), listed
-// pipelines whose shaders the game has not made, and the listed pipelines of
-// shaders this build has.
-struct PipelineCounts {
-  size_t built = 0;
-  size_t prebuilt_unused = 0;
-  size_t waiting = 0;
-  size_t listed = 0;
-};
-PipelineCounts PipelineCountsLocked();
+// Normalizes state a pipeline never uses (unbound targets, stencil or depth test
+// off), so draws differing only there share one pipeline.
+void SanitizePipelineKey(PipelineKey &key);
 
 } // namespace renut::gpu

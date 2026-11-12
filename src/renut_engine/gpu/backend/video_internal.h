@@ -1,8 +1,3 @@
-/**
- * @file    gpu/backend/video_internal.h
- * @brief   Frame-ring helpers shared by video.cpp and present.cpp.
- *          All require State().mutex to be held.
- */
 #pragma once
 
 #include "renut_engine/gpu/backend/video.h"

@@ -1,14 +1,5 @@
-// Builds a host vertex stream on the GPU from a memexport window, so a draw
-// can read what an earlier draw exported without the CPU waiting for it (see
-// ConvertExportedStreamsLocked in draw.cpp). Writes what ConvertVertices
-// (vertex_format.cpp) writes: each element either its words endian-swapped
-// (Copy32) or decoded and swizzled to four floats (ExpandFloat). One thread
-// per element of a vertex.
-//   set 0 : RWByteAddressBuffer[3] (u0, space0): the slots' export buffers,
-//           then the current slot's stream buffer
-//   push  : StreamConvertPush       (b0, space1)
-// Must match BuildStreamConvertPipeline in video.cpp and StreamConvertPush in
-// video.h.
+// Builds a host vertex stream on the GPU from a memexport window, as ConvertVertices
+// does on the CPU, one thread per vertex element. Must match StreamConvertPush in video.h.
 
 struct StreamConvertPush
 {
@@ -20,10 +11,8 @@ struct StreamConvertPush
     uint hostStrideWords;
     uint elementCount;     // up to 8
     uint pad;
-    // Two words per element (StreamConvertElement in draw.cpp):
-    //   x: guest offset (words) 0-7, host offset (words) 8-15, endian 16-17,
-    //      expand 18, words copied 19-21
-    //   y: its type as bound: format 0-5, signed 8, integer 9, swizzles 10-21
+    // Two words per element: x guest offset 0-7, host offset 8-15 (words), endian 16-17,
+    // expand 18, words copied 19-21; y format 0-5, signed 8, integer 9, swizzles 10-21.
     uint4 elements[4];
 };
 

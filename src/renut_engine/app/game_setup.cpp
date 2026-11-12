@@ -1,8 +1,8 @@
 #include "renut_engine/app/game_setup.h"
-
 #include <algorithm>
 #include <atomic>
 #include <cstring>
+#include <format>
 #include <fstream>
 #include <functional>
 #include <memory>
@@ -11,57 +11,45 @@
 #include <stdexcept>
 #include <system_error>
 #include <thread>
-
-#include <fmt/format.h>
-#include <rex/filesystem.h>
-#include <rex/filesystem/devices/disc_image_device.h>
-#include <rex/filesystem/devices/stfs_container_device.h>
-#include <rex/filesystem/entry.h>
-#include <rex/filesystem/file.h>
-
+#include <rex/filesystem/file_system_factory.h>
+#include <rex/filesystem/stfs.h>
+#include <rex/module.h>
+#include <rex/string/text.h>
 #include "renut_engine/app/app_paths.h"
 #include "renut_engine/app/dlc_install.h"
 #include "renut_engine/app/path_config_store.h"
-#include "renut_engine/app/renut_logging.h"
 
 namespace renut::setup {
 
 namespace {
 
 namespace fs = std::filesystem;
-using rex::filesystem::Entry;
-using rex::X_STATUS;  // X_STATUS_SUCCESS names it unqualified
+using rex::filesystem::ContainerNode;
+using rex::filesystem::IContainerImage;
 
-constexpr uint32_t kTitleId = 0x4D5307ED;  // Banjo-Kazooie: Nuts & Bolts
-constexpr uint32_t kUsMediaId = 0x3E567DFF;  // its US (NTSC) disc, which reNut is
+constexpr uint32_t kTitleId = 0x4D5307ED; 
+constexpr uint32_t kUsMediaId = 0x3E567DFF;
 constexpr uint32_t kContentTypeTitleUpdate = 0x000B0000;
 constexpr uint32_t kContentTypeDlc = 2;
-// Where the console installs DLC in the save folder (dlc_install.cpp): the
-// default profile's content headers.
 constexpr const char kDlcHeaders[] = "0000000000000000/4D5307ED/Headers/00000002";
-// On the disc beside the game: the console's system update, not the game's.
 constexpr const char kSystemUpdate[] = "$SystemUpdate";
-// Written into a folder before it is filled and removed once it is: a folder
-// that still has it was cut short (a stopped job, a full disk, a crash).
 constexpr const char kUnfinished[] = ".renut_unfinished";
 constexpr size_t kChunkBytes = size_t(8) << 20;
 
-// A job's failure, said to the player as it is.
 struct Failure : std::runtime_error {
     using std::runtime_error::runtime_error;
 };
+
 struct Cancelled {};
 
 struct State {
     std::mutex mutex;
     std::thread thread;
-    Progress progress;  // all but the byte counts, under mutex
+    Progress progress;
     std::atomic<uint64_t> bytes{0};
     std::atomic<uint64_t> total{0};
     std::atomic<bool> cancel{false};
 
-    // A job still going when reNut quits is stopped, not left to a thread
-    // that outlives the program.
     ~State() {
         cancel = true;
         if (thread.joinable())
@@ -70,7 +58,7 @@ struct State {
 } g;
 
 std::string Utf8(const fs::path &path) {
-    return rex::path_to_utf8(path);
+    return rex::string::PathToUTF8(path);
 }
 
 uint32_t LoadBe32(const uint8_t *p) {
@@ -104,66 +92,72 @@ void WriteChunk(std::ofstream &out, const uint8_t *data, size_t size, const fs::
     g.bytes += size;
 }
 
-// One file of a disc image or package, to 'dest'.
-void CopyEntry(Entry *entry, const fs::path &dest, std::vector<uint8_t> &buffer) {
-    rex::filesystem::File *file = nullptr;
-    if (entry->Open(rex::filesystem::FileAccess::kFileReadData, &file) != X_STATUS_SUCCESS || !file)
-        throw Failure("Can't read " + entry->path() + ".");
-    const std::unique_ptr<rex::filesystem::File, void (*)(rex::filesystem::File *)> closer(
-        file, [](rex::filesystem::File *f) { f->Destroy(); });
-    ShowFile(entry->path());
+void CopyEntry(const IContainerImage &image, const ContainerNode &entry, const fs::path &dest,
+               std::vector<uint8_t> &buffer) {
+    const std::string path = image.GetNodePath(entry);
+    ShowFile(path);
     std::ofstream out(dest, std::ios::binary | std::ios::trunc);
     if (!out)
         throw Failure("Can't write " + Utf8(dest) + ".");
-    for (size_t offset = 0, size = entry->size(); offset < size;) {
+    for (uint64_t offset = 0, size = entry.info.size; offset < size;) {
         if (g.cancel)
             throw Cancelled{};
-        size_t read = 0;
-        const size_t want = std::min(buffer.size(), size - offset);
-        if (file->ReadSync(std::span<uint8_t>(buffer.data(), want), offset, &read) != X_STATUS_SUCCESS || !read)
-            throw Failure("Can't read " + entry->path() + " (is the file damaged?).");
-        WriteChunk(out, buffer.data(), read, dest);
-        offset += read;
+        const size_t want = size_t(std::min<uint64_t>(buffer.size(), size - offset));
+        const auto read = image.Read(entry, offset, std::span<uint8_t>(buffer.data(), want));
+        if (!read || !*read)
+            throw Failure("Can't read " + path + " (is the file damaged?).");
+        WriteChunk(out, buffer.data(), *read, dest);
+        offset += *read;
     }
     out.close();
     if (!out)
         throw Failure("Can't write " + Utf8(dest) + " (is the disk full?).");
 }
 
-bool IsFolder(const Entry *entry) {
-    return entry->attributes() & rex::filesystem::kFileAttributeDirectory;
+bool IsFolder(const ContainerNode &entry) {
+    return rex::HasFlags(entry.info.attributes, rex::filesystem::FileAttributes::kDirectory);
 }
 
-// What CopyTree writes: every file under 'dir', but a top folder named 'skip'.
-uint64_t TreeBytes(const Entry *dir, const char *skip) {
+uint64_t TreeBytes(const IContainerImage &image, const ContainerNode &dir, const char *skip) {
     uint64_t bytes = 0;
-    for (const auto &child : dir->children()) {
-        if (skip && child->name() == skip)
+    for (const uint32_t index : dir.children) {
+        const ContainerNode &child = image.GetNodes()[index];
+        if (skip && child.info.name == skip)
             continue;
-        bytes += IsFolder(child.get()) ? TreeBytes(child.get(), nullptr) : child->size();
+        bytes += IsFolder(child) ? TreeBytes(image, child, nullptr) : child.info.size;
     }
     return bytes;
 }
 
-void CopyTree(Entry *dir, const fs::path &dest, const char *skip, std::vector<uint8_t> &buffer) {
+void CopyTree(const IContainerImage &image, const ContainerNode &dir, const fs::path &dest, const char *skip,
+              std::vector<uint8_t> &buffer) {
     std::error_code ec;
     fs::create_directories(dest, ec);
     if (ec)
         throw Failure("Can't make " + Utf8(dest) + ": " + ec.message() + ".");
-    for (const auto &child : dir->children()) {
-        if (skip && child->name() == skip)
+    for (const uint32_t index : dir.children) {
+        const ContainerNode &child = image.GetNodes()[index];
+        if (skip && child.info.name == skip)
             continue;
-        const fs::path target = dest / rex::to_path(child->name());
-        if (IsFolder(child.get()))
-            CopyTree(child.get(), target, nullptr, buffer);
+        const fs::path target = dest / rex::string::to_path(child.info.name);
+        if (IsFolder(child))
+            CopyTree(image, child, target, nullptr, buffer);
         else
-            CopyEntry(child.get(), target, buffer);
+            CopyEntry(image, child, target, buffer);
     }
 }
 
-// Which game and disc a XEX is: its execution info (optional header
-// 0x00040006: the media ID at +0, the title ID at +12), from the start of the
-// file. Zeros if it isn't one.
+// The disc image or package opened for reading, or null when it isn't one.
+std::unique_ptr<IContainerImage> OpenContainer(const fs::path &path) {
+    auto *factory = REX_INTERFACE(rex::filesystem::IFileSystemFactory);
+    if (!factory)
+        return nullptr;
+    auto opened = factory->OpenContainer(path);
+    if (!opened)
+        return nullptr;
+    return std::move(*opened);
+}
+
 struct XexIds {
     uint32_t media_id = 0;
     uint32_t title_id = 0;
@@ -184,15 +178,10 @@ XexIds ParseXexIds(const uint8_t *h, size_t size) {
 
 constexpr size_t kXexHeadBytes = 64 * 1024;
 
-XexIds DiscXexIds(Entry *xex) {
-    rex::filesystem::File *file = nullptr;
-    if (xex->Open(rex::filesystem::FileAccess::kFileReadData, &file) != X_STATUS_SUCCESS || !file)
-        return {};
-    std::vector<uint8_t> h(std::min(xex->size(), kXexHeadBytes));
-    size_t read = 0;
-    const bool ok = file->ReadSync(std::span<uint8_t>(h), 0, &read) == X_STATUS_SUCCESS;
-    file->Destroy();
-    return ok ? ParseXexIds(h.data(), read) : XexIds{};
+XexIds DiscXexIds(const IContainerImage &image, const ContainerNode &xex) {
+    std::vector<uint8_t> h(size_t(std::min<uint64_t>(xex.info.size, kXexHeadBytes)));
+    const auto read = image.Read(xex, 0, std::span<uint8_t>(h));
+    return read ? ParseXexIds(h.data(), *read) : XexIds{};
 }
 
 XexIds FileXexIds(const fs::path &path) {
@@ -208,22 +197,22 @@ bool SameFolder(const fs::path &a, const fs::path &b) {
 }
 
 std::string ExtractDisc(const fs::path &image, const fs::path &game) {
-    rex::filesystem::DiscImageDevice device("", image);
-    if (!device.Initialize())
+    const std::unique_ptr<IContainerImage> disc = OpenContainer(image);
+    if (!disc || disc->GetType() != rex::filesystem::ContainerType::kGDFX)
         throw Failure("That is not an Xbox 360 game disc image.");
-    Entry *root = device.ResolvePath("");
-    Entry *xex = root ? root->GetChild("default.xex") : nullptr;
+    const ContainerNode &root = disc->GetRoot();
+    const ContainerNode *xex = disc->Find("default.xex");
     if (!xex)
         throw Failure("That disc image has no default.xex.");
-    const XexIds ids = DiscXexIds(xex);
+    const XexIds ids = DiscXexIds(*disc, *xex);
     if (ids.title_id != kTitleId)
-        throw Failure(fmt::format("That is another game's disc (title {:08X}), not Nuts & Bolts.", ids.title_id));
+        throw Failure(std::format("That is another game's disc (title {:08X}), not Nuts & Bolts.", ids.title_id));
     if (ids.media_id != kUsMediaId)
         throw Failure("That is another region's Nuts & Bolts disc: reNut runs the US (NTSC) version.");
-    g.total = TreeBytes(root, kSystemUpdate);
+    g.total = TreeBytes(*disc, root, kSystemUpdate);
     std::vector<uint8_t> buffer(kChunkBytes);
     MarkUnfinished(game);
-    CopyTree(root, game, kSystemUpdate, buffer);
+    CopyTree(*disc, root, game, kSystemUpdate, buffer);
     MarkFinished(game);
     return "The game's files are in " + Utf8(game) + ".";
 }
@@ -243,20 +232,20 @@ std::string ExtractTitleUpdate(const fs::path &package, const fs::path &game, co
         throw Failure("That is " + info.name + "; reNut runs on Title Update #3.");
     if (SameFolder(game, update))
         throw Failure("The update folder has to be a folder of its own, not the game folder.");
-    rex::filesystem::StfsContainerDevice device("", package);
-    if (!device.Initialize())
+    const std::unique_ptr<IContainerImage> tu = OpenContainer(package);
+    if (!tu || tu->GetType() == rex::filesystem::ContainerType::kGDFX)
         throw Failure("That title update could not be read (is the file damaged?).");
-    Entry *root = device.ResolvePath("");
-    Entry *xexp = root ? root->GetChild("default.xexp") : nullptr;
+    const ContainerNode &root = tu->GetRoot();
+    const ContainerNode *xexp = tu->Find("default.xexp");
     if (!xexp)
         throw Failure("That title update has no default.xexp.");
-    g.total = TreeBytes(root, nullptr) + xexp->size();
+    g.total = TreeBytes(*tu, root, nullptr) + xexp->info.size;
     std::vector<uint8_t> buffer(kChunkBytes);
     MarkUnfinished(update);
-    CopyTree(root, update, nullptr, buffer);
+    CopyTree(*tu, root, update, nullptr, buffer);
     std::error_code ec;
     fs::create_directories(game, ec);
-    CopyEntry(xexp, game / "default.xexp", buffer);
+    CopyEntry(*tu, *xexp, game / "default.xexp", buffer);
     MarkFinished(update);
     return (info.name.empty() ? std::string("The title update") : info.name) + " is in place.";
 }
@@ -316,7 +305,7 @@ std::string AddDlc(const std::vector<fs::path> &packages) {
     }
     if (infos.size() == 1)
         return (infos[0].name.empty() ? std::string("The DLC") : infos[0].name) + " installs when the game starts.";
-    return fmt::format("{} DLC packages install when the game starts.", infos.size());
+    return std::format("{} DLC packages install when the game starts.", infos.size());
 }
 
 bool Start(Job job, std::function<std::string()> work) {
@@ -324,7 +313,7 @@ bool Start(Job job, std::function<std::string()> work) {
     if (g.progress.running)
         return false;
     if (g.thread.joinable())
-        g.thread.join();  // finished: running is cleared last
+        g.thread.join();
     g.progress = {};
     g.progress.job = job;
     g.progress.running = true;
@@ -340,10 +329,6 @@ bool Start(Job job, std::function<std::string()> work) {
         } catch (const std::exception &e) {
             error = e.what();
         }
-        if (error.empty())
-            RNUT_INFO("Setup: {}", result);
-        else
-            RNUT_WARN("Setup: {}", error);
         std::lock_guard lock(g.mutex);
         g.progress.file.clear();
         g.progress.result = std::move(result);
@@ -353,9 +338,9 @@ bool Start(Job job, std::function<std::string()> work) {
     return true;
 }
 
-} // namespace
+}
 
-Paths LoadPaths(const std::string &app_name, const rex::PathConfig &defaults) {
+Paths LoadPaths(const std::string &app_name, const Paths &defaults) {
     Paths p;
     if (auto saved = PathConfigStore::TryLoad(app_name)) {
         p.game = saved->game_data_root;
@@ -364,13 +349,11 @@ Paths LoadPaths(const std::string &app_name, const rex::PathConfig &defaults) {
     }
     std::error_code ec;
     if (p.game.empty())
-        p.game = fs::is_regular_file(defaults.game_data_root / "default.xex", ec)
-                     ? defaults.game_data_root
-                     : renut::paths::WritableFolder() / "game";
+        p.game = fs::is_regular_file(defaults.game / "default.xex", ec) ? defaults.game : renut::paths::WritableFolder() / "game";
     if (p.user.empty())
-        p.user = defaults.user_data_root;
+        p.user = defaults.user;
     if (p.update.empty())
-        p.update = defaults.update_data_root.empty() ? p.game / "update" : defaults.update_data_root;
+        p.update = defaults.update.empty() ? p.game / "update" : defaults.update;
     return p;
 }
 
@@ -390,6 +373,7 @@ Status Check(const Paths &paths) {
         s.game = ids.title_id == kTitleId && ids.media_id == kUsMediaId;
         s.other_region = !s.game;
     }
+
     if (fs::is_regular_file(paths.game / "default.xexp", ec) && fs::is_directory(paths.update, ec) &&
         !fs::exists(paths.update / kUnfinished, ec)) {
         for (const auto &entry : fs::directory_iterator(paths.update, ec)) {
@@ -399,12 +383,14 @@ Status Check(const Paths &paths) {
             }
         }
     }
+
     for (const auto &entry : fs::directory_iterator(dlc::PackageFolder(), ec)) {
         dlc::PackageInfo info;
         if (entry.is_regular_file(ec) && dlc::ReadPackageInfo(entry.path(), info) && info.title_id == kTitleId &&
             info.content_type == kContentTypeDlc)
             s.dlc = true;
     }
+
     for (const auto &entry : fs::directory_iterator(paths.user / kDlcHeaders, ec))
         if (entry.is_regular_file(ec) && entry.path().extension() == ".header")
             s.dlc = true;
@@ -438,4 +424,4 @@ void Cancel() {
     g.cancel = false;
 }
 
-} // namespace renut::setup
+}

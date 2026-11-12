@@ -10,15 +10,12 @@ struct Snapshot {
     double fps = 0.0;        // game frames per second over the last second
     double frame_ms = 0.0;   // their average length
     double worst_ms = 0.0;   // the longest of them
-    // Averages over the same frames. CPU is the game thread's update plus
-    // render (appMainTickPreDraw + appMainDraw, wall time) less the time it
-    // waited for the render thread (OnGameThreadWait); GPU is the time the
-    // GPU spent executing each frame's command lists (timestamp queries).
+    // Averages over the same frames: CPU is appMainTickPreDraw + appMainDraw less
+    // render-thread waits; GPU is command-list time from timestamp queries.
     double cpu_ms = 0.0;
     double gpu_ms = 0.0;
     bool gpu_known = false;  // false until the renderer has reported a GPU time
-    // The render thread's busy time per frame (it records the GPU work the
-    // game thread queues), less its waits for the GPU and the display
+    // The render thread's busy time per frame, less its GPU and display waits
     // (render_thread::WaitScope), averaged the same way.
     double render_thread_ms = 0.0;
     bool render_thread_known = false;
@@ -43,5 +40,10 @@ void OnRenderThreadFrame(double busy_ms);
 void OnGameThreadWait(double ms);
 
 Snapshot Get();
+
+// The settings renut.fps_overlay and renut.fps_overlay_size (old cvars fps_overlay, fps_overlay_size).
+bool FpsOverlayEnabled();
+void SetFpsOverlayEnabled(bool on);
+double FpsOverlaySize();
 
 } // namespace renut::frame_stats

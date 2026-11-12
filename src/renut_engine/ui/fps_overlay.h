@@ -1,5 +1,4 @@
 #pragma once
-#include <rex/cvar.h>
 #include "imgui.h"
 #include "renut_engine/perf/frame_stats.h"
 #include "renut_engine/gpu/overlay/overlay_ui.h"
@@ -8,20 +7,15 @@
 #include <chrono>
 #include <cstdio>
 
-REXCVAR_DECLARE(bool, fps_overlay);
-REXCVAR_DECLARE(double, fps_overlay_size);
-
-// Game frame rate (frame_stats), top left: the rate in large type, frame
-// times, the game thread's CPU time, the render thread's and the GPU's per
-// frame (the largest highlighted), the update and render split of the game
-// thread's, and a graph of recent frames. F1.
+// The FPS overlay (F1), top left: frame rate, frame times, CPU/render/GPU time
+// (the largest highlighted) and a graph of recent frames.
 class FpsOverlay : public renut::gpu::overlay::Dialog {
 public:
     void Draw() override {
         // The overlay's own input (gpu/overlay_ui.cpp feeds it the window's keys).
         if (ImGui::IsKeyPressed(ImGuiKey_F1, false))
-            REXCVAR_SET(fps_overlay, !REXCVAR_GET(fps_overlay));
-        if (!REXCVAR_GET(fps_overlay))
+            renut::frame_stats::SetFpsOverlayEnabled(!renut::frame_stats::FpsOverlayEnabled());
+        if (!renut::frame_stats::FpsOverlayEnabled())
             return;
 
         // The graph follows every frame; the numbers change four times a
@@ -33,7 +27,7 @@ public:
             shown_at_ = clock;
         }
 
-        const float big = float(std::clamp(REXCVAR_GET(fps_overlay_size), 12.0, 200.0));
+        const float big = float(std::clamp(renut::frame_stats::FpsOverlaySize(), 12.0, 200.0));
         // Not "small": rpcndr.h defines it.
         const float text = std::max(12.0f, big * 0.5f);
 

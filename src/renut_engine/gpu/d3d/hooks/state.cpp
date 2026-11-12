@@ -1,15 +1,6 @@
-/**
- * @file    gpu/d3d/hooks/state.cpp
- * @brief   N&B's D3D state calls, hooked with the native ports (d3d_native.h).
- *
- * The render and sampler state setters are the ones N&B's state tables name
- * (D3D::InitializeApiState puts them into every device's dispatch table,
- * which the game's inline SetRenderState / SetSamplerState call through).
- * The rest are D3DDevice_Set* and the CDevice internals that write the ring.
- */
 #include <cstring>
 
-#include <rex/hook.h>
+#include <rex/ppc/hook.h>
 #include <rex/types.h>
 
 #include "renut_engine/gpu/d3d/d3d_native.h"
@@ -63,10 +54,9 @@ u32 D3DDevice_GetDepthStencilSurface_hook(u32 device) {
   return surface;
 }
 
-// D3DVertexBuffer *GetStreamSource(D3DDevice*, UINT StreamNumber,
-//     UINT *pOffsetInBytes, UINT *pStride) [0x8264D840]: the offset is the
-// stream's fetch constant address less the buffer's.
-u32 D3DDevice_GetStreamSource_hook(u32 device, u32 stream, mapped_u32 offset, mapped_u32 stride) {
+// D3DDevice_GetStreamSource [0x8264D840]: the offset is the stream's fetch
+// constant address less the buffer's.
+u32 D3DDevice_GetStreamSource_hook(u32 device, u32 stream, MappedU32 offset, MappedU32 stride) {
   const native::Device d = native::DeviceAt(device);
   if (!d || stream >= 16)
     return 0;
@@ -85,7 +75,7 @@ u32 D3DDevice_GetStreamSource_hook(u32 device, u32 stream, mapped_u32 offset, ma
 }
 
 // void D3DDevice_GetViewport(D3DDevice*, D3DVIEWPORT9*) [0x82276AC0]
-void D3DDevice_GetViewport_hook(u32 device, mapped_u32 viewport) {
+void D3DDevice_GetViewport_hook(u32 device, MappedU32 viewport) {
   const native::Device d = native::DeviceAt(device);
   if (!d || !viewport)
     return;
@@ -96,7 +86,7 @@ void D3DDevice_GetViewport_hook(u32 device, mapped_u32 viewport) {
 }
 
 // void D3DDevice_SetClipPlane(D3DDevice*, DWORD Index, const float *pPlane) [0x8264DAE8]
-void D3DDevice_SetClipPlane_hook(u32 device, u32 index, mapped_u32 plane) {
+void D3DDevice_SetClipPlane_hook(u32 device, u32 index, MappedU32 plane) {
   native::Device d = native::DeviceAt(device);
   if (!d || !plane || index >= 6)
     return;
@@ -105,9 +95,8 @@ void D3DDevice_SetClipPlane_hook(u32 device, u32 index, mapped_u32 plane) {
   d.Dirty(4, u64(1) << (54 - index));
 }
 
-// void D3DDevice_SetVertexFetchConstant(D3DDevice*, UINT VertexFetchRegister,
-//     D3DVertexBuffer*, UINT Offset) [0x8264DB38]: a vertex fetch slot of the
-// 3 in a fetch constant, made a vertex fetch constant first.
+// D3DDevice_SetVertexFetchConstant [0x8264DB38]: one of a fetch constant's 3
+// vertex fetch slots, making it a vertex fetch constant first.
 void D3DDevice_SetVertexFetchConstant_hook(u32 device, u32 reg, u32 vertex_buffer, u32 offset) {
   native::Device d = native::DeviceAt(device);
   const auto *vb = vertex_buffer ? GuestPtr<const be_u32>(vertex_buffer) : nullptr;
@@ -125,10 +114,9 @@ void D3DDevice_SetVertexFetchConstant_hook(u32 device, u32 reg, u32 vertex_buffe
   d.SetW(constant + part * 8 + 4, native::Insert(u32(vb[7]) - offset, 1, 28, 2));
 }
 
-// The boolean and integer shader constants (D3DDevice_Set{Vertex,Pixel}
-// ShaderConstant{B,I}): bits from 0x2780 (vertex) / 0x2790 (pixel), a word
-// of x, y, z bytes each from 0x27A0 / 0x27E0.
-void SetShaderConstantsB(u32 device, u32 base, u32 start, mapped_u32 data, u32 count) {
+// The boolean and integer shader constants: bits at 0x2780 (vertex) / 0x2790
+// (pixel), and words of x, y, z bytes at 0x27A0 / 0x27E0.
+void SetShaderConstantsB(u32 device, u32 base, u32 start, MappedU32 data, u32 count) {
   native::Device d = native::DeviceAt(device);
   if (!d || !data)
     return;
@@ -140,7 +128,7 @@ void SetShaderConstantsB(u32 device, u32 base, u32 start, mapped_u32 data, u32 c
   d.Dirty(4, u64(1) << 56);
 }
 
-void SetShaderConstantsI(u32 device, u32 base, u32 start, mapped_u32 data, u32 count) {
+void SetShaderConstantsI(u32 device, u32 base, u32 start, MappedU32 data, u32 count) {
   native::Device d = native::DeviceAt(device);
   if (!d || !data)
     return;
@@ -154,16 +142,16 @@ void SetShaderConstantsI(u32 device, u32 base, u32 start, mapped_u32 data, u32 c
 
 // void D3DDevice_SetVertexShaderConstantB(D3DDevice*, UINT StartRegister,
 //     const BOOL*, UINT BoolCount) [0x82221930], and the others alike.
-void D3DDevice_SetVertexShaderConstantB_hook(u32 device, u32 start, mapped_u32 data, u32 count) {
+void D3DDevice_SetVertexShaderConstantB_hook(u32 device, u32 start, MappedU32 data, u32 count) {
   SetShaderConstantsB(device, 0x2780, start, data, count);
 }
-void D3DDevice_SetPixelShaderConstantB_hook(u32 device, u32 start, mapped_u32 data, u32 count) {
+void D3DDevice_SetPixelShaderConstantB_hook(u32 device, u32 start, MappedU32 data, u32 count) {
   SetShaderConstantsB(device, 0x2790, start, data, count);
 }
-void D3DDevice_SetVertexShaderConstantI_hook(u32 device, u32 start, mapped_u32 data, u32 count) {
+void D3DDevice_SetVertexShaderConstantI_hook(u32 device, u32 start, MappedU32 data, u32 count) {
   SetShaderConstantsI(device, 0x27A0, start, data, count);
 }
-void D3DDevice_SetPixelShaderConstantI_hook(u32 device, u32 start, mapped_u32 data, u32 count) {
+void D3DDevice_SetPixelShaderConstantI_hook(u32 device, u32 start, MappedU32 data, u32 count) {
   SetShaderConstantsI(device, 0x27E0, start, data, count);
 }
 
@@ -175,9 +163,8 @@ void D3DDevice_EndIndexedVertices_hook(u32 device) {
     d.SetW(native::off::Ring, d.W(0x3484));
 }
 
-// void D3DDevice_SetTexture(D3DDevice*, DWORD Sampler, D3DBaseTexture*,
-//     UINT64 PendingMask3) [0x8222F410]; the mask is the sampler's fetch
-// constant bit, which the port derives from Sampler.
+// D3DDevice_SetTexture [0x8222F410]; the PendingMask3 bit is derived from
+// Sampler.
 void D3DDevice_SetTexture_hook(u32 device, u32 sampler, u32 texture) {
   native::SetTexture(native::DeviceAt(device), sampler, texture);
 }
@@ -212,7 +199,7 @@ void D3D_SetViewport_hook(u32 device, float x, float y, float width, float heigh
 }
 
 // void D3DDevice_SetScissorRect(D3DDevice*, const RECT*) [0x82223178]
-void D3DDevice_SetScissorRect_hook(u32 device, mapped_u32 rect) {
+void D3DDevice_SetScissorRect_hook(u32 device, MappedU32 rect) {
   if (!rect)
     return;
   native::SetScissorRect(native::DeviceAt(device), i32(u32(rect[0])), i32(u32(rect[1])),
@@ -284,9 +271,8 @@ void D3D_InvalidateConstants_hook(u32 device) {
   native::InvalidateConstants(native::DeviceAt(device));
 }
 
-// void D3DDevice_BlockUntilIdle(D3DDevice*) [0x82657488] (IDA: the second
-// D3D::InvalidateConstants): waits for the device's current fence (N&B calls
-// it before releasing a device).
+// D3DDevice_BlockUntilIdle [0x82657488] (IDA: the second
+// D3D::InvalidateConstants): waits for the device's current fence.
 void D3DDevice_BlockUntilIdle_hook(u32 device) {
   native::InvalidateConstantsAndWait(native::DeviceAt(device));
 }

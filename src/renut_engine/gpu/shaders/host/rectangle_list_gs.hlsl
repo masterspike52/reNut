@@ -1,18 +1,5 @@
-// Xenos rectangle lists: every three vertices are three corners of a screen
-// rectangle and the GPU makes the fourth. The host draws them as triangle lists
-// through this shader, which emits each rectangle as a two-triangle strip.
-//
-// The three corners do not come in a fixed order. N&B's D3D writes its own
-// (ClearRects_D3D, 0x822043D8) as (left, top), (right, top), (right, bottom),
-// the right angle at the second; N&B's full-screen passes draw (-1, 1),
-// (1, 1), (-1, -1), the right angle at the first. So the shader finds the
-// corner whose two edges are perpendicular, and the fourth corner is the one
-// across the diagonal from it.
-//
-// The vertex layout is what XenosRecomp (RENUT_RECOMP) writes for every vertex
-// shader and pixel shader: the position, then the 23 interpolators in this
-// order, then the point sprite coordinate and size (see point_sprite_gs.hlsl).
-// SPIR-V matches stages by location, which follows the order.
+// Xenos rectangle lists: emits each three-corner rectangle as a two-triangle strip,
+// adding the corner across the diagonal from the right angle.
 
 struct Vertex
 {

@@ -22,12 +22,8 @@ float LumaAt(float2 uv)
     return Luma(SampleAt(uv).rgb);
 }
 
-// renut_anti_aliasing FXAA: fast approximate anti-aliasing of the frame, in the
-// frame's own texels. Where the local contrast is high enough to be an edge,
-// the edge's direction (horizontal or vertical) is found from the 3x3
-// neighbourhood, the edge is followed both ways to its ends, and the pixel is
-// resampled half a texel across the edge by how far it is from the nearer end
-// (plus a sub-pixel term for single-texel detail).
+// renut_anti_aliasing FXAA: follows high-contrast edges to their ends and resamples
+// the pixel across the edge by its distance to the nearer end.
 float3 Fxaa(float2 uv, float2 texel)
 {
     const float kEdgeThreshold = 0.125;     // contrast that counts as an edge, relative to the brightest

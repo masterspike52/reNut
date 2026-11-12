@@ -12,13 +12,14 @@
  *              (src/xenia/kernel/xam/apps/xlivebase_app.h/.cc).
  */
 
-#include <rex/system/kernel_state.h>
-#include <rex/system/xam/app_manager.h>
+#include <cstdint>
 
-namespace rex {
-namespace kernel {
-namespace xam {
-namespace apps {
+#include <rex/kernel/types/status.h>
+#include <rex/types.h>
+
+namespace rexglue_guide::xlive {
+
+using rex::kernel::X_HRESULT;
 
 // ---------------------------------------------------------------------------
 // XLive online error/status codes (from netplay xnet.h)
@@ -51,26 +52,26 @@ enum X_NAT_TYPE : uint32_t { NAT_OPEN = 1, NAT_MODERATE = 2, NAT_STRICT = 3 };
 #pragma pack(push, 8)
 
 struct X_ONLINE_SERVICE_INFO {
-  rex::be<uint32_t> id;
+  rex::BE<uint32_t> id;
   uint32_t ip;  // in_addr, network byte order
-  rex::be<uint16_t> port;
-  rex::be<uint16_t> reserved;
+  rex::BE<uint16_t> port;
+  rex::BE<uint16_t> reserved;
 };
-static_assert_size(X_ONLINE_SERVICE_INFO, 0xC);
+static_assert(sizeof(X_ONLINE_SERVICE_INFO) == 0xC);
 
 // Marshaled argument entry used by title-side XLive code for async XLiveBase
 // tasks (from netplay xnet.h).
 struct X_ARGUMENT_ENTRY {
-  rex::be<uint32_t> native_size;
-  rex::be<uint64_t> argument_value_ptr;
+  rex::BE<uint32_t> native_size;
+  rex::BE<uint64_t> argument_value_ptr;
 };
-static_assert_size(X_ARGUMENT_ENTRY, 0x10);
+static_assert(sizeof(X_ARGUMENT_ENTRY) == 0x10);
 
 struct X_ARGUMENT_LIST {
   X_ARGUMENT_ENTRY entry[32];
-  rex::be<uint32_t> argument_count;
+  rex::BE<uint32_t> argument_count;
 };
-static_assert_size(X_ARGUMENT_LIST, 0x208);
+static_assert(sizeof(X_ARGUMENT_LIST) == 0x208);
 
 struct X_CREATE_FRIENDS_ENUMERATOR {
   X_ARGUMENT_ENTRY user_index;
@@ -85,99 +86,77 @@ struct X_PRESENCE_INITIALIZE {
 };
 
 struct XLIVEBASE_UPDATE_ACCESS_TIMES {
-  rex::be<uint32_t> user_index;
-  rex::be<uint32_t> title_id;
-  rex::be<uint32_t> content_categories;
+  rex::BE<uint32_t> user_index;
+  rex::BE<uint32_t> title_id;
+  rex::BE<uint32_t> content_categories;
 };
 
 struct X_STORAGE_BUILD_SERVER_PATH {
-  rex::be<uint32_t> user_index;
-  rex::be<uint64_t> xuid;
-  rex::be<uint32_t> storage_location;
-  rex::be<uint32_t> storage_location_info_ptr;
-  rex::be<uint32_t> storage_location_info_size;
-  rex::be<uint32_t> file_name_ptr;
-  rex::be<uint32_t> server_path_ptr;
-  rex::be<uint32_t> server_path_length_ptr;
+  rex::BE<uint32_t> user_index;
+  rex::BE<uint64_t> xuid;
+  rex::BE<uint32_t> storage_location;
+  rex::BE<uint32_t> storage_location_info_ptr;
+  rex::BE<uint32_t> storage_location_info_size;
+  rex::BE<uint32_t> file_name_ptr;
+  rex::BE<uint32_t> server_path_ptr;
+  rex::BE<uint32_t> server_path_length_ptr;
 };
-static_assert_size(X_STORAGE_BUILD_SERVER_PATH, 0x28);
+static_assert(sizeof(X_STORAGE_BUILD_SERVER_PATH) == 0x28);
 
 // XLive async task structures (title-side XLive marshaling, netplay xnet.h).
 struct BASE_ENDIAN_BUFFER {
-  rex::be<uint32_t> buffer_ptr;
-  rex::be<uint32_t> buffer_size;
-  rex::be<uint32_t> unk_08;
-  rex::be<uint32_t> unk_0C;
-  rex::be<uint32_t> unk_10;
+  rex::BE<uint32_t> buffer_ptr;
+  rex::BE<uint32_t> buffer_size;
+  rex::BE<uint32_t> unk_08;
+  rex::BE<uint32_t> unk_0C;
+  rex::BE<uint32_t> unk_10;
 };
-static_assert_size(BASE_ENDIAN_BUFFER, 0x14);
+static_assert(sizeof(BASE_ENDIAN_BUFFER) == 0x14);
 
 struct XLIVE_ASYNC_TASK {
-  rex::be<uint32_t> ordinal;
-  rex::be<uint32_t> schema_data_ptr;  // SCHEMA_DATA*
-  rex::be<uint32_t> schema_index;
-  rex::be<uint32_t> task_flags;
-  rex::be<uint32_t> live_async_task_internal_ptr;
-  rex::be<uint32_t> internal_task_size;
-  rex::be<uint32_t> marshalled_request_ptr;
-  rex::be<uint32_t> marshalled_request_size;
-  rex::be<uint32_t> total_wire_buffe_size;
-  rex::be<uint32_t> counter;
-  rex::be<uint32_t> logon_id;
-  rex::be<uint32_t> results_ptr;
-  rex::be<uint32_t> results_size;
+  rex::BE<uint32_t> ordinal;
+  rex::BE<uint32_t> schema_data_ptr;  // SCHEMA_DATA*
+  rex::BE<uint32_t> schema_index;
+  rex::BE<uint32_t> task_flags;
+  rex::BE<uint32_t> live_async_task_internal_ptr;
+  rex::BE<uint32_t> internal_task_size;
+  rex::BE<uint32_t> marshalled_request_ptr;
+  rex::BE<uint32_t> marshalled_request_size;
+  rex::BE<uint32_t> total_wire_buffe_size;
+  rex::BE<uint32_t> counter;
+  rex::BE<uint32_t> logon_id;
+  rex::BE<uint32_t> results_ptr;
+  rex::BE<uint32_t> results_size;
   BASE_ENDIAN_BUFFER wire_buffer;
-  rex::be<uint32_t> overlapped_ptr;
+  rex::BE<uint32_t> overlapped_ptr;
 };
-static_assert_size(XLIVE_ASYNC_TASK, 0x4C);
+static_assert(sizeof(XLIVE_ASYNC_TASK) == 0x4C);
 
 struct XLIVEBASE_ASYNC_MESSAGE {
-  rex::be<uint32_t> xlive_async_task_ptr;
-  rex::be<uint64_t> current_numerator;
-  rex::be<uint64_t> current_denominator;
-  rex::be<uint64_t> last_numerator;
-  rex::be<uint64_t> last_denominator;
+  rex::BE<uint32_t> xlive_async_task_ptr;
+  rex::BE<uint64_t> current_numerator;
+  rex::BE<uint64_t> current_denominator;
+  rex::BE<uint64_t> last_numerator;
+  rex::BE<uint64_t> last_denominator;
 };
-static_assert_size(XLIVEBASE_ASYNC_MESSAGE, 0x28);
+static_assert(sizeof(XLIVEBASE_ASYNC_MESSAGE) == 0x28);
 
 #pragma pack(push, 4)
 struct X_ONLINE_FRIEND {
-  rex::be<uint64_t> xuid;
+  rex::BE<uint64_t> xuid;
   char Gamertag[16];
-  rex::be<uint32_t> state;
+  rex::BE<uint32_t> state;
   uint8_t session_id[8];
-  rex::be<uint32_t> title_id;
-  rex::be<uint64_t> ftUserTime;
+  rex::BE<uint32_t> title_id;
+  rex::BE<uint64_t> ftUserTime;
   uint8_t xnkidInvite[8];
-  rex::be<uint64_t> gameinviteTime;
-  rex::be<uint32_t> cchRichPresence;
-  rex::be<char16_t> wszRichPresence[X_MAX_RICHPRESENCE_SIZE];
+  rex::BE<uint64_t> gameinviteTime;
+  rex::BE<uint32_t> cchRichPresence;
+  rex::BE<char16_t> wszRichPresence[X_MAX_RICHPRESENCE_SIZE];
 };
-static_assert_size(X_ONLINE_FRIEND, 0xC4);
+static_assert(sizeof(X_ONLINE_FRIEND) == 0xC4);
 #pragma pack(pop)
 
 #pragma pack(pop)
 
-class XLiveBaseApp : public system::xam::App {
- public:
-  explicit XLiveBaseApp(system::KernelState* kernel_state);
-
-  X_HRESULT DispatchMessageSync(uint32_t message, uint32_t buffer_ptr,
-                                uint32_t buffer_length) override;
-
- private:
-  X_HRESULT XOnlineGetServiceInfo(uint32_t service_id, uint32_t service_info);
-  X_HRESULT XFriendsCreateEnumerator(uint32_t buffer_ptr,
-                                     uint32_t buffer_length);
-  X_HRESULT XStorageBuildServerPath(uint32_t buffer_ptr);
-  X_HRESULT XStringVerify(uint32_t buffer_ptr);
-  X_HRESULT ZeroAsyncTaskResults(uint32_t buffer_ptr);
-
-  // Reads argument N of a marshaled X_ARGUMENT_LIST as a 32-bit value.
-  uint32_t ReadArgument32(const X_ARGUMENT_ENTRY& entry);
-};
-
-}  // namespace apps
-}  // namespace xam
-}  // namespace kernel
-}  // namespace rex
+}  // namespace rexglue_guide::xlive

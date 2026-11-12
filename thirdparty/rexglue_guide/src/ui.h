@@ -2,6 +2,7 @@
 // Drawing helpers and theme for the Guide. Everything is laid out for a
 // 1080p screen and multiplied by ui::S().
 
+#include <cstdint>
 #include <functional>
 #include <memory>
 #include <string>
@@ -13,12 +14,11 @@
 #include "assets.h"
 #include "imgui.h"
 
-namespace rex::ui {
-class ImmediateDrawer;
-class ImmediateTexture;
-}  // namespace rex::ui
-
 namespace rexglue_guide::ui {
+
+// The app's texture hooks (Config::create_texture / destroy_texture).
+using CreateTexture = std::function<ImTextureID(uint32_t width, uint32_t height, const uint8_t* rgba)>;
+using DestroyTexture = std::function<void(ImTextureID texture)>;
 
 void ConfigureFonts(ImFontAtlas* atlas);
 ImFont* Regular();
@@ -93,7 +93,7 @@ void PlatformBadge(ImDrawList* dl, Textures& textures, std::string_view platform
 // Textures for the embedded images, created on first use.
 class Textures {
  public:
-  explicit Textures(rex::ui::ImmediateDrawer* drawer);
+  Textures(CreateTexture create, DestroyTexture destroy);
   ~Textures();
   ImTextureID Icon(assets::Icon icon);
   // Embedded gamerpics, or a server one through server_gamerpic (the first
@@ -119,9 +119,12 @@ class Textures {
   // gamerpics have baked in. fit: shrink a bigger picture to that many pixels
   // across (0: as it is).
   ImTextureID Load(const std::string& key, std::span<const uint8_t> png, bool tile = false, int fit = 0);
-  rex::ui::ImmediateDrawer* drawer_;
-  std::unordered_map<std::string, std::unique_ptr<rex::ui::ImmediateTexture>> textures_;
-  std::vector<std::pair<int, std::unique_ptr<rex::ui::ImmediateTexture>>> retired_;  // frames left, texture
+  ImTextureID Make(const uint8_t* rgba, int width, int height);
+  void Free(ImTextureID texture);
+  CreateTexture create_;
+  DestroyTexture destroy_;
+  std::unordered_map<std::string, ImTextureID> textures_;
+  std::vector<std::pair<int, ImTextureID>> retired_;  // frames left, texture
 };
 
 void Image(ImDrawList* dl, ImTextureID tex, ImVec2 min, ImVec2 max, ImU32 tint = color::kWhite,

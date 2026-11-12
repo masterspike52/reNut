@@ -1,6 +1,3 @@
-/**
- * @file    gpu/guest/widescreen.cpp
- */
 #include "renut_engine/gpu/guest/widescreen.h"
 
 #include <algorithm>
@@ -8,20 +5,27 @@
 #include <cmath>
 #include <string>
 
-#include <rex/cvar.h>
-#include <rex/hook.h>
+#include <rex/logging/log_category.h>
+#include <rex/ppc/hook.h>
+#include <rex/setting.h>
 #include <rex/types.h>
 
+#include "renut_engine/app/renut_settings.h"
 #include "renut_engine/gpu/backend/native_window.h"
 #include "renut_engine/gpu/d3d/d3d.h"
 #include "renut_engine/gpu/guest/guest_memory.h"
-#include "renut_engine/gpu/log.h"
 
-REXCVAR_DEFINE_STRING(renut_aspect_ratio, "Auto", "Nuts&Bolts/Graphics",
-                      "Aspect ratio the game renders at. Auto = the game window's when the game "
-                      "starts (the monitor's in fullscreen). Narrower than 16:9 stays 16:9. "
-                      "Takes effect on restart.")
-    .allowed({"Auto", "16:9", "21:9", "32:9"});
+namespace {
+struct WidescreenSettings final : rex::SettingOwner {
+  WidescreenSettings() : rex::SettingOwner(renut::settings::kScope) { renut::settings::Add(*this); }
+  REX_SETTING(std::string, renut_aspect_ratio, "Auto",
+              "Aspect ratio the game renders at. Auto = the game window's when the game "
+              "starts (the monitor's in fullscreen). Narrower than 16:9 stays 16:9. "
+              "Takes effect on restart.",
+              rex::Allowed("Auto", "16:9", "21:9", "32:9"));
+};
+WidescreenSettings &g_widescreen_settings = *new WidescreenSettings();  // never freed, registered by RenutApp::OnConfigure
+} // namespace
 
 namespace renut::gpu {
 
@@ -40,9 +44,8 @@ constexpr u32 kConsoleAspectModeVa = 0x82E1B6B8;
 constexpr u32 kAspectModeConsole = 3;
 constexpr u32 kAspectMode4x3 = 0;
 
-// sub_822E8660's buffers: pools of 1280x736 32bpp texels (0x398000 bytes)
-// and a 0x730000-byte one, created once (kPoolsCreatedVa) and freed by
-// sub_823BB220. Their sizes are kept for placing textures at a pool's end.
+// sub_822E8660's buffers: pools of 1280x736 32bpp texels (0x398000 bytes) and
+// a 0x730000-byte one, created once (kPoolsCreatedVa), with their recorded sizes.
 constexpr u32 kPoolsCreatedVa = 0x82DF0748;
 constexpr u32 kScreenPoolBytes = 0x398000;
 constexpr u32 kImagePoolBytes = 0x730000;
@@ -50,22 +53,28 @@ constexpr u32 kScratchPoolSizeVa = 0x82DF0710;
 constexpr u32 kScratchPoolVa = 0x82DF0714;
 constexpr u32 kCopyPoolSizeVa = 0x82DF0718;
 constexpr u32 kDepthPoolSizeVa = 0x82DF0730;
-// Scratch textures over the scratch pool sized for 1280 (sub_822E8AE8 /
-// sub_821FFF38 pick them by the camera viewport): the whole screen at its
+// Scratch textures over the scratch pool sized for 1280: the whole screen at its
 // start, the split-screen halves at its end.
 constexpr u32 kScreenScratchVa = 0x82DF04CC;      // 1280x720
 constexpr u32 kHalfWidthScratchVa = 0x82DF0500;   // 640x720
 constexpr u32 kTopScratchVa = 0x82DF0534;         // 1280x352
 constexpr u32 kBottomScratchVa = 0x82DF0568;      // 1280x368
 
+// sub_823912A8's depth-only quad over L.O.G.'s TV screen: 4 clip-space vertices
+// (x, y, z, pad) sized for 16:9, narrowed for wider screens.
+constexpr u32 kTvMaskVerticesVa = 0x82DA2960;
+constexpr u32 kTvMaskVertexCount = 4;
+constexpr u32 kTvMaskVertexStride = 16;
+
 std::atomic<uint32_t> g_screen_width{0};
+std::atomic<bool> g_tv_mask_narrowed{false};
 
 // sub_822E8660 is creating its pools on this thread.
 thread_local bool t_sizing_pools = false;
 
 u32 LoadU32(u32 va) {
   const auto *p = GuestPtr<const be_u32>(va);
-  return p ? p->get() : 0;
+  return p ? p->Get() : 0;
 }
 
 void StoreU32(u32 va, u32 value) {
@@ -84,18 +93,17 @@ constexpr u32 Tiled32bppBytes(u32 width, u32 height) {
 }
 
 double ConfiguredAspect() {
-  const std::string &setting = REXCVAR_GET(renut_aspect_ratio);
+  const std::string setting = g_widescreen_settings.renut_aspect_ratio.Get();
   if (setting == "16:9")
     return kNativeAspect;
   if (setting == "21:9")
     return 64.0 / 27.0;
   if (setting == "32:9")
     return 32.0 / 9.0;
+  // No game window size yet: 16:9.
   uint32_t width = 0, height = 0;
-  if (!GetRenderWindowPixelSize(width, height) || !width || !height) {
-    RGPU_WARN("Widescreen: no game window size yet, staying 16:9");
+  if (!GetRenderWindowPixelSize(width, height) || !width || !height)
     return kNativeAspect;
-  }
   return double(width) / double(height);
 }
 
@@ -126,9 +134,9 @@ void SetTexture2D(u32 header_va, u32 width, u32 height, u32 base_address) {
   if (!texture)
     return;
   d3d::TextureFetchConstant &fetch = texture->Format;
-  fetch.dword[0] = (fetch.dword[0].get() & ~(0x1FFu << 22)) | ((AlignUp(width, 32) >> 5) << 22);
-  fetch.dword[1] = (fetch.dword[1].get() & 0xFFFu) | (base_address & ~0xFFFu);
-  fetch.dword[2] = (fetch.dword[2].get() & ~0x3FFFFFFu) | ((height - 1) << 13) | (width - 1);
+  fetch.dword[0] = (fetch.dword[0].Get() & ~(0x1FFu << 22)) | ((AlignUp(width, 32) >> 5) << 22);
+  fetch.dword[1] = (fetch.dword[1].Get() & 0xFFFu) | (base_address & ~0xFFFu);
+  fetch.dword[2] = (fetch.dword[2].Get() & ~0x3FFFFFFu) | ((height - 1) << 13) | (width - 1);
 }
 
 // After sub_822E8660 made its pools (at the sizes PoolAllocationBytes gave):
@@ -149,12 +157,10 @@ void WidenScratchTextures() {
                pool_end - Tiled32bppBytes(width / 2, kNativeHeight));
   SetTexture2D(kTopScratchVa, width, 352, pool_end - Tiled32bppBytes(width, 352));
   SetTexture2D(kBottomScratchVa, width, 368, pool_end - Tiled32bppBytes(width, 368));
-  RGPU_INFO("Widescreen: screen pools {:#x} bytes", pool_bytes);
 }
 
-// sub_822E8660's pool allocations, sized for the wider screen. The image
-// pool keeps its recorded size: sub_82558A80 puts a screen texture at its
-// recorded size less one 1280 screen, so only the room past it grows.
+// sub_822E8660's pool allocations, sized for the wider screen; the image pool
+// only grows past its recorded size (sub_82558A80 places a texture by it).
 u32 PoolAllocationBytes(u32 bytes) {
   if (bytes == kScreenPoolBytes)
     return ScreenPoolBytes();
@@ -163,14 +169,24 @@ u32 PoolAllocationBytes(u32 bytes) {
   return bytes;
 }
 
-// The projection aspect for 'mode' (a camera's, 3 resolved), widened by the
-// screen's extra width: the viewports the game derives from the screen width
-// widen by as much. 4:3 viewports are the game's own and keep theirs.
+// Widens the projection aspect for 'mode' by the screen's extra width (Hor+);
+// 4:3 keeps its own.
 void WidenAspect(PPCContext &ctx, u32 mode) {
   if (mode == kAspectMode4x3 || !Widened())
     return;
   const float scale = float(GuestScreenWidth()) / float(kNativeWidth);
   ctx.f1.f64 = double(float(ctx.f1.f64) * scale);
+}
+
+// The TV's quad narrowed as WidenAspect narrows the world on screen: once,
+// as the screen width is kept until restart.
+void NarrowTvMask() {
+  if (!Widened() || g_tv_mask_narrowed.exchange(true))
+    return;
+  const float scale = float(kNativeWidth) / float(GuestScreenWidth());
+  for (u32 i = 0; i < kTvMaskVertexCount; ++i)
+    if (auto *x = GuestPtr<be_f32>(kTvMaskVerticesVa + i * kTvMaskVertexStride))
+      *x = x->Get() * scale;
 }
 
 u32 CameraAspectMode() {
@@ -185,27 +201,76 @@ float XuiOffset() {
   return Widened() ? float(GuestScreenWidth() - kNativeWidth) * 0.5f : 0.0f;
 }
 
-// XUI's root stays 1280x720 (the game's scenes are laid out for it, from its
-// left edge: on a wider root they sat at the screen's left). sub_821D7858
-// scales XUI's view by the render target over 1280x720, which on a wider
-// screen would stretch XUI sideways: the view keeps the vertical scale on
-// both axes and is moved right by XuiOffset, so the 16:9 layout is centred.
-// The target is the screen, or the tiling target (its width rounded up to 32).
+// Keeps XUI's view transform at the vertical scale on both axes and moves it
+// right by XuiOffset, so its 1280x720 layout is centred on a wider screen.
 void CenterXuiView(u32 matrix_va) {
   if (!Widened())
     return;
   auto *m = GuestPtr<be_f32>(matrix_va);
   if (!m)
     return;
-  const float target_width = m[0].get() * float(kNativeWidth);
-  const float target_height = m[5].get() * float(kNativeHeight);
+  const float target_width = m[0].Get() * float(kNativeWidth);
+  const float target_height = m[5].Get() * float(kNativeHeight);
   const u32 width = GuestScreenWidth();
   if (target_width > float(width) - 1.0f && target_width < float(AlignUp(width, 32)) + 1.0f &&
       std::fabs(target_height - float(kNativeHeight)) < 1.0f) {
-    const float scale = m[5].get();
+    const float scale = m[5].Get();
     m[0] = scale;
-    m[12] = m[12].get() + (float(width) - float(kNativeWidth) * scale) * 0.5f;
+    m[12] = m[12].Get() + (float(width) - float(kNativeWidth) * scale) * 0.5f;
   }
+}
+
+// TEMP (the blink on opening a save): sub_82239C18's renderer matrices, view at +42208, projection at
+// +42336 and their product at +42528; logged while any holds a NaN, and once when they're whole again.
+constexpr u32 kRendererView = 42208;
+constexpr u32 kRendererProjection = 42336;
+constexpr u32 kRendererViewProjection = 42528;
+constexpr u32 kFieldOfViewVa = 0x82E1B6B4;
+constexpr u32 kCameraNear = 104;
+constexpr u32 kCameraFar = 100;
+
+float LoadFloat(u32 va) {
+  const auto *p = GuestPtr<const be_f32>(va);
+  return p ? p->Get() : 0.0f;
+}
+
+bool HasNan(u32 va) {
+  for (u32 i = 0; i < 16; ++i)
+    if (std::isnan(LoadFloat(va + i * 4)))
+      return true;
+  return false;
+}
+
+std::string Floats(u32 va) {
+  std::string text;
+  for (u32 i = 0; i < 16; ++i)
+    text += (i ? " " : "") + std::to_string(LoadFloat(va + i * 4));
+  return text;
+}
+
+std::atomic<int> g_nan_logged{0};
+std::atomic<bool> g_nan_seen{false};
+
+void LogCameraNan(u32 renderer, u32 caller) {
+  const bool view = HasNan(renderer + kRendererView);
+  const bool projection = HasNan(renderer + kRendererProjection);
+  const bool product = HasNan(renderer + kRendererViewProjection);
+  const u32 camera = LoadU32(kActiveCameraVa);
+  if (!view && !projection && !product) {
+    if (g_nan_seen.exchange(false))
+      REXLOG_WARN("[camera nan] whole again: camera {:08X} near {} far {} fov {}", camera,
+                  camera ? LoadFloat(camera + kCameraNear) : 0.0f, camera ? LoadFloat(camera + kCameraFar) : 0.0f,
+                  LoadFloat(kFieldOfViewVa));
+    return;
+  }
+  g_nan_seen = true;
+  if (g_nan_logged.fetch_add(1) >= 24)
+    return;
+  REXLOG_WARN("[camera nan] from {:08X}: view {} projection {} view-projection {}; camera {:08X} near {} far {} fov {} mode {}",
+              caller, view, projection, product, camera, camera ? LoadFloat(camera + kCameraNear) : 0.0f,
+              camera ? LoadFloat(camera + kCameraFar) : 0.0f, LoadFloat(kFieldOfViewVa), CameraAspectMode());
+  REXLOG_WARN("[camera nan] view [{}]", Floats(renderer + kRendererView));
+  REXLOG_WARN("[camera nan] projection [{}]", Floats(renderer + kRendererProjection));
 }
 
 // sub_823B7338 (XUI start) is sizing XUI's root on this thread, and the root.
@@ -221,14 +286,10 @@ uint32_t GuestScreenWidth() {
   uint32_t width = g_screen_width.load(std::memory_order_acquire);
   if (width)
     return width;
-  const double aspect = ConfiguredAspect();
-  width = WidthForAspect(aspect);
+  width = WidthForAspect(ConfiguredAspect());
   uint32_t expected = 0;
-  if (g_screen_width.compare_exchange_strong(expected, width, std::memory_order_acq_rel)) {
-    RGPU_INFO("Widescreen: game screen {}x{} for aspect {:.3f} ({})", width, kNativeHeight, aspect,
-              REXCVAR_GET(renut_aspect_ratio));
+  if (g_screen_width.compare_exchange_strong(expected, width, std::memory_order_acq_rel))
     return width;
-  }
   return expected;
 }
 
@@ -236,9 +297,8 @@ uint32_t GuestScreenWidth() {
 
 using namespace renut::gpu;
 
-// void sub_823BB7C0(int query, int *mode, DWORD *width, DWORD *height,
-//                   BOOL *hidef): the screen size for the video mode, 1280x720
-// for every HD mode. Widened here.
+// void sub_823BB7C0(int query, int *mode, DWORD *width, DWORD *height, BOOL *hidef):
+// the screen size for the video mode (1280x720 for HD), widened here.
 REX_EXTERN(__imp__sub_823BB7C0);
 REX_HOOK_RAW(sub_823BB7C0) {
   const u32 width_va = ctx.r5.u32;
@@ -281,6 +341,22 @@ REX_EXTERN(__imp__sub_822050D0);
 REX_HOOK_RAW(sub_822050D0) {
   __imp__sub_822050D0(ctx, base);
   WidenAspect(ctx, LoadU32(kConsoleAspectModeVa));
+}
+
+// TEMP: sub_82239C18(renderer, projection): stores the projection and its product with the view.
+REX_EXTERN(__imp__sub_82239C18);
+REX_HOOK_RAW(sub_82239C18) {
+  const u32 renderer = ctx.r3.u32;
+  const u32 caller = u32(ctx.lr);
+  __imp__sub_82239C18(ctx, base);
+  LogCameraNan(renderer, caller);
+}
+
+// void sub_823912A8(this): draws the TV's quad (kTvMaskVerticesVa).
+REX_EXTERN(__imp__sub_823912A8);
+REX_HOOK_RAW(sub_823912A8) {
+  NarrowTvMask();
+  __imp__sub_823912A8(ctx, base);
 }
 
 // HRESULT XuiRenderSetViewTransform(HXUIDC, const D3DXMATRIX *) [0x821D55E8]
@@ -335,7 +411,7 @@ REX_EXTERN(__imp__sub_82235C88);
 REX_HOOK_RAW(sub_82235C88) {
   if (t_placing_marker && Widened()) {
     if (auto *position = GuestPtr<be_f32>(ctx.r4.u32))
-      position[0] = position[0].get() - XuiOffset();
+      position[0] = position[0].Get() - XuiOffset();
   }
   __imp__sub_82235C88(ctx, base);
 }

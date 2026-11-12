@@ -4,7 +4,6 @@
 #include <optional>
 #include <string>
 #include <system_error>
-
 #include "renut_engine/app/app_paths.h"
 #if defined(_WIN32)
 #include <windows.h>
@@ -35,21 +34,22 @@ namespace PathConfigStore {
         return "\"" + s + "\"";
     }
 
-    // Next to the executable (the user data folder for an AppImage, whose
-    // own folder is read-only; see app_paths.h).
     inline std::filesystem::path GetStorePath(const std::string& app_name) {
         if (renut::paths::IsAppImage())
             return renut::paths::WritableFolder() / (app_name + ".cfg");
+
 #if defined(_WIN32)
         wchar_t exe_path[MAX_PATH] = {};
         GetModuleFileNameW(nullptr, exe_path, MAX_PATH);
         std::filesystem::path dir = std::filesystem::path(exe_path).parent_path();
 #else
+
         std::error_code ec;
         std::filesystem::path dir = std::filesystem::read_symlink("/proc/self/exe", ec).parent_path();
         if (ec)
             dir = std::filesystem::current_path(ec);
 #endif
+
         return dir / (app_name + ".cfg");
     }
 
@@ -91,4 +91,4 @@ namespace PathConfigStore {
         f << "update_data_root = " << Quote(cfg.update_data_root.string()) << "\n";
     }
 
-} // namespace PathConfigStore
+}

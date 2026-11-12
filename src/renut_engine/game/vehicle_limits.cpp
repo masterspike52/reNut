@@ -1,62 +1,26 @@
-/**
- * @file    game/vehicle_limits.cpp
- * @brief   The garage's limits on a vehicle's size and part count
- *          (unlimited_vehicle_building).
- *
- * N&B (TU3, IDA):
- * - Size. The vehicle editor (entitySceneControlEditVehicle's editor object,
- *   the cursor's cell at + 0x1A8; cells pack x, y and z in 11, 10 and 11
- *   signed bits) keeps its cursor in sub_82633230: the vehicle's cells (from 0)
- *   together with the held part's must span fewer than 19 on each axis
- *   (0x826333EC, 0x82633408, 0x82633424), or the cursor is pulled back until
- *   they span 19 (0x826334E4 and 0x826334F0 load the packed limit,
- *   0x82633510 and 0x82633580 subtract from it) and the tip "can't move the
- *   cursor any further" (29) shows. A saved blueprint keeps each block's cell
- *   in signed bytes (sub_8254E518), so a vehicle can span 128 cells and still
- *   save. A cursor move also stands only if the world lets it
- *   (sub_82633BA0, from sub_82632E48: the held part's shape cast through the
- *   world, sub_825EC8C8, or with none a line along the vehicle, sub_825EB270),
- *   so in a garage of walls (Mumbo's) the room ends the range first.
- * - Parts. Joining a vehicle to another (sub_825ECBF8: placing a part, and the
- *   editor's check of the held part every frame) and merging two
- *   (sub_825ECD28) fail when both vehicles' parts (+ 0xDA0) and the ones
- *   carried come to more than 250; picking a part up shows the tip "reached the
- *   maximum" (34) past 250 (sub_82630628). Spawning a blueprint (sub_8254CEF0)
- *   keeps a flag per part on its stack, room for 250, filled by sub_8250FD28,
- *   whose own stack arrays (per-part weights, a sort of them) hold about as
- *   many: past 250 parts both write over the registers they saved, and past
- *   their frames. The blueprint's picture (sub_824984D0, drawn by
- *   sub_82497588) holds three asset references a part in arrays of 250 inside
- *   its object (+ 0x84, + 0x46C, + 0x854): past 250 parts they run into each
- *   other and past the object, and the picture's parts list breaks.
- *
- * With the cvar on, a vehicle may span 128 cells and hold 2048 parts, and the
- * cursor goes through the garage's walls (parts still can't overlap the
- * vehicle: sub_825ECBF8 checks that every frame). The two
- * spawn functions run with room under their caller's stack for what spills out
- * of their arrays, and the caller's registers are put back afterwards, and the
- * picture draws a blueprint's first 250 parts, for any blueprint of more than
- * 250 parts whatever the cvar: a big vehicle saved with it on still loads with
- * it off.
- */
-#include <rex/cvar.h>
-#include <rex/hook.h>
+#include <rex/ppc/hook.h>
+#include <rex/setting.h>
 #include <rex/types.h>
 
 #include <cstdint>
 
+#include "renut_engine/app/renut_settings.h"
 #include "renut_engine/game/guest_call.h"
 #include "renut_engine/online/online.h"
-
-REXCVAR_DEFINE_BOOL(unlimited_vehicle_building, false, "Nuts&Bolts/Cheats",
-                    "Vehicles in the garage can span 128 cells a side (not 19) and hold 2048 parts "
-                    "(not 250). Off in online multiplayer unless the host allows cheats.");
 
 REX_EXTERN(__imp__sub_8254CEF0);  // spawns a vehicle from its blueprint
 REX_EXTERN(__imp__sub_8250FD28);  // a blueprint's per-part flags (parts left out)
 REX_EXTERN(__imp__sub_82633BA0);  // whether the world lets the editor's cursor move
 
 namespace {
+
+struct VehicleLimitSettings final : rex::SettingOwner {
+  VehicleLimitSettings() : rex::SettingOwner(renut::settings::kScope) { renut::settings::Add(*this); }
+  REX_SETTING(bool, unlimited_vehicle_building, false,
+              "Vehicles in the garage can span 128 cells a side (not 19) and hold 2048 parts "
+              "(not 250). Off in online multiplayer unless the host allows cheats.");
+};
+VehicleLimitSettings &g_limits = *new VehicleLimitSettings();  // never freed, registered by RenutApp::OnConfigure
 
 using renut::guest::Load16;
 
@@ -67,7 +31,7 @@ constexpr uint32_t kMaxParts = 2048;
 constexpr uint32_t kStackParts = 250;
 
 bool Enabled() {
-  return REXCVAR_GET(unlimited_vehicle_building) &&
+  return g_limits.unlimited_vehicle_building.Get() &&
          (!renut::online::InSession() || renut::online::SessionAllowsCheats());
 }
 
@@ -93,9 +57,8 @@ void AllowParts(PPCRegister &count) {
     count.u64 = 0;
 }
 
-// The room a spawn function needs under its caller's stack for a blueprint of
-// 'parts': 8 bytes a part, the most any of its arrays takes (sub_8250FD28's
-// sort); none within the arrays.
+// Stack room a spawn function needs for a blueprint of 'parts' past its arrays'
+// 250: 8 bytes a part (sub_8250FD28's sort, the largest).
 uint32_t SpawnRoom(uint32_t parts) {
   return parts <= kStackParts ? 0 : (parts * 8 + 0x10F) & ~0xFu;
 }
@@ -110,10 +73,8 @@ void RestoreCaller(PPCContext &ctx, const PPCContext &caller) {
 
 }  // namespace
 
-// sub_82633230, before the span test: the vehicle's and the held part's cells
-// together (largest r11, smallest r10). True goes to the cursor clamp that
-// keeps it in that box (0x82633600); a span past the limit goes on to the
-// game's pull-back, which the hooks below make pull back to it.
+// sub_82633230, before the span test (cells: largest r11, smallest r10): true
+// when the span fits kMaxSpan, skipping the game's 19-cell pull-back.
 bool VehicleSize_fits(PPCRegister &r10, PPCRegister &r11) {
   if (!Enabled())
     return false;

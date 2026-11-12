@@ -12,19 +12,22 @@
 #include <span>
 #include <map>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
-#include <rex/logging.h>
-#include <rex/runtime.h>
-#include <rex/system/kernel_state.h>
-#include <rex/system/util/xdbf_utils.h>
-#include <rex/ui/overlay/achievement_icon_cache.h>
+#include <rex/filesystem/xdbf.h>
+#include <rex/kernel/title_paths.h>
+#include <rex/kernel/title_runtime.h>
+#include <rex/ppc/image.h>
+#include <rex/setting.h>
+#include <rex/xam/achievement_manager.h>
 
 #include "guide_dialog.h"
 #include "image.h"
 #include "live_sessions.h"
 #include "live_stats.h"
+#include "log.h"
 
 namespace rexglue_guide {
 
@@ -32,12 +35,12 @@ using namespace ui;
 using assets::Sound;
 
 void GuideDialog::AchievementsRows(std::vector<Row>& rows, Page&) {
-  auto* kernel = REX_KERNEL_STATE();
-  if (!kernel) {
+  auto* runtime = REX_RUNTIME();
+  if (!runtime) {
     rows.push_back({.label = "Achievements load with the game", .disabled = true});
     return;
   }
-  auto& manager = kernel->achievements();
+  auto& manager = runtime->GetAchievementManager();
   auto list = manager.ListAchievements();
   std::stable_sort(list.begin(), list.end(), [&](const auto& a, const auto& b) {
     return manager.IsUnlocked(a.id) > manager.IsUnlocked(b.id);
@@ -84,10 +87,10 @@ void GuideDialog::LeaderboardsRows(std::vector<Row>& rows, Page&) {
 }
 
 std::string GuideDialog::CurrentTitleId() const {
-  auto* kernel = REX_KERNEL_STATE();
-  if (!kernel) return "";
+  auto* runtime = REX_RUNTIME();
+  if (!runtime) return "";
   char title_id[9];
-  std::snprintf(title_id, sizeof(title_id), "%08X", kernel->title_id());
+  std::snprintf(title_id, sizeof(title_id), "%08X", runtime->GetTitleID());
   return title_id;
 }
 
@@ -189,9 +192,9 @@ void GuideDialog::PlayerGameRows(std::vector<Row>& rows, Page& page) {
   // The game running here has its achievements' pictures and descriptions;
   // others have only what the server keeps.
   const bool running = title_id == CurrentTitleId();
-  std::map<uint32_t, rex::system::AchievementInfo> local;
-  if (auto* kernel = running ? REX_KERNEL_STATE() : nullptr) {
-    for (const auto& a : kernel->achievements().ListAchievements()) local[a.id] = a;
+  std::map<uint32_t, rex::Achievement> local;
+  if (auto* runtime = running ? REX_RUNTIME() : nullptr) {
+    for (const auto& a : runtime->GetAchievementManager().ListAchievements()) local[a.id] = a;
   }
   for (const BoardPlace& b : f.value.boards) {
     Row row{.label = b.name,
@@ -255,9 +258,9 @@ void GuideDialog::LeaderboardRows(std::vector<Row>& rows, Page& page) {
 }
 
 std::string GuideDialog::AchievementSummary() {
-  auto* kernel = REX_KERNEL_STATE();
-  if (!kernel) return "";
-  auto& manager = kernel->achievements();
+  auto* runtime = REX_RUNTIME();
+  if (!runtime) return "";
+  auto& manager = runtime->GetAchievementManager();
   int total = 0, unlocked = 0;
   for (const auto& a : manager.ListAchievements()) {
     ++total;
@@ -266,12 +269,25 @@ std::string GuideDialog::AchievementSummary() {
   return total ? std::to_string(unlocked) + " of " + std::to_string(total) : "";
 }
 
+void GuideDialog::DropAchievementListener() {
+  if (!achievement_runtime_) return;
+  if (REX_RUNTIME() == achievement_runtime_) {
+    achievement_listener_.Reset();
+  } else {
+    // Its title has unloaded with the manager the guard would remove it from.
+    (void)new rex::ScopeGuard(std::move(achievement_listener_));
+  }
+  achievement_runtime_ = nullptr;
+}
+
 void GuideDialog::WatchAchievements() {
-  if (achievement_listener_) {
-    std::vector<rex::system::AchievementEvent> events;
+  // A title loaded or unloaded since: the callback belongs to the one loaded now.
+  if (REX_RUNTIME() != achievement_runtime_) DropAchievementListener();
+  if (achievement_runtime_) {
+    std::vector<rex::xam::AchievementEvent> events;
     {
-      std::lock_guard lock(unlock_mutex_);
-      events.swap(unlocks_);
+      std::lock_guard lock(unlocks_->mutex);
+      events.swap(unlocks_->events);
     }
     for (const auto& e : events) {
       Toast t;
@@ -283,22 +299,23 @@ void GuideDialog::WatchAchievements() {
     }
     return;
   }
-  auto* kernel = REX_KERNEL_STATE();
-  if (!kernel) return;
-  achievement_listener_ = kernel->achievements().RegisterUnlockCallback(
-      [this](const rex::system::AchievementEvent& e) {
-        std::lock_guard lock(unlock_mutex_);
-        unlocks_.push_back(e);
+  auto* runtime = REX_RUNTIME();
+  if (!runtime) return;
+  achievement_listener_ = runtime->GetAchievementManager().RegisterNotificationCallback(
+      [unlocks = unlocks_](const rex::xam::AchievementEvent& e) {
+        std::lock_guard lock(unlocks->mutex);
+        unlocks->events.push_back(e);
       });
+  achievement_runtime_ = runtime;
 }
 
 void GuideDialog::ReportTitle() {
   if (time_ - last_report_ < 5.0f) return;
   last_report_ = time_;
-  auto* kernel = REX_KERNEL_STATE();
-  if (!kernel) return;
+  auto* runtime = REX_RUNTIME();
+  if (!runtime) return;
   char title_id[9];
-  std::snprintf(title_id, sizeof(title_id), "%08X", kernel->title_id());
+  std::snprintf(title_id, sizeof(title_id), "%08X", runtime->GetTitleID());
   // Every player is playing; achievements are player 1's (the runtime's
   // profile).
   for (auto& b : backends_) {
@@ -307,7 +324,7 @@ void GuideDialog::ReportTitle() {
   Backend* player1 = backends_[0].get();
   if (!player1->signed_in() || !player1->connected()) return;
   sessions::RefreshFriendSessions();
-  auto& manager = kernel->achievements();
+  auto& manager = runtime->GetAchievementManager();
   // The game's name, achievement totals and named leaderboards, for profiles
   // and the server's list of games (sent once a session).
   uint32_t achievements_total = 0, gamerscore_total = 0;
@@ -323,38 +340,46 @@ void GuideDialog::ReportTitle() {
   for (const auto& a : manager.ListAchievements()) {
     if (!manager.IsUnlocked(a.id)) continue;
     // FILETIME (100 ns since 1601) to unix seconds.
-    const uint64_t ft = manager.GetUnlockTime(a.id);
+    const uint64_t ft = manager.GetUnlockTime(a.id).value_or(0);
     const int64_t unix_time = ft ? int64_t(ft / 10000000ULL) - 11644473600LL : int64_t(std::time(nullptr));
     unlocked.push_back({a.id, a.gamerscore, a.label, unix_time});
   }
   player1->ReportAchievements(title_id, unlocked);
 }
 
-ImTextureID GuideDialog::AchievementIcon(const rex::system::AchievementInfo& info) {
-  if (!icon_cache_) {
-    auto* kernel = REX_KERNEL_STATE();
-    rex::Runtime* runtime = kernel ? kernel->emulator() : nullptr;
-    if (!runtime || !config_.immediate_drawer) return 0;
-    icon_cache_ = std::make_unique<rex::ui::AchievementIconCache>(config_.immediate_drawer, runtime);
-  }
-  return reinterpret_cast<ImTextureID>(icon_cache_->GetIcon(info));
-}
-
 namespace {
 
-// An achievement's icon file where the runtime looks for it
-// (rex::ui::AchievementIconCache): its own metadata path, icons/<image id>.png
-// in the metadata, then the title's XDBF image. Empty if none.
-std::string AchievementIconFile(rex::system::KernelState* kernel, const rex::system::AchievementInfo& info) {
-  rex::Runtime* runtime = kernel->emulator();
-  auto metadata = [runtime](const std::filesystem::path& relative) -> std::string {
-    if (!runtime || relative.empty()) return {};
-    if (const auto path = runtime->FindMetadataPath(relative)) {
+// A metadata file where the runtime looks for one: only in title.metadata_root when it's set,
+// otherwise in <game>/metadata, <game>/../metadata, then <game>.
+std::optional<std::filesystem::path> FindMetadataPath(rex::kernel::TitleRuntime& runtime,
+                                                      const std::filesystem::path& relative) {
+  rex::kernel::TitlePaths& paths = runtime.GetTitlePaths();
+  std::vector<std::filesystem::path> roots;
+  if (paths.metadata_root.GetLayer() != rex::SettingLayer::kDefault) {
+    roots.push_back(paths.metadata_root.Get());
+  } else {
+    const std::filesystem::path game = paths.game_root.Get();
+    roots = {game / "metadata", game.parent_path() / "metadata", game};
+  }
+  for (const auto& root : roots) {
+    std::error_code ec;
+    const std::filesystem::path path = root / relative;
+    if (std::filesystem::is_regular_file(path, ec)) return path;
+  }
+  return std::nullopt;
+}
+
+// An achievement's icon file where the runtime looks for it: its own metadata path, icons/<image
+// id>.png in the metadata, then the title's XDBF image. Empty if none.
+std::string AchievementIconFile(rex::kernel::TitleRuntime& runtime, const rex::Achievement& info) {
+  auto metadata = [&runtime](const std::filesystem::path& relative) -> std::string {
+    if (relative.empty()) return {};
+    if (const auto path = FindMetadataPath(runtime, relative)) {
       if (std::ifstream file(*path, std::ios::binary); file) {
         return std::string((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
       }
     }
-    if (const auto embedded = runtime->FindEmbeddedMetadata(relative)) {
+    if (const auto embedded = rex::ppc::FindEmbeddedMetadataAsset(relative)) {
       return std::string(reinterpret_cast<const char*>(embedded->bytes.data()), embedded->bytes.size());
     }
     return {};
@@ -362,9 +387,9 @@ std::string AchievementIconFile(rex::system::KernelState* kernel, const rex::sys
   std::string file = metadata(info.icon_path);
   if (file.empty() && info.image_id) file = metadata(std::filesystem::path("icons") / (std::to_string(info.image_id) + ".png"));
   if (file.empty() && info.image_id) {
-    const auto xdbf = kernel->title_xdbf();
-    if (xdbf.is_valid()) {
-      if (const auto block = xdbf.GetEntry(rex::system::util::XdbfSection::kImage, info.image_id)) {
+    const auto xdbf = runtime.GetTitleXDBF();
+    if (xdbf && xdbf->IsValid()) {
+      if (const auto block = xdbf->GetEntry(rex::filesystem::XDBFSection::kImage, info.image_id)) {
         file.assign(reinterpret_cast<const char*>(block.buffer), block.size);
       }
     }
@@ -374,26 +399,39 @@ std::string AchievementIconFile(rex::system::KernelState* kernel, const rex::sys
 
 }  // namespace
 
+ImTextureID GuideDialog::AchievementIcon(const rex::Achievement& info) {
+  auto* runtime = REX_RUNTIME();
+  if (!runtime) return 0;
+  const uint64_t key = uint64_t(runtime->GetTitleID()) << 32 | info.id;
+  if (auto it = achievement_icons_.find(key); it != achievement_icons_.end()) return it->second;
+  const std::string file = AchievementIconFile(*runtime, info);
+  const ImTextureID icon =
+      file.empty() ? ImTextureID(0)
+                   : textures_.Picture("achievement:" + std::to_string(key),
+                                       std::span(reinterpret_cast<const uint8_t*>(file.data()), file.size()));
+  return achievement_icons_[key] = icon;
+}
+
 // An admin's Guide gives the server the running game's achievement icons it
 // hasn't got, so profiles show them to anyone (once a session).
 void GuideDialog::UploadAchievementIcons(Backend& backend, const std::string& title_id) {
   if (!backend.is_admin() || achievement_icons_checked_ == title_id) return;
   achievement_icons_checked_ = title_id;
   backend.AchievementIconIds(title_id, [this, &backend, title_id](const Result& r, std::vector<uint32_t> have) {
-    auto* kernel = REX_KERNEL_STATE();
-    if (!r.ok || !kernel) {
+    auto* runtime = REX_RUNTIME();
+    if (!r.ok || !runtime) {
       achievement_icons_checked_.clear();  // again on a later report
       return;
     }
     int sent = 0;
-    for (const auto& a : kernel->achievements().ListAchievements()) {
+    for (const auto& a : runtime->GetAchievementManager().ListAchievements()) {
       if (std::find(have.begin(), have.end(), a.id) != have.end()) continue;
-      std::string file = AchievementIconFile(kernel, a);
+      std::string file = AchievementIconFile(*runtime, a);
       if (file.empty()) continue;
       backend.UploadAchievementIcon(title_id, a.id, std::move(file), nullptr);
       ++sent;
     }
-    if (sent) REXLOG_INFO("Rexglue Guide: uploading {} achievement icon(s) for {}", sent, title_id);
+    if (sent) RG_INFO("Rexglue Guide: uploading {} achievement icon(s) for {}", sent, title_id);
   });
 }
 

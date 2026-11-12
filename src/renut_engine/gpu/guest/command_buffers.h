@@ -1,23 +1,3 @@
-/**
- * @file    gpu/guest/command_buffers.h
- * @brief   D3D command buffers: draws recorded on one device, run on another.
- *
- * N&B records parts of its frame on worker threads, each with its own device
- * between D3DDevice_BeginCommandBuffer and EndCommandBuffer, and runs the
- * buffers on the title device with D3DDevice_RunCommandBuffer. The hooked
- * draw, clear and resolve calls of a recording device are kept with a copy of
- * the device state they read, and replayed through the same draw path when
- * the buffer runs. The guest buffer still gets the originals' packets for the
- * calls that are not replaced; nothing reads them.
- *
- * Every buffer N&B records inherits the vertex and pixel shader float
- * constants: those it does not set itself come from the running device.
- *
- * The recorded buffers have a lock of their own, which these functions take;
- * none of them needs State().mutex. A run is queued for the render thread
- * with the buffers as they are at the call (a buffer recorded again later is
- * a new one), so the game may record the next frame's while it replays.
- */
 #pragma once
 
 #include <rex/types.h>
@@ -33,8 +13,7 @@ bool IsRecordingCommandBuffer(u32 device_va);
 void BeginRecording(u32 device_va, u32 command_buffer_va);
 
 // Records a draw on a recording device. 'up_vertex_bytes' / 'up_index_bytes'
-// are the sizes of call.up_vertices / call.up_indices, copied now, as the GPU
-// copies them into the buffer.
+// are the sizes of call.up_vertices / call.up_indices, copied now.
 void RecordDraw(u32 device_va, const DrawCall &call, u32 up_vertex_bytes, u32 up_index_bytes);
 
 // Records a Begin*Vertices draw whose 'bytes' of vertex data the game writes
@@ -56,22 +35,9 @@ void RecordRun(u32 device_va, u32 command_buffer_va);
 void FlushRecordedVertices(u32 device_va);
 
 // D3DDevice_RunCommandBuffer on a device that is not recording: queues the
-// buffer's replay on it, with the device's state now (the constants the
-// buffer inherits).
+// buffer's replay with the device's current state (its inherited constants).
 void QueueRunCommandBuffer(u32 device_va, u32 command_buffer_va);
 
 void ReleaseCommandBuffer(u32 command_buffer_va);
-
-// For the memory report: the capacity of the recordings the game's command
-// buffers hold now, and of the spare recordings kept for reuse; 'live'
-// counts every recording, including older ones queued runs still hold.
-struct CommandBufferMemory {
-  size_t recorded_bytes = 0;
-  size_t recorded = 0;
-  size_t spare_bytes = 0;
-  size_t spare = 0;
-  size_t live = 0;
-};
-CommandBufferMemory CommandBufferMemoryUsage();
 
 } // namespace renut::gpu

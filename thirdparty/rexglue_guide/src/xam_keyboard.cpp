@@ -8,19 +8,23 @@
 #include <string>
 #include <thread>
 
-#include <rex/logging.h>
+#include <rex/kernel/thread_registry.h>
+#include <rex/kernel/types/status.h>
+#include <rex/module.h>
 #include <rex/ppc/context.h>
-#include <rex/system/kernel_state.h>
-#include <rex/system/xtypes.h>
 
 #include "guest.h"
 #include "keyboard.h"
+#include "log.h"
 
 namespace {
 
 using namespace rexglue_guide::guest;
-// The X_ERROR_* macros use it unqualified.
-using rex::X_RESULT;
+using rex::kernel::X_RESULT;
+using rex::kernel::X_ERROR_CANCELLED;
+using rex::kernel::X_ERROR_INVALID_PARAMETER;
+using rex::kernel::X_ERROR_IO_PENDING;
+using rex::kernel::X_ERROR_SUCCESS;
 
 // VKBD_LATIN_PASSWORD: show * for each character.
 constexpr uint32_t kPasswordFlag = 0x00000080;
@@ -74,7 +78,7 @@ extern "C" REX_FUNC(__imp__XamShowKeyboardUI) {
   if (!rexglue_guide::ShowTitleKeyboard(std::move(request))) {
     return CallOriginal("__imp__XamShowKeyboardUI", ctx, base);
   }
-  REXKRNL_INFO("Rexglue Guide: XamShowKeyboardUI (flags {:08X}, up to {} characters)", flags, buffer_length - 1);
+  RG_INFO("Rexglue Guide: XamShowKeyboardUI (flags {:08X}, up to {} characters)", flags, buffer_length - 1);
 
   auto run = [buffer, buffer_length, result](uint32_t& extended_error, uint32_t& length) -> X_RESULT {
     const std::optional<std::string> text = result.get();
@@ -89,13 +93,22 @@ extern "C" REX_FUNC(__imp__XamShowKeyboardUI) {
   };
   // System UI up while it's shown; gone a little after, for titles that only
   // start listening once the overlapped completes.
-  auto pre = [] { REX_KERNEL_STATE()->BroadcastNotification(kNotifySystemUi, 1); };
+  auto pre = [] { Broadcast(kNotifySystemUi, 1); };
   auto post = [] {
     std::this_thread::sleep_for(std::chrono::milliseconds(100));
-    REX_KERNEL_STATE()->BroadcastNotification(kNotifySystemUi, 0);
+    Broadcast(kNotifySystemUi, 0);
   };
   if (overlapped) {
-    REX_KERNEL_STATE()->CompleteOverlappedDeferredEx(run, overlapped, pre, post);
+    if (auto* dispatcher = REX_INTERFACE(rex::kernel::IOverlappedDispatcher)) {
+      dispatcher->CompleteDeferred(
+          overlapped,
+          [run]() -> rex::kernel::CompletionOptions {
+            uint32_t extended_error = 0, length = 0;
+            const X_RESULT status = run(extended_error, length);
+            return {.result = status, .extended_error = extended_error, .length = length};
+          },
+          pre, post);
+    }
     return Return(ctx, X_ERROR_IO_PENDING);
   }
   pre();

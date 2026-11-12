@@ -1,8 +1,3 @@
-/**
- * @file    game/vehicle_drivers.h
- * @brief   The Remote Control (vehicle_drivers.cpp): a vehicle driven by a pad
- *          of reNut's own.
- */
 #pragma once
 
 #include <cstdint>

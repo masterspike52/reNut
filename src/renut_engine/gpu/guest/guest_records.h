@@ -1,14 +1,3 @@
-/**
- * @file    gpu/guest/guest_records.h
- * @brief   Host records for guest D3D objects, living in guest-visible memory.
- *
- * The renderer creates the D3D objects the game asks for itself. Each record
- * starts with the X360 struct the game reads (D3DResource header, fetch
- * constant...) and continues with the host state behind it, so the guest VA
- * the game holds is the record. Records come from one o1heap over a block of
- * the guest physical window, and a registry marks which VAs are ours: any
- * other VA (bundle-embedded resources, sentinels) is foreign.
- */
 #pragma once
 
 #include <cstddef>
@@ -17,7 +6,7 @@
 #include <type_traits>
 #include <utility>
 
-#include <rex/system/kernel_state.h>
+#include <rex/kernel/title_runtime.h>
 #include <rex/types.h>
 
 namespace renut::gpu {
@@ -62,7 +51,7 @@ T *CreateRecord(RecordKind kind, Args &&...args) {
   std::memset(host, 0, sizeof(T));  // defined X360 bytes before the caller fills them
   T *record = new (host) T(std::forward<Args>(args)...);
   record->kind = kind;
-  record->self_va = REX_KERNEL_MEMORY()->HostToGuestVirtual(host);
+  record->self_va = REX_RUNTIME()->GetMembase().HostToGuestVirtual(host);
   records::Register(record->self_va, kind);
   return record;
 }
@@ -82,7 +71,7 @@ T *FindRecord(u32 guest_va, RecordKind kind) {
   RecordKind found;
   if (!guest_va || !records::Lookup(guest_va, &found) || found != kind)
     return nullptr;
-  return REX_KERNEL_MEMORY()->TranslateVirtual<T *>(guest_va);
+  return REX_RUNTIME()->GetMembase().TranslateVirtual<T *>(guest_va);
 }
 
 } // namespace renut::gpu

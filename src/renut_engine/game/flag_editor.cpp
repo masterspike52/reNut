@@ -1,36 +1,12 @@
-/**
- * @file    game/flag_editor.cpp
- * @brief   Player 1's game flags and counters, by the game's own names.
- *
- * N&B (TU3, IDA): sub_8223AD58 fills the table set at dword_82DF1CDC at
- * startup: + 0 the counter count (247) and + 4 their names; + 20 / + 28 /
- * + 36 the normal (1817), global (274) and volatile (2) flag counts, each
- * followed by its names. A name's index is the game's id (gameFlagsSetFlag,
- * sub_824AC030's name lookup), 0 being the unused "..._Null".
- *
- * The player's profile (dword_82E1B280[player], what sub_82212D18 returns;
- * sub_82286FD0 builds it) holds a bit set per flag table at + 276 / + 280 /
- * + 284 ({bit count, byte count, data}; id i is bit i & 7 of byte i >> 3,
- * gameFlagsSetFlag and sub_82332930 setting and clearing them) and the
- * counters at + 308 (int32 by id; notes are id 90, notes.cpp). Saving
- * (sub_824E8838 → sub_824E9148) writes all of them; sub_824E8FA0 marks the
- * profile changed for it, as the game's own setters do.
- *
- * Changes are made between the game's frames on its main thread (sub_82283BB0,
- * a pass of its main loop, menus included), straight into the profile: what
- * the game's setters do on top (gameFlagsSetFlag awarding achievements for
- * finished sets) isn't done.
- */
 #include "renut_engine/game/flag_editor.h"
 
-#include <rex/hook.h>
-#include <rex/system/kernel_state.h>
+#include <rex/kernel/title_runtime.h>
+#include <rex/ppc/hook.h>
 #include <rex/types.h>
 
 #include <array>
 #include <mutex>
 
-#include "renut_engine/app/renut_logging.h"
 #include "renut_engine/game/cheats.h"
 #include "renut_engine/game/guest_call.h"
 #include "renut_engine/online/online.h"
@@ -65,11 +41,11 @@ std::array<std::vector<std::string>, kTableCount> g_names;
 std::vector<Edit> g_pending;
 
 uint32_t Read32(uint32_t va) {
-  return rex::byte_swap(*REX_KERNEL_MEMORY()->TranslateVirtual<uint32_t *>(va));
+  return rex::byte_swap(*REX_RUNTIME()->GetMembase().TranslateVirtual<uint32_t *>(va));
 }
 
 uint8_t *Bytes(uint32_t va) {
-  return REX_KERNEL_MEMORY()->TranslateVirtual<uint8_t *>(va);
+  return REX_RUNTIME()->GetMembase().TranslateVirtual<uint8_t *>(va);
 }
 
 uint32_t Count(Table table) {
@@ -105,33 +81,22 @@ int32_t ReadValue(uint32_t profile, Table table, uint32_t index) {
   return (*Bytes(va) >> (index & 7)) & 1;
 }
 
-// Game thread. Whether the value changed; 'log' logs the change.
-bool WriteValue(uint32_t profile, const Edit &edit, bool log) {
+// Game thread. Whether the value changed.
+bool WriteValue(uint32_t profile, const Edit &edit) {
   const uint32_t va = ValueAddress(profile, edit.table, edit.index);
   if (!va)
     return false;
-  const int32_t before = ReadValue(profile, edit.table, edit.index);
-  if (before == edit.value)
+  if (ReadValue(profile, edit.table, edit.index) == edit.value)
     return false;
   if (edit.table == Table::kCounters) {
-    *REX_KERNEL_MEMORY()->TranslateVirtual<uint32_t *>(va) = rex::byte_swap(uint32_t(edit.value));
+    *REX_RUNTIME()->GetMembase().TranslateVirtual<uint32_t *>(va) =rex::byte_swap(uint32_t(edit.value));
   } else {
     const uint8_t bit = uint8_t(1u << (edit.index & 7));
     uint8_t *byte = Bytes(va);
     *byte = edit.value ? uint8_t(*byte | bit) : uint8_t(*byte & ~bit);
   }
-  if (log) {
-    // The names were read before anything could be changed.
-    const auto &names = g_names[int(edit.table)];
-    RNUT_INFO("Flag editor: {} {} -> {}",
-              edit.index < names.size() ? names[edit.index] : std::to_string(edit.index), before,
-              edit.value);
-  }
   return true;
 }
-
-// More changes at once than this (all shown on or off) are logged as a count.
-constexpr size_t kLoggedEdits = 8;
 
 void ApplyPending(PPCContext &ctx, uint8_t *base) {
   std::vector<Edit> edits;
@@ -141,22 +106,18 @@ void ApplyPending(PPCContext &ctx, uint8_t *base) {
       return;
     edits.swap(g_pending);
   }
+  // Player 1's profile went before the changes were made: they're dropped.
   const uint32_t profile = Profile();
-  if (!profile) {
-    RNUT_WARN("Flag editor: player 1's profile went before {} change(s) were made", edits.size());
+  if (!profile)
     return;
-  }
-  const bool log = edits.size() <= kLoggedEdits;
   size_t changed = 0;
   for (const Edit &edit : edits)
-    changed += WriteValue(profile, edit, log);
+    changed += WriteValue(profile, edit);
   if (!changed)
     return;
-  if (!log)
-    RNUT_INFO("Flag editor: {} value(s) changed", changed);
   renut::game::SaveEdited();
   renut::guest::Guest g(ctx, base);
-  ProfileChanged(g.frame(), base, profile);
+  ProfileChanged(g.ctx(), base, profile);
 }
 
 }  // namespace
@@ -171,7 +132,7 @@ const std::vector<std::string> &Names(Table table) {
       names.reserve(count);
       for (uint32_t i = 0; i < count; ++i) {
         const uint32_t name = Read32(list + 4 * i);
-        names.emplace_back(name ? REX_KERNEL_MEMORY()->TranslateVirtual<const char *>(name) : "");
+        names.emplace_back(name ? REX_RUNTIME()->GetMembase().TranslateVirtual<const char *>(name) : "");
       }
     }
   }
@@ -209,8 +170,7 @@ bool Blocked() {
 
 }  // namespace renut::game::flags
 
-// The game's main loop pass (its frame: input, the game tick, the menus), on
-// its main thread: the editor's changes go in first.
+// The game's main loop pass (sub_82283BB0): the editor's changes go in first.
 REX_HOOK_RAW(sub_82283BB0) {
   renut::game::flags::ApplyPending(ctx, base);
   __imp__sub_82283BB0(ctx, base);

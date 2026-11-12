@@ -11,7 +11,7 @@
 #include <chrono>
 #include <mutex>
 
-#include <rex/ui/windowed_app_context.h>
+#include <rex/ui/ui_system.h>
 
 #include <rexglue_guide/guide.h>
 
@@ -153,15 +153,14 @@ Input::Pad Input::Sample() {
 // the pad as last read there, with the next read queued (one at a time); a
 // frame late at most.
 Input::Pad Input::SdlPad() const {
-  if (!ui_ || ui_->IsInUIThread()) return Sample();
+  if (!ui_ || ui_->IsUIThread()) return Sample();
   if (!sampled_->queued.exchange(true)) {
-    const bool posted = ui_->CallInUIThread([sampled = sampled_] {
+    ui_->PostTask([sampled = sampled_] {
       const Pad p = Sample();
       std::lock_guard lock(sampled->mutex);
       sampled->pad = p;
       sampled->queued = false;
     });
-    if (!posted) sampled_->queued = false;
   }
   std::lock_guard lock(sampled_->mutex);
   return sampled_->pad;

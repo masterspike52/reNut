@@ -28,6 +28,8 @@ void NotifySigninChanged();
 // XShowGamerCardUI from the title: the Guide opens on that player's gamer
 // card, next frame. Any thread.
 void RequestGamercard(uint64_t xuid);
+// The title asked to sign in (XamShowSigninUI): opens the Guide's sign-in screen.
+void RequestSignIn();
 
 // Why leaderboard scores and replays can't be posted now (Config::
 // leaderboard_block), empty when they can. Any thread.

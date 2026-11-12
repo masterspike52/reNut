@@ -1,20 +1,14 @@
 #include "renut_engine/app/workshop.h"
-
 #include <algorithm>
 #include <array>
 #include <climits>
 #include <cstring>
+#include <format>
 #include <fstream>
 #include <iterator>
 #include <system_error>
-
-#include <fmt/format.h>
 #include <nlohmann/json.hpp>
-#include <rex/filesystem.h>
 
-#include "renut_engine/app/renut_logging.h"
-
-// Static, so it can't clash with the stb_image rexglue and the Guide build in.
 #define STB_IMAGE_STATIC
 #define STB_IMAGE_IMPLEMENTATION
 #define STBI_NO_STDIO
@@ -33,17 +27,13 @@ namespace fs = std::filesystem;
 using json = nlohmann::json;
 
 constexpr const char kTitleFolder[] = "4D5307ED";
-constexpr const char kSdkProfile[] = "B13EBABEBABEBABE";  // the SDK's built-in profile
-constexpr const char kSaveType[] = "00000001";            // saved games, vehicles among them
+constexpr const char kSdkProfile[] = "B13EBABEBABEBABE";
+constexpr const char kSaveType[] = "00000001";
 constexpr const char kManifest[] = "renut-workshop.json";
 
 constexpr uint8_t kBlueprintMagic[8] = {0x3F, 0x9A, 0xE1, 0x48, 0x40, 0x54, 0x7A, 0xE1};
 constexpr size_t kBlueprintHeader = 0x84;
 constexpr size_t kBlueprintPart = 36;
-
-// XCONTENT_AGGREGATE_DATA (save_headers.cpp has the layout): device, content
-// type, display name (UTF-16BE, 128 characters), file name at 0x108, title ID
-// at 0x140.
 constexpr size_t kAggregateBytes = 0x148;
 constexpr size_t kDisplayNameChars = 127;
 constexpr uint32_t kDeviceHdd = 1;
@@ -57,7 +47,6 @@ void StoreBe32(uint8_t *p, uint32_t v) {
     p[3] = uint8_t(v);
 }
 
-// UTF-8 to UTF-16 code units (anything malformed becomes '?').
 std::u16string Utf16(const std::string &s) {
     std::u16string out;
     for (size_t i = 0; i < s.size();) {
@@ -116,8 +105,6 @@ void WriteManifest(const fs::path &save, const std::map<std::string, std::string
         j[id] = content;
     std::ofstream file(ManifestPath(save), std::ios::trunc);
     file << j.dump(2);
-    if (!file)
-        RNUT_WARN("Workshop: can't write {}", rex::path_to_utf8(ManifestPath(save)));
 }
 
 std::string Text(const json &j, const char *key) {
@@ -171,8 +158,6 @@ std::vector<uint8_t> Shrink(const std::vector<uint8_t> &rgba, int w, int h, int 
     return out;
 }
 
-// The screenshot as a JPEG of at most 'room' bytes: 640 wide or narrower,
-// lower quality first.
 std::string PreviewJpeg(const fs::path &screenshot, size_t room, std::string *error) {
     const std::string file = ReadFile(screenshot);
     int w = 0, h = 0;
@@ -202,7 +187,7 @@ std::string PreviewJpeg(const fs::path &screenshot, size_t room, std::string *er
     return {};
 }
 
-} // namespace
+}
 
 std::vector<Entry> ParseIndex(const std::string &text, std::string *error) {
     std::vector<Entry> entries;
@@ -265,8 +250,6 @@ bool Install(const fs::path &save, const Entry &entry, const std::string &bluepr
     if (ec)
         return fail("Can't write to the save folder: " + ec.message() + ".");
 
-    // The game numbers its vehicles 0x00000001 up: the next number after
-    // every one in use, by header or by content folder.
     uint32_t next = 1;
     const auto take = [&](const std::string &name) {
         if (name.size() != 10 || name.rfind("0x", 0) != 0)
@@ -279,7 +262,7 @@ bool Install(const fs::path &save, const Entry &entry, const std::string &bluepr
         take(header.path().stem().string());
     for (const auto &folder : fs::directory_iterator(save / kSaveType, ec))
         take(folder.path().filename().string());
-    const std::string content_id = fmt::format("0x{:08x}", next);
+    const std::string content_id = std::format("0x{:08x}", next);
 
     const fs::path file = ContentFile(save, content_id);
     fs::create_directories(file.parent_path(), ec);
@@ -313,7 +296,6 @@ bool Install(const fs::path &save, const Entry &entry, const std::string &bluepr
     auto installed = ReadManifest(save);
     installed[entry.id] = content_id;
     WriteManifest(save, installed);
-    RNUT_INFO("Workshop: {} ({}) added to the save as {}", entry.name, entry.id, content_id);
     return true;
 }
 
@@ -330,7 +312,6 @@ void Remove(const fs::path &save, const std::string &id) {
     }
     installed.erase(it);
     WriteManifest(save, installed);
-    RNUT_INFO("Workshop: {} removed from the save ({})", id, content_id);
 }
 
 std::map<std::string, std::string> Installed(const fs::path &save) {
@@ -374,7 +355,6 @@ std::vector<LocalVehicle> LocalVehicles(const fs::path &save) {
         const std::string header = ReadFile(entry.path());
         if (header.size() < kAggregateBytes)
             continue;
-        // The display name: UTF-16BE at 0x08, "VEHICLE: <name>" for a vehicle.
         std::string name;
         for (size_t i = 0x08; i + 1 < 0x108; i += 2) {
             const uint16_t c = uint16_t(uint8_t(header[i]) << 8 | uint8_t(header[i + 1]));
@@ -394,12 +374,13 @@ std::vector<LocalVehicle> LocalVehicles(const fs::path &save) {
     return vehicles;
 }
 
-std::string BuildSubmission(const fs::path &blueprint_file, const std::string &name, const std::string &description,
-                            const fs::path &screenshot, const fs::path &mods_folder, std::string *error) {
+std::string BuildSubmission(const fs::path &blueprint_file, const std::string &name, const std::string &description, const fs::path &screenshot, const fs::path &mods_folder, std::string *error) 
+{
     const auto fail = [&](std::string message) {
         *error = std::move(message);
         return std::string();
     };
+
     const std::string blueprint = ReadFile(blueprint_file);
     if (!IsBlueprint(blueprint))
         return fail("That vehicle's file is damaged.");
@@ -408,9 +389,6 @@ std::string BuildSubmission(const fs::path &blueprint_file, const std::string &n
     if (screenshot.empty())
         return fail("Choose a screenshot of the vehicle.");
 
-    // The custom parts in it: each part record (36 bytes after the header)
-    // holds its part's asset id at offset 8; reNut remembers every mod
-    // part's in the mods folder.
     const size_t parts = size_t(uint8_t(blueprint[8])) << 8 | uint8_t(blueprint[9]);
     std::vector<uint32_t> aids;
     for (size_t i = 0; i < parts; ++i)
@@ -424,12 +402,11 @@ std::string BuildSubmission(const fs::path &blueprint_file, const std::string &n
             if (aid && std::find(aids.begin(), aids.end(), aid) != aids.end())
                 custom.push_back({{"id", Text(p, "id")}, {"mod", Text(p, "mod")}});
         }
+
     } catch (...) {
-        // No mods, or none remembered: no custom parts.
+
     }
 
-    // GitHub takes an issue of 65536 characters: the blueprint, the text and
-    // the custom parts first, the picture in what is left.
     const std::string blueprint64 = Base64(blueprint.data(), blueprint.size());
     const long long left = 60000 - (long long)blueprint64.size() - (long long)description.size() * 6 -
                            (long long)custom.dump().size() * 2;
@@ -447,8 +424,7 @@ std::string BuildSubmission(const fs::path &blueprint_file, const std::string &n
     submission["blueprint"] = blueprint64;
     submission["preview"] = Base64(jpeg.data(), jpeg.size());
     submission["custom_parts"] = custom;
-    // Typed text that isn't valid UTF-8 is mended, not thrown on.
     return submission.dump(-1, ' ', false, nlohmann::ordered_json::error_handler_t::replace);
 }
 
-} // namespace renut::workshop
+}

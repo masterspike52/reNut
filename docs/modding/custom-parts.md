@@ -1,5 +1,11 @@
 # Making custom vehicle parts
 
+> This page is about parts in **`.nbpatch` files**, made with NB Studio or renut-modtool, whose
+> scripts run in a small sandbox. Parts can also be added from a **Lua mod folder**
+> (`renut.parts.add`), with far more to work with: weapons, any projectile, forces at a point,
+> resources, events for every vehicle. See [lua-parts.md](../lua-mods/lua-parts.md), and [README.md](../lua-mods/README.md)
+> for every modding page. The field offsets and the rules for wheels below apply to both.
+
 reNut loads new vehicle parts from `.nbpatch` mods. A part mod is just data: part files, optional Lua scripts and optional
 models. Nobody has to change reNut to use one. Players drop the `.nbpatch` into reNut's `mods` folder, and the parts are in
 their garage, already owned.
@@ -261,12 +267,12 @@ simply ends then. Wrap the call in `pcall` if you need to know.
 ### Effects
 
 `fx.play(effect, position)` plays a game particle effect, by ID as text (`"0x4582A557"`). It returns `true` if it played.
-An effect the current level hasn't loaded is skipped, with a warning in the log. The list of every effect, and which ones
-work everywhere, is in [effects.md](effects.md).
+An effect the current level hasn't loaded is skipped. The list of every effect, and which ones work everywhere, is in
+[effects.md](../lua-mods/effects.md).
 
 ### Log
 
-`log(...)` and `print(...)` write to reNut's log, which is handy while testing.
+`log(...)` and `print(...)` are there so scripts that call them still run, but they do nothing.
 
 ### Sandbox
 
@@ -274,8 +280,8 @@ Scripts get Lua 5.4's base functions without file or code loading, plus `math`, 
 no `io`, `os`, `require` or `load`.
 
 - **Run time:** one event may run up to 5 million Lua instructions; a longer one is stopped with an error.
-- **Errors:** they go to the log with your part's name and line number. After 20 errors the script is switched off for
-  the session, and the part stays as a plain copy of its base.
+- **Errors:** after 20 errors the script is switched off for the session, and the part stays as a plain copy of its
+  base. A script that doesn't load at all is switched off straight away.
 
 ## Custom models
 
@@ -375,7 +381,7 @@ In the part file:
 ```
 
 The collision always comes with the model. If a model isn't found when the game runs (for example, its bundle is missing
-from the patch), the part keeps its base's model, and the log says why.
+from the patch), the part keeps its base's model.
 
 ## Custom wheels
 
@@ -429,7 +435,7 @@ script. What the game does with wheels sets a few rules:
    changes none.
 
 The workspace's own changes go into the same patch. Executable mods ("After-Party" mods) and world edits don't apply in
-reNut (the log says so), so for a parts-only mod, use a workspace without them.
+reNut, so for a parts-only mod, use a workspace without them.
 
 To check a patch, open it as a zip. It should hold `patch.json`, your `parts/...` files and, with models, `d/0000.bin`
 entries listed in `patch.json` as `Bundle/50/...` (and `Bundle/4f/...`) with kind `new`.
@@ -471,31 +477,19 @@ version replaces the old one.
 
 ## Testing and troubleshooting
 
-reNut's log (`logs/renut_<n>.log` next to `renut.exe`) reports each step. A working part mod logs:
-
-```
-mods: loaded 'My Mod' 1 (My Mod.nbpatch) by You: 1 file(s), 2 part(s)
-mods: My Mod: part 'mymod_teleporter' (Teleporter), from banjox_vehicleblock_gadgets_horn, scripted by parts/teleporter.lua, model banjox_vehicleparts_mymod_teleporter
-mods: My Mod: bundle 50/xxxxxx loaded
-Custom part 'mymod_teleporter' (My Mod) is in the game: asset ..., from banjox_vehicleblock_gadgets_horn
-Custom parts: 2 part(s) added to the garage inventory
-```
-
-| Problem | Look for |
+| Problem | Likely cause |
 |---|---|
 | reNut stops after the Microsoft logo | The patch has models but no part files: they weren't in `parts\`. Check Part Files and Create Distributable Patch refuse this; move them and make the patch again. |
-| The mod doesn't load | `mods: ... skipped: ...` says why: a bad part file (with the file and the problem), a duplicate mod id, or another mod changing the same game file. |
-| A part is missing | `part '...' skipped: an earlier mod has a part with that id` (rename yours), or `its base part ... does not exist` (check `base`). |
-| The part isn't in the garage | `the garage has no category ... / type ... for it`: the base's grouping wasn't found. Try another base. |
-| Wrong or no model | `... is in no loaded bundle; it keeps its base part's`: the bundle isn't in the patch, or `model`/`attach` doesn't match the ids in `models.json`. |
+| The mod doesn't load | A bad part file, a mod id another loaded mod already has, or another mod changing the same game file. Run Check Part Files (or `renut-modtool build`) to find a bad part file. |
+| A part is missing | An earlier mod has a part with that id (rename yours), or its `base` part doesn't exist (check `base`). |
+| The part isn't in the garage | The garage has no category or type for the base's grouping. Try another base. |
+| Wrong or no model | The bundle isn't in the patch, or `model`/`attach` doesn't match the ids in `models.json`. |
 | A wheel's model doesn't turn | `"spins": true` is missing. |
 | Two of your wheels disappear (one alone shows) | Its geometry isn't on the wheel's turning part. Build with the current tools: they only put `spins` geometry there, and name the materials that work. |
 | A wheel sinks into the ground | One wheel: `"collisionFit": "model"` is missing. Two or more: `0x3C8` in the part's `fields` doesn't match the model's radius. |
 | A wheel doesn't stay on the vehicle | Wheels don't attach to seats; put a block in between. |
-| The script does nothing | `Part script ...` errors with line numbers. Is the event name spelled right (`on_button_down`)? |
-| An effect doesn't show | `effect ... isn't loaded here`: use one marked *anywhere (common)* in [effects.md](effects.md). |
-
-To find an effect, turn on `renut_log_effects` in reNut's settings (F4, Debug), then do what shows the effect in the game.
+| The script does nothing | The script has an error, or failed 20 times and was switched off. Is the event name spelled right (`on_button_down`)? |
+| An effect doesn't show | The current level hasn't loaded it: use one marked *anywhere (common)* in [effects.md](../lua-mods/effects.md). |
 
 ## Players, saves and removed mods
 
@@ -513,4 +507,4 @@ To find an effect, turn on `renut_log_effects` in reNut's settings (F4, Debug), 
 - Two mods can't change the same game file; the later one is skipped. Part mods made as above add only their own files,
   so they don't clash with each other.
 - reNut applies game files and parts. NB Studio's executable mods (default.xex patches) and world edits in a patch are
-  not applied (the log says so).
+  not applied.

@@ -14,8 +14,10 @@
 #include <utility>
 #include <vector>
 
-#include <rex/system/achievement_manager.h>
-#include <rex/ui/imgui_dialog.h>
+#include <rex/title.h>
+#include <rex/ui/ui_system.h>
+#include <rex/utility.h>
+#include <rex/xam/achievement_manager.h>
 #include <rexglue_guide/guide.h>
 
 #include "backend.h"
@@ -28,25 +30,17 @@
 #include "themes.h"
 #include "ui.h"
 
-namespace rex {
-class ReXApp;
-}
-namespace rex::ui {
-class AchievementIconCache;
-class ImGuiDrawer;
-}  // namespace rex::ui
-
 namespace rexglue_guide {
 
 // App menus (AddMenu), in the order added. Any thread.
 std::vector<std::shared_ptr<const MenuDef>> AppMenus();
 std::shared_ptr<const MenuDef> FindAppMenu(std::string_view id);
 
-class GuideDialog final : public rex::ui::ImGuiDialog {
+class GuideDialog final : public rex::ui::DialogBase {
  public:
-  GuideDialog(rex::ReXApp* app, rex::ui::ImGuiDrawer* drawer, Config config);
+  GuideDialog(rex::ui::IUISystem& ui, Config config);
   ~GuideDialog() override;
-  void OnDraw(ImGuiIO& io) override;
+  bool Draw(ImGuiIO& io) override;
   // The Guide, its sign-in screen or the on-screen keyboard is up (or the
   // buttons that closed it are still held).
   bool input_held() const {
@@ -105,6 +99,7 @@ class GuideDialog final : public rex::ui::ImGuiDialog {
   // closes it), and the title hears system UI is up until it closes, as it
   // would on a console.
   void ShowTitleGamercard(uint64_t xuid);
+  void ShowTitleSignIn();
   void AddFriend();
   void AnswerRequest(const std::string& gamertag);
   void OpenNotification(const Notification& n);
@@ -126,7 +121,7 @@ class GuideDialog final : public rex::ui::ImGuiDialog {
   void WatchAchievements();
   // Presence and unlocked achievements for the server, every few seconds.
   void ReportTitle();
-  ImTextureID AchievementIcon(const rex::system::AchievementInfo& info);
+  ImTextureID AchievementIcon(const rex::Achievement& info);
   void UploadAchievementIcons(Backend& backend, const std::string& title_id);
   // Another player's achievement's icon from the server (*loading while it downloads).
   ImTextureID RemoteAchievementIcon(const std::string& title_id, uint32_t id, int64_t version, bool* loading);
@@ -188,6 +183,23 @@ class GuideDialog final : public rex::ui::ImGuiDialog {
   // mouse is the list's (over it, for a window).
   ListInput HandleList(const NavInput& in, ListView& view, Page& page, bool mouse);
   void Activate(const Row& row);
+
+  // guide_menu_rows.cpp -------------------------------------------------------
+  struct LegendHint {
+    char button;  // the pad's
+    std::string key;  // the keyboard's
+    std::string label;
+  };
+  struct InnerMouse {
+    bool clicked = false;  // something in a row took the click
+    bool wheel = false;    // a list took the wheel
+  };
+  // The pad and keys in a Bar or Lists row: what they do there is cleared from `in`.
+  void InnerInput(NavInput& in, const Row& row, InnerState& state);
+  InnerMouse InnerMouseInput(ListView& view, Page& page);
+  // What X and Y do in the selected Lists row, for the legend.
+  std::vector<LegendHint> InnerHints(const ListView& view, Page& page);
+  void DrawInnerRow(ImDrawList* dl, ListView& view, Page& page, int index, ImVec2 r0, ImVec2 r1, bool selected, float a);
   // Text entry through the app's keyboard (Config::show_keyboard) when it has
   // one, else the Guide's. The app's answer can come from any thread, so it is
   // queued for the next frame.
@@ -260,6 +272,8 @@ class GuideDialog final : public rex::ui::ImGuiDialog {
   void DrawHeader(ImDrawList* dl, ImVec2 p0, ImVec2 p1, float a);
   // Button hints under the blade. Keyboard and mouse users get key names.
   void DrawLegend(ImDrawList* dl, ImVec2 pos, float a);
+  // Hints in a line from pos; returns where the line ends.
+  float DrawHints(ImDrawList* dl, ImVec2 pos, const std::vector<LegendHint>& hints, float a);
   void DrawDisclaimer(ImDrawList* dl, ImVec2 p0, ImVec2 p1, float a);
   void DrawServerWarning(ImDrawList* dl);
   // Sign-in: one blade on its own, like the 360's profile picker.
@@ -319,7 +333,7 @@ class GuideDialog final : public rex::ui::ImGuiDialog {
   void DrawRing(ImDrawList* dl, ImVec2 c, float a, bool lit) { DrawRing(dl, c, a, lit ? user_ : -1, ui::Px(17), ui::Px(4.5f)); }
 
   // state --------------------------------------------------------------------
-  rex::ReXApp* app_;
+  rex::ui::IUISystem& ui_;
   Config config_;
   ui::Textures textures_;
   // Each player's account (players 2-4 made when their controller first
@@ -328,7 +342,8 @@ class GuideDialog final : public rex::ui::ImGuiDialog {
   Backend* backend_ = nullptr;
   int user_ = 0;         // the player the Guide is showing
   int controller_ = -1;  // the controller driving it (NavInput::guide_from), -1: any
-  std::unique_ptr<rex::ui::AchievementIconCache> icon_cache_;
+  // Achievement icons by title ID (high 32 bits) and achievement ID; 0: none.
+  std::map<uint64_t, ImTextureID> achievement_icons_;
   Input input_;
   Keyboard keyboard_;
   bool blurred_ = false;  // this frame has the live game blurred behind the Guide
@@ -440,9 +455,17 @@ class GuideDialog final : public rex::ui::ImGuiDialog {
   std::string pending_gamertag_;
   std::string pending_password_;
 
-  rex::system::AchievementListenerHandle achievement_listener_ = 0;
-  std::mutex unlock_mutex_;
-  std::vector<rex::system::AchievementEvent> unlocks_;
+  // The title's achievement callback and the runtime it was registered with. The unlocks it
+  // queues outlive the Guide, as the callback can outlive it.
+  struct Unlocks {
+    std::mutex mutex;
+    std::vector<rex::xam::AchievementEvent> events;
+  };
+  rex::ScopeGuard achievement_listener_;
+  const void* achievement_runtime_ = nullptr;
+  std::shared_ptr<Unlocks> unlocks_ = std::make_shared<Unlocks>();
+  // Drops the callback: removed while its title is loaded, otherwise left (its manager is gone).
+  void DropAchievementListener();
 
   // The Guide is up for the title (a gamer card it asked for): XN_SYS_UI was
   // sent, and its end goes when the Guide closes.

@@ -1,31 +1,7 @@
-/**
- * @file    game/level_pools.cpp
- * @brief   N&B's level textures in its section memory pools: their host
- *          textures go with the pools' memory.
- *
- * dword_82E198D4 (sized per section) and dword_82E198D8 (1 KB blocks) are
- * pools (made by sub_823330E8: memory at +12, size at +4) that XACT
- * (sub_82299800 / sub_822998B0) and file streaming (sub_823335D0 /
- * sub_82333668) allocate from on their own threads. The main thread replaces
- * them at section changes (sub_823333F0, from sub_82392B60), which destroys
- * the pair it finds; the getter (sub_82333388) builds them through it when
- * they are missing. The game guards all of it with one lock of its own
- * (0x82E198E4), so the section load race of the first release (two threads
- * destroying the same pool) is gone.
- *
- * The pools also hold the data of N&B's level textures: headers the game sets
- * up itself (XGSetTextureHeader) over pool blocks, which D3D never creates and
- * so never destroys. The game ends them by freeing their memory: a streamed
- * block back to its pool (sub_82333240, from the streaming's sub_82333668),
- * or the whole pool at a section change. Those frees release the renderer's
- * host textures over that memory (ReleaseHostTexturesInMemoryLocked), after
- * the draws queued before them. A block's size is noted at its allocation
- * (sub_8225B118).
- */
-#include <rex/hook.h>
+#include <rex/kernel/heap.h>
+#include <rex/kernel/thread_state.h>
+#include <rex/ppc/hook.h>
 #include <rex/types.h>
-
-#include <rex/system/kernel_state.h>
 
 #include <cstdint>
 #include <mutex>
@@ -52,11 +28,11 @@ std::mutex g_blocks_mutex;
 std::unordered_map<uint32_t, uint32_t> g_block_sizes;
 
 // The game freed 'size' bytes of guest memory at 'va': the host textures over
-// it go, once the draws queued so far are done with them.
+// it go, once the draws queued so far are done with them. Game thread.
 void ReleaseTexturesIn(uint32_t va, uint32_t size) {
   if (!va || !size)
     return;
-  const uint32_t physical = REX_KERNEL_MEMORY()->GetPhysicalAddress(va);
+  const uint32_t physical = rex::kernel::ThreadState::Get()->GetAddressSpace()->GetPhysicalAddress(va);
   if (physical == UINT32_MAX)
     return;
   renut::gpu::render_thread::Queue(
@@ -77,10 +53,8 @@ REX_EXTERN(__imp__sub_823333F0);
 REX_EXTERN(__imp__sub_8225B118);
 REX_EXTERN(__imp__sub_82333240);
 
-// void sub_823333F0(size, count): destroys the pair it finds and, given a
-// size, makes it anew (under the game's pool lock). The pools are read before
-// it: only the main thread's section change replaces a pair (the getter builds
-// one only when there is none).
+// void sub_823333F0(size, count): replaces the section pool pair; the old
+// pools' host textures are released after it.
 REX_HOOK_RAW(sub_823333F0) {
   Pool old[2];
   for (uint32_t slot = 0; slot < 2; ++slot) {

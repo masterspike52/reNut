@@ -1,6 +1,3 @@
-/**
- * @file    gpu/render/ambient_occlusion.cpp
- */
 #include "renut_engine/gpu/render/ambient_occlusion.h"
 
 #include <algorithm>
@@ -13,10 +10,8 @@
 #include <rex/types.h>
 
 #include "renut_engine/gpu/backend/backend.h"
-#include "renut_engine/gpu/backend/gpu_profile.h"
 #include "renut_engine/gpu/backend/video.h"
 #include "renut_engine/gpu/guest/guest_memory.h"
-#include "renut_engine/gpu/log.h"
 #include "renut_engine/gpu/render/format.h"
 #include "renut_engine/gpu/render/graphics_options.h"
 #include "renut_engine/gpu/render/surfaces.h"
@@ -35,9 +30,8 @@ namespace renut::gpu {
 
 namespace {
 
-// The camera (meCalculateProjection, 0x822BC0E0): the vertical field of view
-// in degrees (field_of_view.cpp), and the lens whose +0x64 is the near
-// distance and +0x68 the far one, which the projection clamps to 5000.
+// The camera (meCalculateProjection, 0x822BC0E0): vertical FOV in degrees and
+// the lens with near at +0x64 and far at +0x68 (clamped to 5000).
 constexpr u32 kFieldOfView = 0x82E1B6B4;
 constexpr u32 kCameraLens = 0x82E1B5F0;
 constexpr u32 kLensNear = 0x64;
@@ -87,7 +81,7 @@ struct CompositePipeline {
 };
 
 struct AmbientOcclusion {
-  bool failed = false;  // the layout, shaders or pipelines could not be made; logged once
+  bool failed = false;  // the layout, shaders or pipelines could not be made
   bool built = false;
   std::unique_ptr<plume::RenderPipelineLayout> layout;
   std::unique_ptr<plume::RenderShader> ao_ps, blur_ps, composite_ps;
@@ -198,7 +192,7 @@ bool Build(VideoState &s) {
                           "renut ambient occlusion blur");
   }
   if (!m.ao || !m.blur) {
-    RGPU_ERROR("Ambient occlusion could not be set up; the scene is drawn without it");
+    // The scene is drawn without it.
     m.failed = true;
     return false;
   }
@@ -228,10 +222,6 @@ plume::RenderPipeline *Composite(VideoState &s, plume::RenderFormat format, plum
   c.format = format;
   c.samples = samples;
   c.pipeline = MakePipeline(s, g_ao.composite_ps.get(), format, samples, multiply, "renut ambient occlusion composite");
-  if (!c.pipeline) {
-    RGPU_WARN("Ambient occlusion: no composite for scene format {} ({} samples)", uint32_t(format),
-              uint32_t(samples));
-  }
   g_ao.composites.push_back(std::move(c));
   return g_ao.composites.back().pipeline.get();
 }
@@ -320,9 +310,6 @@ bool ApplyAmbientOcclusionLocked(HostSurface *depth, HostTexture *resolved, int3
       return false;
     }
   }
-  static const uint32_t kProfileLabel = gpu_profile::Label("ambient occlusion");
-  gpu_profile::Mark(s, kProfileLabel);
-
   AmbientOcclusionPush push{};
   push.scale[0] = push.scale[1] = 1.0f;
   push.depth_index = resolved->slot;

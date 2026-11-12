@@ -1,6 +1,3 @@
-/**
- * @file    gpu/guest/guest_records.cpp
- */
 #include "renut_engine/gpu/guest/guest_records.h"
 
 #include <atomic>
@@ -8,10 +5,9 @@
 #include <shared_mutex>
 #include <unordered_map>
 
-#include <o1heap.h>
-#include <rex/system/xmemory.h>
-
-#include "renut_engine/gpu/log.h"
+#include <rex/kernel/guest_allocator.h>
+#include <rex/kernel/guest_memory.h>
+#include <rex/kernel/title_runtime.h>
 
 namespace renut::gpu::records {
 
@@ -19,10 +15,11 @@ namespace {
 
 // Records are small (headers + a few host pointers); 64 MiB is ample.
 constexpr u32 kHeapSize = 64u << 20;
+constexpr u32 kPageSize64K = 64u * 1024u;
 
-std::mutex g_heap_mutex;  // o1heap is not internally synchronised
-O1HeapInstance *g_heap = nullptr;
-bool g_oom_logged = false;
+std::mutex g_heap_mutex;
+// Never freed: the title memory it sits in goes away first (as reblue's HostHeap).
+rex::kernel::GuestAllocator *g_heap = nullptr;
 
 std::shared_mutex g_registry_mutex;
 std::unordered_map<u32, RecordKind> g_registry;
@@ -33,20 +30,12 @@ std::atomic<uint64_t> g_generation{0};
 u32 AllocPhysicalBlock(u32 size) {
   // The physical window (64 KiB pages) maps host and guest addresses 1:1 in
   // offset, so a host pointer into it round-trips to a guest VA.
-  rex::memory::BaseHeap *heap = REX_KERNEL_MEMORY()->LookupHeapByType(true, 64u * 1024u);
-  if (!heap) {
-    RGPU_ERROR("No guest physical heap");
+  rex::kernel::GuestMemory *memory = REX_GUEST_MEMORY();
+  if (!memory)
     return 0;
-  }
-  u32 guest_va = 0;
-  if (!heap->Alloc(size, 64u * 1024u,
-                   rex::memory::kMemoryAllocationReserve | rex::memory::kMemoryAllocationCommit,
-                   rex::memory::kMemoryProtectRead | rex::memory::kMemoryProtectWrite, true,
-                   &guest_va)) {
-    RGPU_ERROR("Reserving {} bytes of guest physical memory failed", size);
-    return 0;
-  }
-  return guest_va;
+  const rex::Result<u32> guest_va = memory->Allocate(size, 64u * 1024u, rex::kernel::GuestProtect::kReadWrite,
+                                                     rex::kernel::GuestHeap::kPhysical);
+  return guest_va ? *guest_va : 0;
 }
 
 bool Init() {
@@ -54,32 +43,23 @@ bool Init() {
   if (g_heap)
     return true;
 
-  auto *memory = REX_KERNEL_MEMORY();
-  const u32 guest_va = AllocPhysicalBlock(kHeapSize);
-  if (!guest_va) {
-    RGPU_ERROR("Record heap: reserving {} bytes failed", kHeapSize);
+  rex::kernel::GuestMemory *memory = REX_GUEST_MEMORY();
+  if (!memory)
     return false;
-  }
-  g_heap = o1heapInit(memory->TranslateVirtual<void *>(guest_va), kHeapSize);
-  if (!g_heap) {
-    RGPU_ERROR("Record heap: o1heapInit failed");
+  // Physical 64 KiB pages, so a host pointer into it round-trips to a guest VA.
+  auto allocator = rex::kernel::GuestAllocator::Create(*memory, kHeapSize, kPageSize64K, /*physical=*/true,
+                                                       kPageSize64K, 0, rex::kernel::GuestPool::kTitle);
+  if (!allocator)
     return false;
-  }
+  g_heap = (*allocator).release();
   return true;
 }
 
 void *AllocRaw(size_t size) {
   std::lock_guard lock(g_heap_mutex);
-  if (!g_heap) {
-    RGPU_ERROR("Record heap used before Init");
-    return nullptr;
-  }
-  void *p = o1heapAllocate(g_heap, size ? size : 1);
-  if (!p && !g_oom_logged) {
-    RGPU_ERROR("Record heap exhausted ({} bytes requested)", size);
-    g_oom_logged = true;
-  }
-  return p;
+  if (!g_heap)
+    return nullptr;  // used before Init
+  return g_heap->Allocate(static_cast<u32>(size ? size : 1));  // nullptr when the heap is exhausted
 }
 
 void FreeRaw(void *host) {
@@ -87,7 +67,7 @@ void FreeRaw(void *host) {
     return;
   std::lock_guard lock(g_heap_mutex);
   if (g_heap)
-    o1heapFree(g_heap, host);
+    g_heap->Free(host);
 }
 
 void Register(u32 guest_va, RecordKind kind) {

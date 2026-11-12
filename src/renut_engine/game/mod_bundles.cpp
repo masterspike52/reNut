@@ -1,42 +1,15 @@
-/**
- * @file    game/mod_bundles.cpp
- * @brief   Loads the bundles .nbpatch part mods add (their parts' models,
- *          collision, footprints and textures) with the game's common bundle.
- *
- * N&B (IDA): at boot appMainBoot (0x8223AD58) loads the common stream
- * archive, sub_8228BAC8(0, &aid_streambundle_banjox_common, wait 0)
- * (GAME:bundle\50\685374, assets opened on demand), then the common bundle,
- * assetDbBundleLoadBundle(0, &aid_bundle_banjox_common, open 1, dlc 0,
- * update 0) (GAME:bundle\4f\685374, a CAFF: with 'open' every asset its
- * manifest lists is opened and kept, sub_82290A88; 'dlc' checks the
- * signed-in profile's content first, 'update' reads UPDATE:\<id> instead).
- * Each registers the bundle as a provider of the asset manager
- * (dword_82DE9328 + 16), which every open by asset id searches in order, and
- * takes a slot of the bundle table 0x82DE8D70 (128 of {u32 id,
- * u32 references}); owner 0 is no level's,
- * so no level change lets them go. Vehicles stream their parts' models and
- * collision by id (Bundle/50) and streamed models find their textures by name
- * among the resident bundles, so a mod's parts can bring their own:
- * tools/renut_modtool writes a resident bundle (textures) and a stream
- * archive (models, collision, footprints) that the mod adds as new files.
- *
- * Here each mod bundle (mods/custom_parts.h ModBundles) is loaded the same
- * way right after the common bundle of its kind, while the game's allocator
- * is still set up for the common bundles (boot switches it after).
- */
-#include <rex/hook.h>
-#include <rex/system/kernel_state.h>
-#include <rex/system/xmemory.h>
+#include <rex/kernel/guest_memory.h>
+#include <rex/kernel/title_runtime.h>
+#include <rex/ppc/hook.h>
 #include <rex/types.h>
 
 #include <atomic>
 #include <cstdint>
 #include <cstring>
 
-#include "renut_engine/app/renut_logging.h"
 #include "renut_engine/mods/custom_parts.h"
 
-REX_EXTERN(__imp__assetDbBundleLoadBundle);
+REX_EXTERN(__imp__rex_assetDbBundleLoadBundle);
 REX_EXTERN(__imp__sub_8228BAC8);  // loads a stream archive (Bundle/50)
 
 namespace {
@@ -76,17 +49,14 @@ uint32_t g_id_va = 0;  // guest word holding the id being loaded
 void LoadModBundles(PPCContext &ctx, uint8_t *base, uint32_t type) {
   const auto r3 = ctx.r3, r4 = ctx.r4, r5 = ctx.r5, r6 = ctx.r6, r7 = ctx.r7;
   for (const renut::mods::ModBundle &bundle : renut::mods::ModBundles()) {
-    if (bundle.id >> 24 != type)
+    if (bundle.id >> 24 != type || IsLoaded(base, bundle.id))
       continue;
-    const char *folder = type == kTypeBundle ? "4f" : "50";
-    if (IsLoaded(base, bundle.id)) {
-      RNUT_INFO("mods: {}: bundle {}/{:06x} is already loaded", bundle.mod, folder, bundle.id & 0xFFFFFF);
-      continue;
-    }
-    if (!g_id_va && !(g_id_va = REX_KERNEL_MEMORY()->SystemHeapAlloc(4))) {
-      RNUT_ERROR("mods: no guest memory; the mods' bundles are not loaded");
+    // No guest memory: the mods' bundles are not loaded.
+    if (rex::kernel::GuestMemory *memory = REX_GUEST_MEMORY(); !g_id_va && memory)
+      g_id_va =
+          memory->Allocate(4, 0x20, rex::kernel::GuestProtect::kReadWrite, rex::kernel::GuestHeap::kSystem).value_or(0);
+    if (!g_id_va)
       break;
-    }
     Store32(base, g_id_va, bundle.id);
     ctx.r3.u64 = 0;  // no owner: kept for the session
     ctx.r4.u64 = g_id_va;
@@ -96,16 +66,11 @@ void LoadModBundles(PPCContext &ctx, uint8_t *base, uint32_t type) {
       ctx.r5.u64 = 1;
       ctx.r6.u64 = 0;
       ctx.r7.u64 = 0;
-      __imp__assetDbBundleLoadBundle(ctx, base);
+      __imp__rex_assetDbBundleLoadBundle(ctx, base);
     } else {
       ctx.r5.u64 = 1;  // wait until it is ready
       __imp__sub_8228BAC8(ctx, base);
     }
-    if (IsLoaded(base, bundle.id))
-      RNUT_INFO("mods: {}: bundle {}/{:06x} loaded", bundle.mod, folder, bundle.id & 0xFFFFFF);
-    else
-      RNUT_ERROR("mods: {}: bundle {}/{:06x} didn't load (the bundle table is full, or the file is missing)",
-                 bundle.mod, folder, bundle.id & 0xFFFFFF);
   }
   ctx.r3 = r3;
   ctx.r4 = r4;
@@ -118,10 +83,10 @@ void LoadModBundles(PPCContext &ctx, uint8_t *base, uint32_t type) {
 
 // assetDbBundleLoadBundle(owner, const u32 *id, open, dlc, update): loads a
 // resident bundle (Bundle/4f) and waits for it.
-REX_HOOK_RAW(assetDbBundleLoadBundle) {
+REX_HOOK_RAW(rex_assetDbBundleLoadBundle) {
   const uint32_t owner = ctx.r3.u32;
   const uint32_t id = ctx.r4.u32 ? Load32(base, ctx.r4.u32) : 0;
-  __imp__assetDbBundleLoadBundle(ctx, base);
+  __imp__rex_assetDbBundleLoadBundle(ctx, base);
   if (id == kCommonBundle && !owner && !renut::mods::ModBundles().empty() && !g_bundles_loaded.exchange(true))
     LoadModBundles(ctx, base, kTypeBundle);
 }

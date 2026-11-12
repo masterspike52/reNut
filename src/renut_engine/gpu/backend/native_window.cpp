@@ -1,9 +1,8 @@
-/**
- * @file    gpu/backend/native_window.cpp
- */
 #include "renut_engine/gpu/backend/native_window.h"
 
-#include "renut_engine/gpu/log.h"
+#include <atomic>
+
+#include <rex/platform/native_window.h>
 
 #if defined(_WIN32)
 #include <windows.h>
@@ -17,44 +16,35 @@
 
 namespace renut::gpu {
 
+namespace {
+
+// The window SetNativeWindow took: an HWND on Windows, the SDL_Window elsewhere.
+std::atomic<void *> g_window{nullptr};
+
+} // namespace
+
+void SetNativeWindow(const rex::NativeWindow &window) {
+#if defined(_WIN32)
+  g_window.store(window.type == rex::NativeWindow::Type::kWin32 ? window.window : nullptr,
+                 std::memory_order_release);
+#else
+  g_window.store(window.sdl, std::memory_order_release);
+#endif
+}
+
 #if defined(_WIN32)
 
 namespace {
 
-// The process's visible top-level window, preferring SDL's window class (the
-// SDK creates one window, through SDL).
-BOOL CALLBACK FindGameWindow(HWND hwnd, LPARAM param) {
-  DWORD pid = 0;
-  GetWindowThreadProcessId(hwnd, &pid);
-  if (pid != GetCurrentProcessId() || !IsWindowVisible(hwnd) || GetWindow(hwnd, GW_OWNER))
-    return TRUE;
-  auto *found = reinterpret_cast<HWND *>(param);
-  wchar_t class_name[32] = {};
-  GetClassNameW(hwnd, class_name, 32);
-  if (wcscmp(class_name, L"SDL_app") == 0) {
-    *found = hwnd;
-    return FALSE;
-  }
-  if (!*found)
-    *found = hwnd;
-  return TRUE;
-}
-
 HWND FindGameHwnd() {
-  HWND hwnd = nullptr;
-  EnumWindows(FindGameWindow, reinterpret_cast<LPARAM>(&hwnd));
-  return hwnd;
+  return static_cast<HWND>(g_window.load(std::memory_order_acquire));
 }
 
 } // namespace
 
 bool GetNativeRenderWindow(plume::RenderWindow &out) {
   out = static_cast<plume::RenderWindow>(FindGameHwnd());
-  if (!out) {
-    RGPU_ERROR("No game window yet");
-    return false;
-  }
-  return true;
+  return out != nullptr;
 }
 
 bool GetRenderWindowPixelSize(uint32_t &width, uint32_t &height) {
@@ -71,24 +61,15 @@ bool GetRenderWindowPixelSize(uint32_t &width, uint32_t &height) {
 
 namespace {
 
-// The app owns one window.
 SDL_Window *FindGameSdlWindow() {
-  int count = 0;
-  SDL_Window **windows = SDL_GetWindows(&count);
-  SDL_Window *sdl_window = (windows && count > 0) ? windows[0] : nullptr;
-  SDL_free(windows);
-  return sdl_window;
+  return static_cast<SDL_Window *>(g_window.load(std::memory_order_acquire));
 }
 
 } // namespace
 
 bool GetNativeRenderWindow(plume::RenderWindow &out) {
   out = FindGameSdlWindow();
-  if (!out) {
-    RGPU_ERROR("No SDL window for the Vulkan surface");
-    return false;
-  }
-  return true;
+  return out != nullptr;
 }
 
 bool GetRenderWindowPixelSize(uint32_t &width, uint32_t &height) {
@@ -111,13 +92,8 @@ SDL_Window *GetGameSdlWindow() {
 
 #if !defined(_WIN32)
 
-// plume's Vulkan surface (its PLUME_SDL_VULKAN_ENABLED path, through
-// gpu/backend/sdl2_vulkan/SDL_vulkan.h), on whichever video driver SDL chose:
-// Wayland (VK_KHR_wayland_surface on the window's wl_display and wl_surface)
-// or X11, XWayland included (VK_KHR_xlib_surface on its Display and Window).
-// SDL_VIDEO_DRIVER=x11 or wayland picks one. Made here from the handles SDL
-// gives every window: SDL's own surface needs SDL_WINDOW_VULKAN, which the
-// SDK's window lacks.
+// plume's Vulkan surface, made from the SDL window's Wayland or X11 handles
+// (SDL's own surface needs SDL_WINDOW_VULKAN, which the SDK's window lacks).
 
 namespace {
 
@@ -175,15 +151,9 @@ bool renut_SDL2_Vulkan_CreateSurface(SDL_Window *window, VkInstance instance, Vk
     info.surface = SDL_GetPointerProperty(props, SDL_PROP_WINDOW_WAYLAND_SURFACE_POINTER, nullptr);
     auto create = reinterpret_cast<CreateSurfaceFunction>(
         vkGetInstanceProcAddr(instance, "vkCreateWaylandSurfaceKHR"));
-    if (!info.display || !info.surface || !create) {
-      RGPU_ERROR("No Wayland surface for the window (display {}, surface {}, "
-                 "vkCreateWaylandSurfaceKHR {})",
-                 info.display != nullptr, info.surface != nullptr, create != nullptr);
+    if (!info.display || !info.surface || !create)
       return false;
-    }
     result = create(instance, &info, nullptr, surface);
-    if (result == VK_SUCCESS)
-      RGPU_INFO("Vulkan surface on Wayland");
   } else {
     XlibSurfaceCreateInfo info{};
     info.sType = VK_STRUCTURE_TYPE_XLIB_SURFACE_CREATE_INFO_KHR;
@@ -192,20 +162,11 @@ bool renut_SDL2_Vulkan_CreateSurface(SDL_Window *window, VkInstance instance, Vk
         SDL_GetNumberProperty(props, SDL_PROP_WINDOW_X11_WINDOW_NUMBER, 0));
     auto create = reinterpret_cast<CreateSurfaceFunction>(
         vkGetInstanceProcAddr(instance, "vkCreateXlibSurfaceKHR"));
-    if (!info.dpy || !info.window || !create) {
-      RGPU_ERROR("No X11 surface for the window (video driver '{}')",
-                 SDL_GetCurrentVideoDriver() ? SDL_GetCurrentVideoDriver() : "none");
+    if (!info.dpy || !info.window || !create)
       return false;
-    }
     result = create(instance, &info, nullptr, surface);
-    if (result == VK_SUCCESS)
-      RGPU_INFO("Vulkan surface on X11");
   }
-  if (result != VK_SUCCESS) {
-    RGPU_ERROR("Vulkan surface creation failed ({})", int(result));
-    return false;
-  }
-  return true;
+  return result == VK_SUCCESS;
 }
 
 #endif

@@ -1,45 +1,41 @@
-/**
- * @file    gpu/overlay/app_integration.h
- * @brief   What RenutApp needs to run the native renderer in the SDK's detached
- *          ("bring your own renderer") mode.
- */
 #pragma once
 
-#include <functional>
-#include <memory>
+#include <cstdint>
 
-namespace rex {
-struct RuntimeConfig;
-namespace ui {
-class ImGuiDrawer;
-class ImmediateDrawer;
-class ImmediateTexture;
-class WindowedAppContext;
-} // namespace ui
-} // namespace rex
+#include <imgui.h>
+
+namespace rex::gpu {
+class IGraphicsSystem;
+} // namespace rex::gpu
+namespace rex::ui {
+class IUISystem;
+} // namespace rex::ui
 
 namespace renut::gpu {
 
-// OnPreSetup: no SDK graphics system and no GPU plugin.
-void ConfigureRuntime(rex::RuntimeConfig &config);
+// OnInit, on the UI thread with the window open: creates the host device, starts
+// the overlays and presents overlay-only frames whenever the guest isn't presenting.
+bool StartRenderer(rex::ui::IUISystem &ui, rex::gpu::IGraphicsSystem &graphics);
 
-// OnCreateImmediateDrawer: the plume-backed ImGui drawer.
-std::unique_ptr<rex::ui::ImmediateDrawer> CreateOverlayDrawer();
+// Any thread: the game's last shown frame as a texture of the SDK's ImGui, and its
+// shown part (u0, v0, u1, v1); ImTextureID_Invalid before there's one.
+ImTextureID GameFrameTexture(float uv[4]);
+// Any thread: the same frame blurred by a gaussian of `sigma` window pixels, for glass and the Guide;
+// ImTextureID_Invalid until there's one. The blur only runs while something keeps asking.
+ImTextureID BlurredGameFrameTexture(float sigma, float uv[4]);
+// Any thread: the screen as drawn so far, game and UI, refreshed as each draw using it is reached; blurred by
+// `sigma` window pixels, or sharp for 0. For glass that shows what's under it (RexGlass's Config::screen).
+ImTextureID ScreenTexture(float sigma, float uv[4]);
 
-// UI thread, once the window exists: creates the host device, starts reNut's
-// overlay (overlay_ui.h), routes the SDK's menus into Present, and presents
-// overlay-only frames whenever the guest is not presenting (before it starts,
-// e.g. the launcher menu, and while it stalls).
-bool StartRenderer(rex::ui::WindowedAppContext &app_context,
-                   std::function<rex::ui::ImGuiDrawer *()> imgui_drawer);
+// Any thread: an RGBA8 picture for the SDK's ImGui (the Guide, RexFabric), or
+// ImTextureID_Invalid for no pixels; drawn with linear filtering.
+ImTextureID CreateOverlayTexture(uint32_t width, uint32_t height, const uint8_t *rgba);
+// Any thread: frames already recorded keep it until they are replaced.
+void DestroyOverlayTexture(ImTextureID texture);
 
-// OnWindowPixelSizeChanged.
-void OnWindowResized();
-
-// Any thread: the game's frame as last shown, as a texture of the overlay
-// drawer's, and its shown part (u0, v0, u1, v1); nullptr before there's one.
-// For UI drawn over the game that samples it (the Guide's blur).
-rex::ui::ImmediateTexture *GameFrameTexture(float uv[4]);
+// Before the title unloads (its guest memory goes): the render thread runs the game's queued work and
+// ends, and later work runs on the thread that queues it.
+void StopGuestRendering();
 
 // OnShutdown.
 void ShutdownRenderer();

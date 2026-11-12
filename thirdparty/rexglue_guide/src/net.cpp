@@ -28,12 +28,10 @@
 #include <unordered_set>
 #include <vector>
 
-#include <rex/logging.h>
-#include <rex/system/xevent.h>
-
 #include "guest.h"
 #include "live.h"
 #include "live_sessions.h"
+#include "log.h"
 
 #if defined(_WIN32)
 #ifndef WIN32_LEAN_AND_MEAN
@@ -297,11 +295,27 @@ uint64_t MachineHash() {
 // traffic of its own, so each pair gets its own IN_ADDR.
 using Kid = std::array<uint8_t, 8>;
 
+// Where one of a peer's title sockets is heard from: its title port, and the
+// port its router gave that socket outside (which a NAT need not keep).
+struct ObservedPort {
+  uint16_t title_port = 0;
+  uint16_t port = 0;
+};
+
 struct Peer {
   XnAddr addr;
   Kid kid{};
   uint32_t observed_ip = 0;  // where its datagrams actually come from
+  std::array<ObservedPort, 4> observed_ports{};
 };
+
+// The outside port a peer's title socket was heard from, or 0.
+uint16_t ObservedPortFor(const Peer& peer, uint16_t title_port) {
+  for (const ObservedPort& o : peer.observed_ports) {
+    if (o.title_port && o.title_port == title_port) return o.port;
+  }
+  return 0;
+}
 
 std::mutex g_peers_mutex;
 std::unordered_map<uint32_t, Peer> g_peers;
@@ -316,16 +330,20 @@ Kid ReadKid(const uint8_t* p) {
 uint32_t TokenFor(const XnAddr& addr, const Kid& kid) {
   std::lock_guard lock(g_peers_mutex);
   uint32_t observed_ip = 0;
+  std::array<ObservedPort, 4> observed_ports{};
   for (auto& [token, peer] : g_peers) {
     if (!peer.addr.SameMachine(addr)) continue;
     if (peer.kid == kid) {
       peer.addr = addr;
       return token;
     }
-    if (peer.observed_ip) observed_ip = peer.observed_ip;
+    if (peer.observed_ip) {
+      observed_ip = peer.observed_ip;
+      observed_ports = peer.observed_ports;
+    }
   }
   const uint32_t token = g_next_token++;
-  g_peers[token] = {addr, kid, observed_ip};
+  g_peers[token] = {addr, kid, observed_ip, observed_ports};
   return token;
 }
 
@@ -362,14 +380,34 @@ bool LookupToken(uint32_t token, Peer* out) {
   return true;
 }
 
-// Where an instance's datagrams come from holds for all its sessions.
-void NoteObserved(uint32_t token, uint32_t ip) {
+// Where an instance's datagrams come from holds for all its sessions. A router
+// may give each title socket a port of its own outside, and only that port
+// reaches the socket back, so it is kept per title port (when the sender's
+// header names it).
+void NoteObserved(uint32_t token, uint32_t ip, uint16_t title_port, uint16_t port) {
   std::lock_guard lock(g_peers_mutex);
   auto it = g_peers.find(token);
   if (it == g_peers.end()) return;
   const XnAddr addr = it->second.addr;
   for (auto& [t, peer] : g_peers) {
-    if (peer.addr.SameMachine(addr)) peer.observed_ip = ip;
+    if (!peer.addr.SameMachine(addr)) continue;
+    peer.observed_ip = ip;
+    if (!title_port) continue;
+    ObservedPort* slot = nullptr;
+    for (ObservedPort& o : peer.observed_ports) {
+      if (o.title_port == title_port) {
+        slot = &o;
+        break;
+      }
+      if (!slot && !o.title_port) slot = &o;
+    }
+    if (!slot) slot = &peer.observed_ports[0];
+    if (slot->title_port != title_port || slot->port != port) {
+      const uint32_t host = ntohl(ip);
+      RG_INFO("RexLiveless: peer heard directly from {}.{}.{}.{}:{} (its title port {})", host >> 24, (host >> 16) & 255,
+                  (host >> 8) & 255, host & 255, port, title_port);
+    }
+    *slot = {title_port, port};
   }
 }
 
@@ -379,15 +417,19 @@ constexpr uint32_t kServerToken = 0xAC000001;
 // ---------------------------------------------------------------- header --
 
 // magic, sequence, the sender's XNADDR, the session key it sent for (zero for
-// broadcasts): the receiver delivers it from its IN_ADDR for that pair. The
-// older header (RXSL, 44 bytes, no key) is still read, as keyless.
-constexpr uint8_t kMagic[4] = {'R', 'X', 'S', '2'};
-constexpr size_t kHeaderSize = 52;
+// broadcasts), the title port it sent from: the receiver delivers it from its
+// IN_ADDR for that pair and that port, whatever port a router rewrote it to.
+// Older headers (RXS2, 52 bytes, no port; RXSL, 44 bytes, no key either) are
+// still read.
+constexpr uint8_t kMagic[4] = {'R', 'X', 'S', '3'};
+constexpr size_t kHeaderSize = 54;
+constexpr uint8_t kMagicV2[4] = {'R', 'X', 'S', '2'};
+constexpr size_t kHeaderSizeV2 = 52;
 constexpr uint8_t kMagicV1[4] = {'R', 'X', 'S', 'L'};
 constexpr size_t kHeaderSizeV1 = 44;
 std::atomic<uint32_t> g_sequence{std::random_device{}()};
 
-void WriteHeader(uint8_t* out, uint32_t sequence, const Kid& kid) {
+void WriteHeader(uint8_t* out, uint32_t sequence, const Kid& kid, uint16_t title_port) {
   std::memcpy(out, kMagic, 4);
   out[4] = uint8_t(sequence >> 24);
   out[5] = uint8_t(sequence >> 16);
@@ -395,13 +437,21 @@ void WriteHeader(uint8_t* out, uint32_t sequence, const Kid& kid) {
   out[7] = uint8_t(sequence);
   LocalXnAddr().Write(out + 8);
   std::memcpy(out + 44, kid.data(), kid.size());
+  out[52] = uint8_t(title_port >> 8);
+  out[53] = uint8_t(title_port);
 }
 
-// The header's size, or 0 when the datagram has none.
-size_t ParseHeader(const uint8_t* buf, size_t len, XnAddr* sender, Kid* kid, uint32_t* sequence) {
+// The header's size, or 0 when the datagram has none. title_port is 0 when the
+// header doesn't say.
+size_t ParseHeader(const uint8_t* buf, size_t len, XnAddr* sender, Kid* kid, uint32_t* sequence, uint16_t* title_port) {
   size_t size;
+  *title_port = 0;
   if (len >= kHeaderSize && std::memcmp(buf, kMagic, 4) == 0) {
     size = kHeaderSize;
+    *kid = ReadKid(buf + 44);
+    *title_port = uint16_t((buf[52] << 8) | buf[53]);
+  } else if (len >= kHeaderSizeV2 && std::memcmp(buf, kMagicV2, 4) == 0) {
+    size = kHeaderSizeV2;
     *kid = ReadKid(buf + 44);
   } else if (len >= kHeaderSizeV1 && std::memcmp(buf, kMagicV1, 4) == 0) {
     size = kHeaderSizeV1;
@@ -560,10 +610,13 @@ bool ForceRelay() {
   return force;
 }
 
+// Hearing from a peer directly shows only that its datagrams reach us, not
+// that ours reach it (its router may drop them), so a peer on another network
+// keeps getting a relayed copy as well; the receiver drops whichever arrives
+// second.
 bool UseRelay(const Peer& peer, const Relay& relay) {
   if (!relay.ok || !peer.addr.Xuid()) return false;
   if (ForceRelay()) return true;
-  if (peer.observed_ip) return false;  // heard from it directly
   // Another network: a public address that isn't ours, and not this PC.
   return peer.addr.ina_online && relay.public_ip && peer.addr.ina_online != relay.public_ip &&
          !IsLocalAddress(peer.addr.ina);
@@ -670,7 +723,7 @@ int SendDatagram(Sock& s, const uint8_t* data, uint32_t size, const GuestAddr& t
   }
 
   std::vector<uint8_t> packet(kHeaderSize + size);
-  WriteHeader(packet.data(), g_sequence.fetch_add(1), is_peer ? peer.kid : Kid{});
+  WriteHeader(packet.data(), g_sequence.fetch_add(1), is_peer ? peer.kid : Kid{}, s.title_port);
   std::memcpy(packet.data() + kHeaderSize, data, size);
 
   if (is_peer) {
@@ -685,10 +738,16 @@ int SendDatagram(Sock& s, const uint8_t* data, uint32_t size, const GuestAddr& t
       inet_pton(AF_INET, live.public_ip.c_str(), &mine);
       ip = peer.addr.ina_online == mine ? peer.addr.ina : peer.addr.ina_online;
     }
+    // Back to the port its datagrams came from: a router that rewrote the
+    // sender's port lets replies in only there.
+    uint16_t port = uint16_t(to.port + offset);
+    if (peer.observed_ip && ip == peer.observed_ip) {
+      if (const uint16_t observed = ObservedPortFor(peer, to.port)) port = observed;
+    }
     const Relay relay = CurrentRelay();
     const bool relayed = UseRelay(peer, relay);
     if (!(relayed && ForceRelay()) &&
-        SendNative(s.fd, packet.data(), packet.size(), Native(ip, uint16_t(to.port + offset))) < 0 && !relayed) {
+        SendNative(s.fd, packet.data(), packet.size(), Native(ip, port)) < 0 && !relayed) {
       t_last_error = NativeError();
       return -1;
     }
@@ -741,7 +800,8 @@ int ReceiveDatagram(Sock& s, uint8_t* buf, uint32_t len, uint32_t from_ptr, uint
       payload += kRelayHeaderSize;
       payload_size -= uint32_t(kRelayHeaderSize);
     }
-    const size_t header_size = ParseHeader(payload, payload_size, &sender, &kid, &sequence);
+    uint16_t sender_title_port = 0;
+    const size_t header_size = ParseHeader(payload, payload_size, &sender, &kid, &sequence, &sender_title_port);
     const bool from_peer = header_size != 0;
     bool deliver = from_peer || !relayed;
     if (deliver && from_peer) {
@@ -749,13 +809,18 @@ int ReceiveDatagram(Sock& s, uint8_t* buf, uint32_t len, uint32_t from_ptr, uint
         deliver = false;  // our own broadcast
       } else {
         const uint32_t token = TokenForReceived(sender, kid);
+        // Noted even for a copy the relay already delivered: it still shows
+        // where the peer's socket is reached directly.
+        if (!relayed && !IsLocalAddress(src.sin_addr.s_addr)) {
+          NoteObserved(token, src.sin_addr.s_addr, sender_title_port, ntohs(src.sin_port));
+        }
         if (IsDuplicate(token, sequence)) {
           deliver = false;
         } else {
-          if (!relayed && !IsLocalAddress(src.sin_addr.s_addr)) NoteObserved(token, src.sin_addr.s_addr);
           const uint16_t offset = sender.port_online >= kBasePort ? uint16_t(sender.port_online - kBasePort) : 0;
           from_addr = token;
-          if (!relayed) from_port = from_port >= offset ? uint16_t(from_port - offset) : from_port;
+          // The sender's title port, which a router may have rewritten on the way.
+          if (!relayed) from_port = sender_title_port ? sender_title_port : (from_port >= offset ? uint16_t(from_port - offset) : from_port);
           payload += header_size;
           payload_size -= uint32_t(header_size);
         }
@@ -789,9 +854,7 @@ void FinishOverlapped(const Overlapped& o) {
   Store32(ov + 0, o.error ? o.error : 0);
   Store32(ov + 4, o.bytes);
   const uint32_t event = Load32(ov + 0xC);
-  if (event) {
-    if (auto ev = REX_KERNEL_OBJECTS()->LookupObject<rex::system::XEvent>(event)) ev->Set(0, false);
-  }
+  if (event) SignalEvent(event, true);
 }
 
 // Tries to make progress on a socket's oldest overlapped request.
@@ -936,12 +999,12 @@ uint16_t PortOffset() {
       g_reservations[uint16_t(kBasePort - 1 + offset)] = a;
       g_reservations[uint16_t(kBasePort + offset)] = b;
       g_offset = offset;
-      REXKRNL_INFO("Rexglue Guide: System Link port offset {} (slot {})", offset, slot);
+      RG_INFO("Rexglue Guide: System Link port offset {} (slot {})", offset, slot);
       return g_offset;
     }
     if (a != kBadNative) CloseNative(a);
   }
-  REXKRNL_WARN("Rexglue Guide: every System Link port slot is taken; using offset 0");
+  RG_WARN("Rexglue Guide: every System Link port slot is taken; using offset 0");
   return g_offset;
 }
 
@@ -1120,7 +1183,7 @@ extern "C" REX_FUNC(__imp__NetDll_bind) {
   const sockaddr_in addr = Native(htonl(INADDR_ANY), port);
   if (bind(s->fd, reinterpret_cast<const sockaddr*>(&addr), sizeof(addr)) != 0) {
     t_last_error = NativeError();
-    REXKRNL_ERROR("Rexglue Guide: bind to port {} failed ({})", port, t_last_error);
+    RG_ERROR("Rexglue Guide: bind to port {} failed ({})", port, t_last_error);
     return Return(ctx, kSocketError);
   }
   sockaddr_in bound{};
@@ -1497,7 +1560,7 @@ extern "C" REX_FUNC(__imp__NetDll_XNetUnregisterInAddr) {
 
 // XNetServerToInAddr(IN_ADDR server, DWORD service_id, IN_ADDR*)
 extern "C" REX_FUNC(__imp__NetDll_XNetServerToInAddr) {
-  REXKRNL_INFO("Rexglue Guide: XNetServerToInAddr({:08X}, service {:08X})", Arg(ctx, 1), Arg(ctx, 2));
+  RG_INFO("Rexglue Guide: XNetServerToInAddr({:08X}, service {:08X})", Arg(ctx, 1), Arg(ctx, 2));
   if (uint8_t* out = At(Arg(ctx, 3))) Store32(out, kServerToken);
   Return(ctx, 0);
 }
@@ -1529,7 +1592,7 @@ extern "C" REX_FUNC(__imp__NetDll_XNetQosLookup) {
   }
   uint32_t size = 8 + 32 * count;
   for (const auto& d : data) size += uint32_t((d.size() + 7) & ~size_t(7));
-  const uint32_t qos = REX_KERNEL_MEMORY()->SystemHeapAlloc(size);
+  const uint32_t qos = SystemHeapAlloc(size);
   uint8_t* q = At(qos);
   std::memset(q, 0, size);
   Store32(q, count);
@@ -1556,9 +1619,7 @@ extern "C" REX_FUNC(__imp__NetDll_XNetQosLookup) {
     g_live_qos.insert(qos);
   }
   if (out) Store32(out, qos);
-  if (event) {
-    if (auto ev = REX_KERNEL_OBJECTS()->LookupObject<rex::system::XEvent>(event)) ev->Set(0, false);
-  }
+  if (event) SignalEvent(event, true);
   Return(ctx, 0);
 }
 
@@ -1569,7 +1630,7 @@ extern "C" REX_FUNC(__imp__NetDll_XNetQosRelease) {
     std::lock_guard lock(g_qos_mutex);
     if (!g_live_qos.erase(qos)) return Return(ctx, 0);
   }
-  REX_KERNEL_MEMORY()->SystemHeapFree(qos);
+  SystemHeapFree(qos);
   Return(ctx, 0);
 }
 

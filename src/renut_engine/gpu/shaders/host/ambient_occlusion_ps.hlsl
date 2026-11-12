@@ -1,8 +1,5 @@
-// renut_ssao: the occlusion of each pixel (see ambient_occlusion.hlsli). Samples
-// a spiral disk of the occlusion radius around the pixel, turned by the
-// pixel's noise, and counts what rises over the surface's plane within it,
-// weighted by how far it rises and fading with distance (Alchemy / SAO).
-// Out: x the AO (1 unoccluded), y the view depth (for the blur and composite).
+// renut_ssao: each pixel's occlusion from a noise-rotated spiral of samples within
+// the radius (Alchemy / SAO). Out: x the AO (1 unoccluded), y the view depth.
 #include "ambient_occlusion.hlsli"
 
 float InterleavedGradientNoise(float2 pixel)

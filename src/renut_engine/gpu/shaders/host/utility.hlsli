@@ -1,8 +1,5 @@
-// Shared bindings for the renderer's own (non-guest) shaders.
-//   set 0 : bindless Texture2D table   (t0, space0)
-//   set 1 : bindless sampler table     (s0, space1)
-//   push  : UtilityPush                (b0, space2), vertex + pixel stages
-// Must match BuildUtilityLayout in video.cpp.
+// Shared bindings for the renderer's own shaders: textures t0/space0, samplers
+// s0/space1, UtilityPush b0/space2. Must match BuildUtilityLayout in video.cpp.
 
 struct UtilityPush
 {

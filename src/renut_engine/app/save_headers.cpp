@@ -1,5 +1,4 @@
 #include "renut_engine/app/save_headers.h"
-
 #include <array>
 #include <cstdint>
 #include <cstring>
@@ -9,26 +8,18 @@
 #include <system_error>
 #include <vector>
 
-#include "renut_engine/app/renut_logging.h"
-
 namespace renut::saves {
 
 namespace {
 
 namespace fs = std::filesystem;
 
-// An Xbox 360 package's header (big-endian, as dlc_install.cpp reads one):
-// the magic, then at 0x344 the content type, 0x360 the title ID and 0x411 the
-// first display name (UTF-16, 128 characters).
+
 constexpr size_t kContentTypeOffset = 0x344;
 constexpr size_t kTitleIdOffset = 0x360;
 constexpr size_t kDisplayNameOffset = 0x411;
 constexpr size_t kDisplayNameBytes = 256;
 constexpr size_t kPackageHeaderBytes = kDisplayNameOffset + kDisplayNameBytes;
-
-// XCONTENT_AGGREGATE_DATA (rex/system/xam/content_manager.h), big-endian:
-// device ID, content type, display name (UTF-16, 128 characters), file name
-// (42 characters), padding, XUID (8, at 0x138), title ID (0x140).
 constexpr size_t kAggregateBytes = 0x148;
 constexpr size_t kDeviceIdOffset = 0x000;
 constexpr size_t kAggContentTypeOffset = 0x004;
@@ -36,7 +27,7 @@ constexpr size_t kAggDisplayNameOffset = 0x008;
 constexpr size_t kFileNameOffset = 0x108;
 constexpr size_t kFileNameChars = 42;
 constexpr size_t kAggTitleIdOffset = 0x140;
-constexpr uint32_t kDeviceHdd = 1;  // as reNut's own headers have
+constexpr uint32_t kDeviceHdd = 1;
 
 void StoreBe32(uint8_t *p, uint32_t v) {
     p[0] = uint8_t(v >> 24);
@@ -56,7 +47,6 @@ bool IsPackageHeader(const std::vector<uint8_t> &data) {
     return magic == "CON " || magic == "LIVE" || magic == "PIRS";
 }
 
-// Rewrites one header if it's a package header. True when it did.
 bool FixHeader(const fs::path &path) {
     std::vector<uint8_t> data;
     {
@@ -78,21 +68,15 @@ bool FixHeader(const fs::path &path) {
     StoreBe32(out.data() + kAggTitleIdOffset, LoadBe32(data.data() + kTitleIdOffset));
 
     std::ofstream file(path, std::ios::binary | std::ios::trunc);
-    if (!file.write(reinterpret_cast<const char *>(out.data()), out.size())) {
-        RNUT_WARN("Saves: can't rewrite {}", path.string());
-        return false;
-    }
-    return true;
+    return bool(file.write(reinterpret_cast<const char *>(out.data()), out.size()));
 }
 
-} // namespace
+} 
 
-// The user data folder: <xuid>\<title>\Headers\<content type>\<name>.header.
 void FixPackageHeaders(const fs::path &user_data_root) {
     std::error_code ec;
     if (user_data_root.empty() || !fs::is_directory(user_data_root, ec))
         return;
-    int fixed = 0;
     for (const auto &profile : fs::directory_iterator(user_data_root, ec)) {
         if (!profile.is_directory(ec))
             continue;
@@ -104,17 +88,12 @@ void FixPackageHeaders(const fs::path &user_data_root) {
                 if (!type.is_directory(ec))
                     continue;
                 for (const auto &entry : fs::directory_iterator(type.path(), ec)) {
-                    if (entry.is_regular_file(ec) && entry.path().extension() == ".header" &&
-                        FixHeader(entry.path())) {
-                        RNUT_INFO("Saves: converted Xenia header {}", entry.path().string());
-                        ++fixed;
-                    }
+                    if (entry.is_regular_file(ec) && entry.path().extension() == ".header")
+                        FixHeader(entry.path());
                 }
             }
         }
     }
-    if (fixed)
-        RNUT_INFO("Saves: {} Xenia save header(s) converted for reNut", fixed);
 }
 
-} // namespace renut::saves
+}

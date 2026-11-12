@@ -1,6 +1,3 @@
-/**
- * @file    gpu/render/menu_colour.cpp
- */
 #include "renut_engine/gpu/render/menu_colour.h"
 
 #include <algorithm>
@@ -8,19 +5,23 @@
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
-#include <mutex>
 #include <string>
-#include <unordered_set>
 
-#include <rex/cvar.h>
+#include <rex/setting.h>
 
-#include "renut_engine/gpu/log.h"
+#include "renut_engine/app/renut_settings.h"
 
-REXCVAR_DEFINE_STRING(menu_background_color, "#293463", "Nuts&Bolts/Menus",
-                      "Colour of the see-through blue panels behind menus (the garage's dials and "
-                      "part list, blueprints, the pause menu), a colour code like #FF0000 (red); "
-                      "#293463 is the game's. #RRGGBBAA also sets how see-through they are: CC is "
-                      "the game's, FF solid.");
+namespace {
+struct MenuColourSettings final : rex::SettingOwner {
+  MenuColourSettings() : rex::SettingOwner(renut::settings::kScope) { renut::settings::Add(*this); }
+  REX_SETTING(std::string, menu_background_color, "#293463",
+              "Colour of the see-through blue panels behind menus (the garage's dials and "
+              "part list, blueprints, the pause menu), a colour code like #FF0000 (red); "
+              "#293463 is the game's. #RRGGBBAA also sets how see-through they are: CC is "
+              "the game's, FF solid.");
+};
+MenuColourSettings &g_menu_colour = *new MenuColourSettings();  // never freed, registered by RenutApp::OnConfigure
+} // namespace
 
 namespace renut::gpu {
 
@@ -113,28 +114,18 @@ uint16_t Recolour(uint16_t value) {
   return Pack565(out);
 }
 
-// Logs each size of panel once.
-void NotePanel(uint32_t blocks_w, uint32_t blocks_h) {
-  static std::mutex mutex;
-  static std::unordered_set<uint32_t> seen;
-  std::lock_guard lock(mutex);
-  if (seen.insert(blocks_w << 16 | blocks_h).second)
-    RGPU_INFO("Menu panel texture {}x{} recoloured", blocks_w * 4, blocks_h * 4);
-}
-
 } // namespace
 
 void LatchMenuColourLocked() {
-  const std::string &code = REXCVAR_GET(menu_background_color);
+  const std::string code = g_menu_colour.menu_background_color.Get();
   if (code == g_code)
     return;
   g_code = code;
   Latched latched;
   uint32_t rgba = 0;
   bool has_alpha = false;
-  if (!ParseColour(code, rgba, has_alpha)) {
-    RGPU_WARN("menu_background_color '{}' is no colour code (#RRGGBB): the game's colour", code);
-  } else if ((rgba >> 8) != 0x293463 || has_alpha) {
+  // No colour code (#RRGGBB): the game's colour.
+  if (ParseColour(code, rgba, has_alpha) && ((rgba >> 8) != 0x293463 || has_alpha)) {
     latched.active = true;
     for (int i = 0; i < 3; ++i)
       latched.colour[i] = float((rgba >> (24 - 8 * i)) & 0xFF) / 255.0f;
@@ -169,7 +160,6 @@ void RecolourMenuPanel(uint8_t *blocks, uint32_t blocks_w, uint32_t blocks_h, ui
   }
   if (blue * kPanelShareDivisor < blocks_w * blocks_h)
     return;
-  NotePanel(blocks_w, blocks_h);
   for (uint32_t y = 0; y < blocks_h; ++y) {
     uint8_t *row = blocks + size_t(y) * row_pitch;
     for (uint32_t x = 0; x < blocks_w; ++x) {

@@ -1,17 +1,21 @@
-/**
- * @file    gpu/overlay/overlay_drawer.cpp
- */
 #include "renut_engine/gpu/overlay/overlay_drawer.h"
 
 #include <algorithm>
+#include <cfloat>
+#include <cmath>
+#include <cstring>
 #include <mutex>
+#include <optional>
+#include <unordered_map>
 #include <utility>
+
+#include <imgui.h>
 
 #include <plume_render_interface.h>
 
 #include "renut_engine/gpu/backend/backend.h"
+#include "renut_engine/gpu/backend/frame_blur.h"
 #include "renut_engine/gpu/overlay/app_integration.h"
-#include "renut_engine/gpu/log.h"
 #include "renut_engine/gpu/backend/video.h"
 
 #include "host_shaders/overlay_ps.spirv.h"
@@ -23,7 +27,7 @@
 
 namespace renut::gpu {
 
-// What the SDK drew in one ImGuiDrawer::Draw, in render target pixels of
+// What the SDK drew in one IUISystem::DrawOverlays, in render target pixels of
 // width x height.
 struct OverlayDrawer::Frame {
   struct Batch {
@@ -46,21 +50,92 @@ struct OverlayDrawer::Frame {
   uint32_t height = 0;
   float scale[2] = {};      // coordinate space -> clip space, y down
   float translate[2] = {};
-  std::vector<rex::ui::ImmediateVertex> vertices;
-  std::vector<uint16_t> indices;
+  std::vector<ImDrawVert> vertices;
+  std::vector<ImDrawIdx> indices;
   std::vector<Batch> batches;
   std::vector<DrawCall> draws;
 };
 
 namespace {
 
-const plume::RenderInputSlot kVertexSlot(0, sizeof(rex::ui::ImmediateVertex),
+const plume::RenderInputSlot kVertexSlot(0, sizeof(ImDrawVert),
                                          plume::RenderInputSlotClassification::PER_VERTEX_DATA);
 
 // The latest recorded frame (UI thread writes, presenting thread reads).
 std::mutex g_frame_mutex;
 std::shared_ptr<const OverlayDrawer::Frame> g_latest;
 uint64_t g_frames_recorded = 0;  // UI thread
+
+// The textures the SDK's ImGui names by ImTextureID: its own (font atlas, user
+// textures), CreateOverlayTexture's, and the game frame and screen stand-ins.
+std::mutex g_textures_mutex;
+std::unordered_map<ImTextureID, std::shared_ptr<OverlayTextureData>> g_textures;
+// Apart from reNut's own overlay's ids (overlay_ui.cpp), so one used in the
+// wrong context draws nothing.
+ImTextureID g_next_texture = ImTextureID(1) << 63;
+
+ImTextureID RegisterTexture(std::shared_ptr<OverlayTextureData> data) {
+  std::lock_guard lock(g_textures_mutex);
+  const ImTextureID id = g_next_texture++;
+  g_textures.emplace(id, std::move(data));
+  return id;
+}
+
+std::shared_ptr<OverlayTextureData> FindTexture(ImTextureID id) {
+  std::lock_guard lock(g_textures_mutex);
+  auto it = g_textures.find(id);
+  return it != g_textures.end() ? it->second : nullptr;
+}
+
+// A stand-in texture (game frame, blurred frame, screen), drawn from what the
+// presenting thread has rather than from pixels.
+ImTextureID StandInTexture(bool game_frame, bool blurred_frame, uint8_t screen) {
+  static const uint8_t kTexel[4] = {};
+  auto data = std::make_shared<OverlayTextureData>(1, 1, kLinearClampSamplerSlot, kTexel);
+  data->game_frame = game_frame;
+  data->blurred_frame = blurred_frame;
+  data->screen = screen;
+  return RegisterTexture(std::move(data));
+}
+
+// Honours one of ImGui's texture requests (UI thread): the pixels are copied
+// for the presenting thread, so ImGui may consider them done.
+void TakeTextureRequest(ImTextureData &texture) {
+  if (texture.Status == ImTextureStatus_WantDestroy) {
+    {
+      std::lock_guard lock(g_textures_mutex);
+      g_textures.erase(texture.GetTexID());
+    }
+    texture.SetTexID(ImTextureID_Invalid);
+    texture.SetStatus(ImTextureStatus_Destroyed);
+    return;
+  }
+  if (texture.Status != ImTextureStatus_WantCreate && texture.Status != ImTextureStatus_WantUpdates)
+    return;
+  // An update takes the whole texture again: the font atlas changes rarely.
+  const uint32_t width = uint32_t(texture.Width);
+  const uint32_t height = uint32_t(texture.Height);
+  const size_t texels = size_t(width) * height;
+  std::vector<uint8_t> rgba(texels * 4);
+  const auto *pixels = static_cast<const uint8_t *>(texture.GetPixels());
+  if (texture.Format == ImTextureFormat_RGBA32) {
+    std::memcpy(rgba.data(), pixels, texels * 4);
+  } else {  // Alpha8: white with the coverage as alpha
+    for (size_t i = 0; i < texels; ++i) {
+      rgba[i * 4 + 0] = rgba[i * 4 + 1] = rgba[i * 4 + 2] = 0xFF;
+      rgba[i * 4 + 3] = pixels[i];
+    }
+  }
+  auto data = std::make_shared<OverlayTextureData>(width, height, kLinearClampSamplerSlot, rgba.data());
+  if (texture.Status == ImTextureStatus_WantCreate) {
+    texture.SetTexID(RegisterTexture(std::move(data)));
+  } else {
+    // Frames already recorded keep the old pixels.
+    std::lock_guard lock(g_textures_mutex);
+    g_textures[texture.GetTexID()] = std::move(data);
+  }
+  texture.SetStatus(ImTextureStatus_OK);
+}
 
 // Host textures of textures gone, for the presenting thread to release.
 struct Released {
@@ -158,16 +233,12 @@ bool EnsureResourcesLocked() {
                                       plume::RenderPrimitiveTopology::TRIANGLE_LIST);
   r.lines = CreateOverlayPipeline(device, r.vs.get(), r.ps.get(),
                                   plume::RenderPrimitiveTopology::LINE_LIST);
-  if (!r.triangles || !r.lines) {
-    RGPU_ERROR("Overlay pipeline creation failed");
+  if (!r.triangles || !r.lines)
     return false;
-  }
   // Untextured ImGui geometry samples a white texel.
   static const uint8_t kWhite[4] = {0xFF, 0xFF, 0xFF, 0xFF};
-  if (!CreateUploadedTexture(1, 1, kWhite, r.white, r.white_view, r.white_slot)) {
-    RGPU_ERROR("Overlay white texture creation failed");
+  if (!CreateUploadedTexture(1, 1, kWhite, r.white, r.white_view, r.white_slot))
     return false;
-  }
   r.failed = false;
   r.ready = true;
   return true;
@@ -192,14 +263,22 @@ void ReleaseTexturesLocked() {
 std::mutex g_game_frame_mutex;
 uint32_t g_game_frame_slot = kInvalidDescriptor;
 float g_game_frame_uv[4] = {};
+uint32_t g_blurred_frame_slot = kInvalidDescriptor;  // SetBlurredFrameLocked
 
 // The host texture of 'data', made from its pixels the first time; the
 // white texel's slot when there is none.
 uint32_t TextureSlotLocked(OverlayTextureData *data) {
   if (!data)
     return GetResources().white_slot;
-  if (data->game_frame) {
+  if (data->screen) {
+    if (const uint32_t slot = ScreenSlotLocked(data->screen == 2); slot != kInvalidDescriptor)
+      return slot;
+  }
+  if (data->game_frame || data->blurred_frame || data->screen) {
     std::lock_guard lock(g_game_frame_mutex);
+    // A blurred frame (or screen) that stopped being made shows the plain one rather than white.
+    if ((data->blurred_frame || data->screen) && g_blurred_frame_slot != kInvalidDescriptor)
+      return g_blurred_frame_slot;
     return g_game_frame_slot != kInvalidDescriptor ? g_game_frame_slot : GetResources().white_slot;
   }
   if (!data->texture && !data->failed) {
@@ -225,9 +304,6 @@ OverlayTextureData::~OverlayTextureData() {
   g_released.push_back({std::move(texture), std::move(view), slot});
 }
 
-OverlayTexture::OverlayTexture(std::shared_ptr<OverlayTextureData> data)
-    : rex::ui::ImmediateTexture(data->width, data->height), data_(std::move(data)) {}
-
 void SetGameFrameLocked(uint32_t slot, const float uv[4]) {
   std::lock_guard lock(g_game_frame_mutex);
   g_game_frame_slot = slot;
@@ -235,18 +311,64 @@ void SetGameFrameLocked(uint32_t slot, const float uv[4]) {
     std::copy(uv, uv + 4, g_game_frame_uv);
 }
 
-rex::ui::ImmediateTexture *GameFrameTexture(float uv[4]) {
-  static const uint8_t kTexel[4] = {};
-  static OverlayTexture texture([] {
-    auto data = std::make_shared<OverlayTextureData>(1, 1, kLinearClampSamplerSlot, kTexel);
-    data->game_frame = true;
-    return data;
-  }());
+ImTextureID GameFrameTexture(float uv[4]) {
+  static const ImTextureID texture = StandInTexture(true, false, 0);
   std::lock_guard lock(g_game_frame_mutex);
   if (g_game_frame_slot == kInvalidDescriptor)
-    return nullptr;
+    return ImTextureID_Invalid;
   std::copy(g_game_frame_uv, g_game_frame_uv + 4, uv);
-  return &texture;
+  return texture;
+}
+
+void SetBlurredFrameLocked(uint32_t slot) {
+  std::lock_guard lock(g_game_frame_mutex);
+  g_blurred_frame_slot = slot;
+}
+
+ImTextureID BlurredGameFrameTexture(float sigma, float uv[4]) {
+  static const ImTextureID texture = StandInTexture(false, true, 0);
+  // Asking is what keeps the blur running (frame_blur.cpp), so it's asked for even before there's one.
+  WantFrameBlur(sigma);
+  std::lock_guard lock(g_game_frame_mutex);
+  if (g_blurred_frame_slot == kInvalidDescriptor)
+    return ImTextureID_Invalid;
+  // The blurred copy is only the shown part.
+  uv[0] = uv[1] = 0.0f;
+  uv[2] = uv[3] = 1.0f;
+  return texture;
+}
+
+ImTextureID ScreenTexture(float sigma, float uv[4]) {
+  static const ImTextureID sharp = StandInTexture(false, false, 1);
+  static const ImTextureID blurred = StandInTexture(false, false, 2);
+  // Asking keeps the UI drawn where it can be copied (frame_blur.cpp), so it's asked for even before it's ready.
+  WantScreen(sigma);
+  if (!ScreenReady())
+    return ImTextureID_Invalid;
+  // The copies are the window's size: the whole screen.
+  uv[0] = uv[1] = 0.0f;
+  uv[2] = uv[3] = 1.0f;
+  return sigma > 0.0f ? blurred : sharp;
+}
+
+ImTextureID CreateOverlayTexture(uint32_t width, uint32_t height, const uint8_t *rgba) {
+  if (!rgba || width == 0 || height == 0)
+    return ImTextureID_Invalid;
+  return RegisterTexture(std::make_shared<OverlayTextureData>(width, height, kLinearClampSamplerSlot, rgba));
+}
+
+void DestroyOverlayTexture(ImTextureID texture) {
+  std::shared_ptr<OverlayTextureData> data;
+  {
+    std::lock_guard lock(g_textures_mutex);
+    auto it = g_textures.find(texture);
+    if (it == g_textures.end())
+      return;
+    data = std::move(it->second);
+    g_textures.erase(it);
+  }
+  // Released here, unlocked, unless a recorded frame still holds it.
+  data.reset();
 }
 
 OverlayDrawer::OverlayDrawer() = default;
@@ -256,74 +378,65 @@ OverlayDrawer::~OverlayDrawer() {
   g_latest.reset();
 }
 
-std::unique_ptr<rex::ui::ImmediateTexture>
-OverlayDrawer::CreateTexture(uint32_t width, uint32_t height, rex::ui::ImmediateTextureFilter filter,
-                             bool is_repeated, const uint8_t *data) {
-  (void)is_repeated;
-  if (!data || width == 0 || height == 0)
-    return nullptr;
-  const uint32_t sampler = filter == rex::ui::ImmediateTextureFilter::kNearest
-                               ? kPointClampSamplerSlot
-                               : kLinearClampSamplerSlot;
-  return std::make_unique<OverlayTexture>(
-      std::make_shared<OverlayTextureData>(width, height, sampler, data));
-}
-
-void OverlayDrawer::Begin(rex::ui::UIDrawContext &ctx, float coord_width, float coord_height) {
-  // The base resolves non-positive sizes; read them back through its accessors.
-  rex::ui::ImmediateDrawer::Begin(ctx, coord_width, coord_height);
-  recording_ = std::make_unique<Frame>();
-  recording_->width = ctx.render_target_width();
-  recording_->height = ctx.render_target_height();
-  recording_->scale[0] = 2.0f / coordinate_space_width();
-  recording_->scale[1] = -2.0f / coordinate_space_height();
-  recording_->translate[0] = -1.0f;
-  recording_->translate[1] = 1.0f;
-}
-
-void OverlayDrawer::BeginDrawBatch(const rex::ui::ImmediateDrawBatch &batch) {
-  if (!recording_)
-    return;
-  Frame::Batch b;
-  b.first_vertex = uint32_t(recording_->vertices.size());
-  b.first_index = uint32_t(recording_->indices.size());
-  if (batch.vertices && batch.vertex_count > 0) {
-    recording_->vertices.insert(recording_->vertices.end(), batch.vertices,
-                                batch.vertices + batch.vertex_count);
-    b.vertex_count = uint32_t(batch.vertex_count);
+void OverlayDrawer::RenderOverlays(ImDrawData &draw_data) {
+  // Texture ids first: the commands name their textures by them.
+  if (draw_data.Textures) {
+    for (ImTextureData *texture : *draw_data.Textures)
+      TakeTextureRequest(*texture);
   }
-  if (batch.indices && batch.index_count > 0) {
-    recording_->indices.insert(recording_->indices.end(), batch.indices,
-                               batch.indices + batch.index_count);
-    b.index_count = uint32_t(batch.index_count);
+
+  auto recording = std::make_unique<Frame>();
+  const ImVec2 display = draw_data.DisplaySize;
+  const ImVec2 origin = draw_data.DisplayPos;
+  const ImVec2 to_pixels = draw_data.FramebufferScale;
+  recording->width = uint32_t(std::max(display.x * to_pixels.x + 0.5f, 0.0f));
+  recording->height = uint32_t(std::max(display.y * to_pixels.y + 0.5f, 0.0f));
+  if (display.x > 0.0f && display.y > 0.0f) {
+    recording->scale[0] = 2.0f / display.x;
+    recording->scale[1] = -2.0f / display.y;
+    recording->translate[0] = -1.0f - origin.x * recording->scale[0];
+    recording->translate[1] = 1.0f - origin.y * recording->scale[1];
   }
-  recording_->batches.push_back(b);
-}
+  for (const ImDrawList *list : draw_data.CmdLists) {
+    Frame::Batch b;
+    b.first_vertex = uint32_t(recording->vertices.size());
+    b.first_index = uint32_t(recording->indices.size());
+    recording->vertices.insert(recording->vertices.end(), list->VtxBuffer.begin(), list->VtxBuffer.end());
+    recording->indices.insert(recording->indices.end(), list->IdxBuffer.begin(), list->IdxBuffer.end());
+    b.vertex_count = uint32_t(list->VtxBuffer.Size);
+    b.index_count = uint32_t(list->IdxBuffer.Size);
+    recording->batches.push_back(b);
+    if (!b.vertex_count || !b.index_count)
+      continue;
+    for (const ImDrawCmd &draw : list->CmdBuffer) {
+      if (draw.UserCallback || !draw.ElemCount)
+        continue;
+      // The clip rectangle in render target pixels, on it.
+      const float max_x = float(recording->width), max_y = float(recording->height);
+      const float left = std::clamp((draw.ClipRect.x - origin.x) * to_pixels.x, 0.0f, max_x);
+      const float top = std::clamp((draw.ClipRect.y - origin.y) * to_pixels.y, 0.0f, max_y);
+      const float right = std::clamp((draw.ClipRect.z - origin.x) * to_pixels.x, left, max_x);
+      const float bottom = std::clamp((draw.ClipRect.w - origin.y) * to_pixels.y, top, max_y);
+      if (right <= left || bottom <= top)
+        continue;
+      Frame::DrawCall call;
+      if (const ImTextureID id = draw.GetTexID(); id != ImTextureID_Invalid) {
+        // A texture already gone draws nothing rather than white.
+        call.texture = FindTexture(id);
+        if (!call.texture)
+          continue;
+      }
+      call.batch = uint32_t(recording->batches.size() - 1);
+      call.count = draw.ElemCount;
+      call.index_offset = draw.IdxOffset;
+      call.base_vertex = int32_t(draw.VtxOffset);
+      call.scissor = plume::RenderRect(int32_t(left), int32_t(top), int32_t(std::ceil(right)),
+                                       int32_t(std::ceil(bottom)));
+      recording->draws.push_back(std::move(call));
+    }
+  }
 
-void OverlayDrawer::Draw(const rex::ui::ImmediateDraw &draw) {
-  if (!recording_ || recording_->batches.empty() || draw.count <= 0 ||
-      !recording_->batches.back().vertex_count)
-    return;
-  uint32_t left, top, width, height;
-  if (!ScissorToRenderTarget(draw, left, top, width, height))
-    return;
-  Frame::DrawCall call;
-  call.batch = uint32_t(recording_->batches.size() - 1);
-  call.lines = draw.primitive_type == rex::ui::ImmediatePrimitiveType::kLines;
-  call.count = uint32_t(draw.count);
-  call.index_offset = uint32_t(draw.index_offset);
-  call.base_vertex = draw.base_vertex;
-  call.scissor = plume::RenderRect(int32_t(left), int32_t(top), int32_t(left + width),
-                                   int32_t(top + height));
-  if (draw.texture)
-    call.texture = static_cast<OverlayTexture *>(draw.texture)->data();
-  recording_->draws.push_back(std::move(call));
-}
-
-void OverlayDrawer::EndDrawBatch() {}
-
-void OverlayDrawer::End() {
-  std::shared_ptr<const Frame> frame(std::move(recording_));
+  std::shared_ptr<const Frame> frame(std::move(recording));
   {
     std::lock_guard lock(g_frame_mutex);
     g_latest.swap(frame);
@@ -331,7 +444,6 @@ void OverlayDrawer::End() {
   // The frame replaced (and any texture only it held) goes here, unlocked.
   frame.reset();
   ++g_frames_recorded;
-  rex::ui::ImmediateDrawer::End();
 }
 
 uint64_t OverlayDrawer::FramesRecorded() {
@@ -345,6 +457,54 @@ void OverlayDrawer::ClearLatest() {
     g_latest.swap(frame);
   }
 }
+
+namespace {
+
+// Room around a glass panel's draw, in pixels, for its rim, which bends what's just outside it inwards.
+constexpr int32_t kPanelMargin = 12;
+
+// The pixels a run of glass draws covers and samples (their vertices' and texture coordinates' bounds; the screen's
+// copies span the target), widened by kPanelMargin, on a width x height target.
+bool DrawBounds(const OverlayDrawer::Frame &frame, const OverlayDrawer::Frame::DrawCall *calls, size_t count,
+                uint32_t width, uint32_t height, plume::RenderRect &out) {
+  float min_x = FLT_MAX, min_y = FLT_MAX, max_x = -FLT_MAX, max_y = -FLT_MAX;
+  const auto point = [&](float x, float y) {
+    min_x = std::min(min_x, x);
+    min_y = std::min(min_y, y);
+    max_x = std::max(max_x, x);
+    max_y = std::max(max_y, y);
+  };
+  // Coordinates to clip space (scale, translate) to pixels, y down.
+  const auto px = [&](float x) { return (x * frame.scale[0] + frame.translate[0] + 1.0f) * 0.5f * float(width); };
+  const auto py = [&](float y) { return (1.0f - (y * frame.scale[1] + frame.translate[1])) * 0.5f * float(height); };
+  for (size_t c = 0; c < count; ++c) {
+    const OverlayDrawer::Frame::DrawCall &call = calls[c];
+    const OverlayDrawer::Frame::Batch &b = frame.batches[call.batch];
+    const auto add = [&](int64_t vertex) {
+      if (vertex < 0 || vertex >= int64_t(b.vertex_count))
+        return;
+      // Position then texture coordinate, the vertex's first four floats (CreateOverlayPipeline's layout).
+      float v[4];
+      std::memcpy(v, &frame.vertices[b.first_vertex + size_t(vertex)], sizeof(v));
+      point(px(v[0]), py(v[1]));
+      point(v[2] * float(width), v[3] * float(height));
+    };
+    if (b.index_count) {
+      for (uint32_t i = call.index_offset; i < call.index_offset + call.count && i < b.index_count; ++i)
+        add(int64_t(frame.indices[b.first_index + i]) + call.base_vertex);
+    } else {
+      for (uint32_t i = 0; i < call.count; ++i)
+        add(int64_t(call.base_vertex) + i);
+    }
+  }
+  if (min_x > max_x || min_y > max_y)
+    return false;
+  out = plume::RenderRect(int32_t(std::floor(min_x)) - kPanelMargin, int32_t(std::floor(min_y)) - kPanelMargin,
+                          int32_t(std::ceil(max_x)) + kPanelMargin, int32_t(std::ceil(max_y)) + kPanelMargin);
+  return true;
+}
+
+} // namespace
 
 void OverlayDrawer::DrawLatestLocked(plume::RenderCommandList *cmd,
                                      plume::RenderFramebuffer *framebuffer, uint32_t width,
@@ -374,7 +534,12 @@ void OverlayDrawer::DrawLatestLocked(plume::RenderCommandList *cmd,
   uint32_t bound_batch = UINT32_MAX;
   bool batch_ok = false;
   bool indexed = false;
-  for (const Frame::DrawCall &call : frame->draws) {
+  std::optional<plume::RenderVertexBufferView> vertex_view;
+  std::optional<plume::RenderIndexBufferView> index_view;
+  // Something other than glass was drawn since the screen was last copied (the game, before the first draw).
+  bool drawn = true;
+  for (size_t index = 0; index < frame->draws.size(); ++index) {
+    const Frame::DrawCall &call = frame->draws[index];
     if (call.batch != bound_batch) {
       bound_batch = call.batch;
       const Frame::Batch &b = frame->batches[call.batch];
@@ -382,19 +547,19 @@ void OverlayDrawer::DrawLatestLocked(plume::RenderCommandList *cmd,
       indexed = b.index_count > 0;
       const UploadAllocation vertices =
           uploads.Upload(frame->vertices.data() + b.first_vertex,
-                         sizeof(rex::ui::ImmediateVertex) * uint64_t(b.vertex_count), 16);
+                         sizeof(ImDrawVert) * uint64_t(b.vertex_count), 16);
       if (!vertices)
         continue;
-      const plume::RenderVertexBufferView vertex_view(vertices.ref, vertices.size);
-      cmd->setVertexBuffers(0, &vertex_view, 1, &kVertexSlot);
+      vertex_view.emplace(vertices.ref, vertices.size);
+      cmd->setVertexBuffers(0, &*vertex_view, 1, &kVertexSlot);
       if (indexed) {
         const UploadAllocation indices = uploads.Upload(
-            frame->indices.data() + b.first_index, sizeof(uint16_t) * uint64_t(b.index_count), 16);
+            frame->indices.data() + b.first_index, sizeof(ImDrawIdx) * uint64_t(b.index_count), 16);
         if (!indices)
           continue;
-        const plume::RenderIndexBufferView index_view(indices.ref, indices.size,
-                                                      plume::RenderFormat::R16_UINT);
-        cmd->setIndexBuffer(&index_view);
+        index_view.emplace(indices.ref, indices.size,
+                           sizeof(ImDrawIdx) == 2 ? plume::RenderFormat::R16_UINT : plume::RenderFormat::R32_UINT);
+        cmd->setIndexBuffer(&*index_view);
       }
       batch_ok = true;
     }
@@ -409,6 +574,31 @@ void OverlayDrawer::DrawLatestLocked(plume::RenderCommandList *cmd,
         std::clamp(int32_t(float(call.scissor.bottom) * to_y + 0.5f), top, int32_t(height));
     if (right <= left || bottom <= top)
       continue;
+
+    // Glass showing the screen: what's under it is copied first, once anything else was drawn since the last copy.
+    const bool screen = call.texture && call.texture->screen;
+    if (screen && drawn && ScreenActiveLocked()) {
+      // The glass draws up to the next other draw all use this copy.
+      size_t run = index + 1;
+      while (run < frame->draws.size() && frame->draws[run].texture && frame->draws[run].texture->screen)
+        ++run;
+      plume::RenderRect region;
+      if (DrawBounds(*frame, &frame->draws[index], run - index, width, height, region) &&
+          CaptureScreenLocked(State(), cmd, region)) {
+        // The copy left the pass; back in it, with this pass's state.
+        cmd->setViewports(plume::RenderViewport(0.0f, 0.0f, float(width), float(height)));
+        cmd->setGraphicsPipelineLayout(State().utility_layout.get());
+        cmd->setGraphicsDescriptorSet(State().texture_set.get(), 0);
+        cmd->setGraphicsDescriptorSet(State().sampler_set.get(), 1);
+        cmd->setVertexBuffers(0, &*vertex_view, 1, &kVertexSlot);
+        if (indexed && index_view)
+          cmd->setIndexBuffer(&*index_view);
+      }
+      drawn = false;
+    }
+    if (!screen)
+      drawn = true;
+
     cmd->setScissors(plume::RenderRect(left, top, right, bottom));
     cmd->setPipeline(call.lines ? r.lines.get() : r.triangles.get());
 
@@ -419,7 +609,8 @@ void OverlayDrawer::DrawLatestLocked(plume::RenderCommandList *cmd,
     push.translate[1] = frame->translate[1];
     push.texture_index = TextureSlotLocked(call.texture.get());
     push.sampler_index = call.texture ? call.texture->sampler_slot : kLinearClampSamplerSlot;
-    push.param0 = call.texture && call.texture->game_frame ? 1.0f : 0.0f;
+    push.param0 =
+        call.texture && (call.texture->game_frame || call.texture->blurred_frame || call.texture->screen) ? 1.0f : 0.0f;
     cmd->setGraphicsPushConstants(0, &push, 0, sizeof(push));
     if (indexed)
       cmd->drawIndexedInstanced(call.count, 1, call.index_offset, call.base_vertex, 0);

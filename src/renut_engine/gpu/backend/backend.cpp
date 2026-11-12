@@ -1,6 +1,3 @@
-/**
- * @file    gpu/backend/backend.cpp
- */
 #include "renut_engine/gpu/backend/backend.h"
 
 #include <algorithm>
@@ -11,32 +8,37 @@
 #include <system_error>
 #include <vector>
 
-#include <rex/cvar.h>
+#include <rex/setting.h>
 
 #include <plume_vulkan.h>
 #if defined(_WIN32)
 #include <plume_d3d12.h>
 #endif
 
+#include "renut_engine/app/renut_settings.h"
 #include "renut_engine/gpu/backend/command_recorder.h"
-#include "renut_engine/gpu/log.h"
 
-REXCVAR_DEFINE_STRING(renut_gpu_backend, "d3d12", "Nuts&Bolts/Graphics",
-                      "Renderer backend: d3d12 or vulkan. Takes effect after a restart. "
-                      "Non-Windows builds always use vulkan.")
-    .allowed({"d3d12", "vulkan"})
-    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
-REXCVAR_DEFINE_BOOL(renut_gpu_dred, false, "Nuts&Bolts/Graphics",
-                    "D3D12 device removed diagnostics (DRED breadcrumbs and page faults) for "
-                    "debugging GPU crashes. Costs CPU and GPU time on every command. Takes "
-                    "effect after a restart.")
-    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
-REXCVAR_DEFINE_BOOL(renut_vulkan_debug_layers, false, "Nuts&Bolts/Graphics",
-                    "Vulkan validation and crash diagnostic layers (needs the Vulkan SDK): API "
-                    "misuse goes to logs/vulkan_validation.log, and a lost device writes what the "
-                    "GPU was executing to logs/vulkan_crash. Very slow. Takes effect after a "
-                    "restart.")
-    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
+namespace {
+struct BackendSettings final : rex::SettingOwner {
+  BackendSettings() : rex::SettingOwner(renut::settings::kScope) { renut::settings::Add(*this); }
+  REX_SETTING(std::string, renut_gpu_backend, "d3d12",
+              "Renderer backend: d3d12 or vulkan. Takes effect after a restart. "
+              "Non-Windows builds always use vulkan.",
+              rex::Allowed("d3d12", "vulkan"), rex::kRestart);
+  REX_SETTING(bool, renut_gpu_dred, false,
+              "D3D12 device removed diagnostics (DRED breadcrumbs and page faults) for "
+              "debugging GPU crashes. Costs CPU and GPU time on every command. Takes "
+              "effect after a restart.",
+              rex::kRestart);
+  REX_SETTING(bool, renut_vulkan_debug_layers, false,
+              "Vulkan validation and crash diagnostic layers (needs the Vulkan SDK): API "
+              "misuse goes to logs/vulkan_validation.log, and a lost device writes what the "
+              "GPU was executing to logs/vulkan_crash. Very slow. Takes effect after a "
+              "restart.",
+              rex::kRestart);
+};
+BackendSettings &g_backend_settings = *new BackendSettings();  // never freed, registered by RenutApp::OnConfigure
+} // namespace
 
 namespace plume {
 #if defined(PLUME_SDL_VULKAN_ENABLED)
@@ -55,7 +57,7 @@ namespace {
 
 Backend ResolveBackend() {
 #if defined(_WIN32)
-  return REXCVAR_GET(renut_gpu_backend) == "vulkan" ? Backend::Vulkan : Backend::D3D12;
+  return g_backend_settings.renut_gpu_backend.Get() == "vulkan" ? Backend::Vulkan : Backend::D3D12;
 #else
   return Backend::Vulkan;
 #endif
@@ -63,96 +65,21 @@ Backend ResolveBackend() {
 
 #if defined(_WIN32)
 
-// DRED must be switched on before the device exists.
+// DRED must be switched on before the device exists (a debugger reads what
+// it records).
 void EnableDeviceRemovedDiagnostics() {
   ID3D12DeviceRemovedExtendedDataSettings *settings = nullptr;
-  if (FAILED(D3D12GetDebugInterface(IID_PPV_ARGS(&settings))) || !settings) {
-    RGPU_WARN("D3D12 device removed diagnostics (DRED) unavailable");
+  if (FAILED(D3D12GetDebugInterface(IID_PPV_ARGS(&settings))) || !settings)
     return;
-  }
   settings->SetAutoBreadcrumbsEnablement(D3D12_DRED_ENABLEMENT_FORCED_ON);
   settings->SetPageFaultEnablement(D3D12_DRED_ENABLEMENT_FORCED_ON);
   settings->Release();
 }
 
-const char *BreadcrumbOpName(D3D12_AUTO_BREADCRUMB_OP op) {
-  switch (op) {
-  case D3D12_AUTO_BREADCRUMB_OP_DRAWINSTANCED:
-    return "DrawInstanced";
-  case D3D12_AUTO_BREADCRUMB_OP_DRAWINDEXEDINSTANCED:
-    return "DrawIndexedInstanced";
-  case D3D12_AUTO_BREADCRUMB_OP_COPYBUFFERREGION:
-    return "CopyBufferRegion";
-  case D3D12_AUTO_BREADCRUMB_OP_COPYTEXTUREREGION:
-    return "CopyTextureRegion";
-  case D3D12_AUTO_BREADCRUMB_OP_RESOLVESUBRESOURCE:
-    return "ResolveSubresource";
-  case D3D12_AUTO_BREADCRUMB_OP_RESOLVESUBRESOURCEREGION:
-    return "ResolveSubresourceRegion";
-  case D3D12_AUTO_BREADCRUMB_OP_CLEARRENDERTARGETVIEW:
-    return "ClearRenderTargetView";
-  case D3D12_AUTO_BREADCRUMB_OP_CLEARDEPTHSTENCILVIEW:
-    return "ClearDepthStencilView";
-  case D3D12_AUTO_BREADCRUMB_OP_RESOURCEBARRIER:
-    return "ResourceBarrier";
-  case D3D12_AUTO_BREADCRUMB_OP_PRESENT:
-    return "Present";
-  default:
-    return "other";
-  }
-}
-
-void LogAllocations(const char *what, const D3D12_DRED_ALLOCATION_NODE *node) {
-  for (int n = 0; node && n < 16; node = node->pNext, ++n) {
-    RGPU_ERROR("DRED:   {} allocation '{}' (type {})", what,
-               node->ObjectNameA ? node->ObjectNameA : "", uint32_t(node->AllocationType));
-  }
-}
-
-// Where the GPU stopped: each command list's breadcrumb trail up to the last
-// operation it completed, and the allocation behind a page fault.
-void LogDeviceRemovedData(ID3D12Device *d3d) {
-  ID3D12DeviceRemovedExtendedData *dred = nullptr;
-  if (FAILED(d3d->QueryInterface(IID_PPV_ARGS(&dred))) || !dred) {
-    RGPU_ERROR("DRED: no data (set renut_gpu_dred = true to record where the GPU stopped)");
-    return;
-  }
-  D3D12_DRED_AUTO_BREADCRUMBS_OUTPUT breadcrumbs{};
-  if (SUCCEEDED(dred->GetAutoBreadcrumbsOutput(&breadcrumbs))) {
-    for (const D3D12_AUTO_BREADCRUMB_NODE *node = breadcrumbs.pHeadAutoBreadcrumbNode; node;
-         node = node->pNext) {
-      const UINT count = node->BreadcrumbCount;
-      const UINT done = node->pLastBreadcrumbValue ? *node->pLastBreadcrumbValue : 0;
-      if (done >= count)
-        continue;  // finished
-      UINT draws = 0;
-      for (UINT i = 0; i < done; ++i) {
-        const D3D12_AUTO_BREADCRUMB_OP op = node->pCommandHistory[i];
-        draws += op == D3D12_AUTO_BREADCRUMB_OP_DRAWINSTANCED ||
-                 op == D3D12_AUTO_BREADCRUMB_OP_DRAWINDEXEDINSTANCED;
-      }
-      const D3D12_AUTO_BREADCRUMB_OP op = node->pCommandHistory[done];
-      RGPU_ERROR("DRED: command list '{}' stopped at operation {} of {}: {} ({}), after {} draws",
-                 node->pCommandListDebugNameA ? node->pCommandListDebugNameA : "", done, count,
-                 BreadcrumbOpName(op), uint32_t(op), draws);
-    }
-  }
-  D3D12_DRED_PAGE_FAULT_OUTPUT fault{};
-  if (SUCCEEDED(dred->GetPageFaultAllocationOutput(&fault)) && fault.PageFaultVA) {
-    RGPU_ERROR("DRED: page fault at GPU address {:016X}", uint64_t(fault.PageFaultVA));
-    LogAllocations("existing", fault.pHeadExistingAllocationNode);
-    LogAllocations("recently freed", fault.pHeadRecentFreedAllocationNode);
-  }
-  dred->Release();
-}
-
 #endif
 
-// Vulkan blend constants. plume's pipelines keep the constant static (zero)
-// and it has no call to set it, so pipeline creation goes through
-// CreateGraphicsPipelines, which makes the constant dynamic state in pipelines
-// whose blend factors read it, and SetBlendConstant records it. Both reach
-// Vulkan through volk's function pointers, which plume calls as well.
+// Vulkan pipeline creation goes through CreateGraphicsPipelines, which makes the
+// blend constant dynamic state in pipelines whose blend factors read it.
 PFN_vkCreateGraphicsPipelines g_create_graphics_pipelines = nullptr;
 
 bool ReadsBlendConstant(VkBlendFactor factor) {
@@ -216,9 +143,8 @@ void SetEnv(const char *name, const std::string &value) {
 #endif
 }
 
-// renut_vulkan_debug_layers: the Vulkan loader enables layers named in the
-// environment when the instance is created, and the layers read their
-// settings from it too (VK_<LAYER>_<SETTING>).
+// Enables the validation and crash diagnostic layers and their settings through
+// environment variables, read by the Vulkan loader at instance creation.
 void EnableVulkanDebugLayers() {
   std::error_code ec;
   const std::filesystem::path logs = std::filesystem::absolute("logs", ec);
@@ -240,9 +166,6 @@ void EnableVulkanDebugLayers() {
   SetEnv("CDL_TRACK_SEMAPHORES", "1");
   SetEnv("CDL_DUMP_QUEUE_SUBMITS", "all");
   SetEnv("CDL_LOG_FILE", (logs / "vulkan_crash" / "cdl.log").string());
-  RGPU_WARN("Vulkan debug layers requested (renut_vulkan_debug_layers): validation to {}, "
-            "crash dumps to {}",
-            (logs / "vulkan_validation.log").string(), (logs / "vulkan_crash").string());
 }
 
 // After plume loaded the Vulkan functions (plume::CreateVulkanInterface).
@@ -271,12 +194,12 @@ plume::RenderShaderFormat HostShaderFormat() {
 std::unique_ptr<plume::RenderInterface> CreateRenderInterface([[maybe_unused]] plume::RenderWindow window) {
 #if defined(_WIN32)
   if (!IsVulkan()) {
-    if (REXCVAR_GET(renut_gpu_dred))
+    if (g_backend_settings.renut_gpu_dred.Get())
       EnableDeviceRemovedDiagnostics();
     return plume::CreateD3D12Interface();
   }
 #endif
-  if (REXCVAR_GET(renut_vulkan_debug_layers))
+  if (g_backend_settings.renut_vulkan_debug_layers.Get())
     EnableVulkanDebugLayers();
 #if defined(PLUME_SDL_VULKAN_ENABLED)
   auto render_interface = plume::CreateVulkanInterface(window);
@@ -320,10 +243,8 @@ bool BufferCreated(const plume::RenderBuffer *buffer) {
 
 namespace {
 
-// Vulkan has no device-removed query: a fence's status reports a lost
-// device. plume's own calls only print their errors to stderr, and after a
-// loss acquire and present may go on succeeding, which leaves the screen on
-// the last image presented while the game runs on.
+// Vulkan has no device-removed query, so a never-submitted fence's status
+// reports a lost device.
 bool VulkanDeviceLost(plume::RenderDevice *device) {
   VkDevice vk = static_cast<plume::VulkanDevice *>(device)->vk;
   if (!vk)
@@ -345,22 +266,19 @@ bool ReportDeviceLost(plume::RenderDevice *device) {
     return true;
   if (!device)
     return false;
+  // The GPU faulted or hung executing an earlier frame: nothing is drawn from
+  // here on.
   if (IsVulkan()) {
     if (!VulkanDeviceLost(device) || lost.exchange(true))
       return lost.load();
-    RGPU_ERROR("Vulkan device lost: the GPU faulted or hung executing an earlier frame; nothing "
-               "is drawn from here on (plume's messages are in the stderr log)");
     return true;
   }
 #if defined(_WIN32)
   ID3D12Device *d3d = static_cast<plume::D3D12Device *>(device)->d3d;
   if (!d3d)
     return false;
-  const HRESULT reason = d3d->GetDeviceRemovedReason();
-  if (SUCCEEDED(reason) || lost.exchange(true))
+  if (SUCCEEDED(d3d->GetDeviceRemovedReason()) || lost.exchange(true))
     return lost.load();
-  RGPU_ERROR("D3D12 device removed (reason {:08X})", uint32_t(reason));
-  LogDeviceRemovedData(d3d);
   return true;
 #else
   return false;
@@ -478,14 +396,10 @@ std::unique_ptr<plume::RenderShader> CreateHostShader(plume::RenderDevice *devic
   const bool vulkan = IsVulkan();
   const void *data = vulkan ? static_cast<const void *>(blob.spirv) : blob.dxil;
   const size_t size = vulkan ? blob.spirv_size : blob.dxil_size;
-  if (!device || !data || size == 0) {
-    RGPU_ERROR("Host shader '{}' has no {} blob", name, BackendName(ActiveBackend()));
+  if (!device || !data || size == 0)
     return nullptr;
-  }
   auto shader = device->createShader(data, size, "main", HostShaderFormat());
-  if (!shader)
-    RGPU_ERROR("createShader failed for host shader '{}'", name);
-  else
+  if (shader)
     shader->setName(name);
   return shader;
 }

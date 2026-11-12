@@ -13,10 +13,8 @@ uint32_t Be32(const uint8_t *p) { return uint32_t(p[0]) << 24 | uint32_t(p[1]) <
 constexpr uint32_t kXCompressMagic = 0x0FF512ED;
 constexpr uint32_t kArchiveMagic = 0x438CB47C;
 
-// LZX as Xbox 360 XMemCompress writes it (the structure of libmspack's lzxd):
-// 16-bit little-endian words read MSB first, 32 KiB output frames, verbatim /
-// aligned-offset / uncompressed blocks, delta-coded tree lengths and E8
-// translation. Each frame is fed on its own, byte-aligned.
+// LZX decoder for Xbox 360 XMemCompress data (structured like libmspack's lzxd),
+// fed one byte-aligned 32 KiB output frame at a time.
 class LzxDecoder {
 public:
     static constexpr int kFrameSize = 32768;
@@ -482,16 +480,8 @@ bool IsXCompressed(std::span<const uint8_t> data) {
     return data.size() >= 16 && Be32(data.data()) == kXCompressMagic;
 }
 
-// Layout (big-endian):
-//   0x00 u32 identifier 0x0FF512ED, 0x04 u16 version, 0x06 u16 reserved,
-//   0x08 u32 hash, 0x0C u32 flags: bits 0-3 window = 1 << (n + 15),
-//   bits 4-5 segment size = 0x8000 << n, bits 6-21 segment count,
-//   bits 22-23 size-table entries 0 = 20-bit, 1 = 32-bit.
-//   0x10 bit-packed (MSB first) per-segment uncompressed sizes, padded to u32.
-// Segment i starts at i * segment size (segment 0 after the table). Each is
-// an independent LZX stream of XMem frames: u16 compressed size (32 KiB of
-// output), or 0xFF, u16 uncompressed size, u16 compressed size. A segment
-// that starts with a zero u16 is stored.
+// Big-endian header with flags at 0x0C (window, segment size and count, size-table width)
+// and per-segment sizes at 0x10; each segment is an independent LZX stream or stored.
 std::optional<std::vector<uint8_t>> XDecompress(std::span<const uint8_t> data, std::string *error) {
     auto fail = [&](const char *what) {
         *error = std::string("xcompress: ") + what;
@@ -578,9 +568,8 @@ std::optional<std::vector<uint8_t>> XDecompress(std::span<const uint8_t> data, s
     return output;
 }
 
-// Streaming archive (Bundle/50, magic 0x438CB47C): u32 magic, u32 entry size
-// (12), u32 entry count, u32 timestamp, u32 dependency count, u32
-// dependencies[], then entries {u32 asset id, u32 offset, u32 size}.
+// Streaming archive (Bundle/50, magic 0x438CB47C): magic, entry size, count, timestamp,
+// dependency count and list, then entries {asset id, offset, size}.
 std::optional<std::vector<uint8_t>> ExpandGameFile(std::vector<uint8_t> raw, std::string *error) {
     if (IsXCompressed(raw))
         return XDecompress(raw, error);

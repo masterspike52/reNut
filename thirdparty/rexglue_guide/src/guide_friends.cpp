@@ -6,11 +6,10 @@
 #include <utility>
 #include <vector>
 
-#include <rex/logging.h>
-#include <rex/system/kernel_state.h>
-
+#include "guest.h"
 #include "guide_dialog.h"
 #include "live_sessions.h"
+#include "log.h"
 
 namespace rexglue_guide {
 
@@ -126,6 +125,14 @@ std::string GuideDialog::GamertagOf(uint64_t xuid) const {
   return sessions::HostGamertag(xuid);
 }
 
+// The title's sign-in prompt: player 1's sign-in screen, with the title told
+// the system UI is up until it closes.
+void GuideDialog::ShowTitleSignIn() {
+  if (screen_ == Screen::kClosed) OpenFor(0, -1);
+  if (screen_ != Screen::kSignIn) return;
+  if (!std::exchange(title_ui_, true)) guest::Broadcast(kNotifySystemUi, 1);
+}
+
 void GuideDialog::ShowTitleGamercard(uint64_t xuid) {
   if (screen_ == Screen::kClosed) {
     // The title's request is player 1's.
@@ -136,7 +143,7 @@ void GuideDialog::ShowTitleGamercard(uint64_t xuid) {
   if (screen_ == Screen::kSignIn || !backend_->signed_in()) return;
   const std::string gamertag = GamertagOf(xuid);
   if (gamertag.empty()) {
-    REXKRNL_INFO("Rexglue Guide: no gamer card for XUID {:016X}: not a friend or a host", xuid);
+    RG_INFO("Rexglue Guide: no gamer card for XUID {:016X}: not a friend or a host", xuid);
     ShowToast({.glyph = Glyph::kAddPerson, .line1 = "Gamer card unavailable",
                .line2 = "That player isn't known to RexLiveless"});
     return;
@@ -149,9 +156,7 @@ void GuideDialog::ShowTitleGamercard(uint64_t xuid) {
   OpenGuide();
   blade_ = BladeOf(kSocialBlade);
   stacks_[size_t(blade_)] = {card};
-  if (!std::exchange(title_ui_, true)) {
-    if (auto* kernel = REX_KERNEL_STATE()) kernel->BroadcastNotification(kNotifySystemUi, 1);
-  }
+  if (!std::exchange(title_ui_, true)) guest::Broadcast(kNotifySystemUi, 1);
 }
 
 void GuideDialog::AddFriend() {

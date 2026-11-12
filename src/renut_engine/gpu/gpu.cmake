@@ -43,7 +43,7 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND NOT TARGET plume)
     if(NOT TARGET SDL2::SDL2)
         add_library(SDL2::SDL2 INTERFACE IMPORTED)
         set_target_properties(SDL2::SDL2 PROPERTIES INTERFACE_INCLUDE_DIRECTORIES
-            "${RENUT_GPU_DIR}/backend/sdl2_vulkan;$<TARGET_PROPERTY:SDL3::SDL3-static,INTERFACE_INCLUDE_DIRECTORIES>")
+            "${RENUT_GPU_DIR}/backend/sdl2_vulkan;$<TARGET_PROPERTY:SDL3::SDL3-shared,INTERFACE_INCLUDE_DIRECTORIES>")
     endif()
 endif()
 if(NOT TARGET plume)
@@ -213,12 +213,10 @@ function(renut_gpu_setup TARGET)
         # The host device, the frame and the render thread.
         ${RENUT_GPU_DIR}/backend/backend.cpp
         ${RENUT_GPU_DIR}/backend/command_recorder.cpp
-        ${RENUT_GPU_DIR}/backend/gpu_profile.cpp
-        ${RENUT_GPU_DIR}/backend/memory_report.cpp
+        ${RENUT_GPU_DIR}/backend/frame_blur.cpp
         ${RENUT_GPU_DIR}/backend/native_window.cpp
         ${RENUT_GPU_DIR}/backend/present.cpp
         ${RENUT_GPU_DIR}/backend/queued.cpp
-        ${RENUT_GPU_DIR}/backend/render_profile.cpp
         ${RENUT_GPU_DIR}/backend/render_thread.cpp
         ${RENUT_GPU_DIR}/backend/smaa.cpp
         ${RENUT_GPU_DIR}/backend/video.cpp
@@ -237,6 +235,7 @@ function(renut_gpu_setup TARGET)
         ${RENUT_GPU_DIR}/guest/widescreen.cpp
         # reNut's overlay and the SDK's menus.
         ${RENUT_GPU_DIR}/overlay/app_integration.cpp
+        ${RENUT_GPU_DIR}/overlay/draw_list_split.cpp
         ${RENUT_GPU_DIR}/overlay/overlay_drawer.cpp
         ${RENUT_GPU_DIR}/overlay/overlay_ui.cpp
         # Draws, targets, textures, shaders and formats.
@@ -250,10 +249,12 @@ function(renut_gpu_setup TARGET)
         ${RENUT_GPU_DIR}/render/parallel.cpp
         ${RENUT_GPU_DIR}/render/pipeline.cpp
         ${RENUT_GPU_DIR}/render/shader_library.cpp
+        ${RENUT_GPU_DIR}/render/shape_weights.cpp
         ${RENUT_GPU_DIR}/render/surfaces.cpp
         ${RENUT_GPU_DIR}/render/texture_layout.cpp
         ${RENUT_GPU_DIR}/render/textures.cpp
         ${RENUT_GPU_DIR}/render/upload_ring.cpp
+        ${RENUT_GPU_DIR}/render/world_materials.cpp
         ${RENUT_GPU_DIR}/render/vertex_format.cpp)
 
     renut_host_shader(${TARGET} overlay_vs vs_6_0)
@@ -271,10 +272,21 @@ function(renut_gpu_setup TARGET)
     renut_host_shader(${TARGET} smaa_edge_ps ps_6_0)
     renut_host_shader(${TARGET} smaa_weight_ps ps_6_0)
     renut_host_shader(${TARGET} smaa_blend_ps ps_6_0)
+    # The blurred frame glass and the Guide show the game through (backend/frame_blur.cpp).
+    renut_host_shader(${TARGET} frame_blur_down_ps ps_6_0)
+    renut_host_shader(${TARGET} frame_blur_ps ps_6_0)
     # renut_ssao (render/ambient_occlusion.cpp).
     renut_host_shader(${TARGET} ambient_occlusion_ps ps_6_0)
     renut_host_shader(${TARGET} ambient_occlusion_blur_ps ps_6_0)
     renut_host_shader(${TARGET} ambient_occlusion_composite_ps ps_6_0)
+    # NutTool's own models (shader_library.cpp: built-in shaders)
+    renut_host_shader(${TARGET} renut_part_vs vs_6_0)
+    renut_host_shader(${TARGET} renut_part_ps ps_6_0)
+    renut_host_shader(${TARGET} renut_world_vs vs_6_0)
+    renut_host_shader(${TARGET} renut_world_ps ps_6_0)
+    renut_host_shader(${TARGET} renut_sky_vs vs_6_0)
+    renut_host_shader(${TARGET} renut_sky_ps ps_6_0)
+    renut_host_shader(${TARGET} renut_skinned_vs vs_6_0)
 
     renut_xenos_shader_cache(${TARGET})
 
@@ -286,24 +298,13 @@ function(renut_gpu_setup TARGET)
     # Ahead of the SDK's include directory, which ships a different xxhash.h.
     target_include_directories(${TARGET} BEFORE PRIVATE "${RENUT_XXHASH_DIR}")
 
-    # reNut's overlay (overlay/overlay_ui.cpp) has a Dear ImGui of its own, the same
-    # 1.92.5 the SDK exports from rexruntime. ImGui keeps one current context
-    # per copy, and the SDK switches its copy's from any thread (the input
-    # system asks ImGuiDrawer::GetIO() on the game thread whenever the game
-    # polls input), which pulled the overlay's context away mid-frame. Compiled
-    # into the executable, these definitions take precedence over rexruntime's
-    # imports; the headers go ahead of the SDK's identical ones.
-    set(RENUT_IMGUI_DIR "${CMAKE_SOURCE_DIR}/thirdparty/imgui")
-    set(renut_imgui_sources
-        "${RENUT_IMGUI_DIR}/imgui.cpp"
-        "${RENUT_IMGUI_DIR}/imgui_draw.cpp"
-        "${RENUT_IMGUI_DIR}/imgui_tables.cpp"
-        "${RENUT_IMGUI_DIR}/imgui_widgets.cpp")
-    target_sources(${TARGET} PRIVATE ${renut_imgui_sources})
-    set_source_files_properties(${renut_imgui_sources} PROPERTIES SKIP_PRECOMPILE_HEADERS ON)
-    target_include_directories(${TARGET} BEFORE PRIVATE "${RENUT_IMGUI_DIR}")
+    # reNut's overlay uses the SDK's Dear ImGui (exported by rexbase) with a context of its own.
+    # Both contexts are only built on the UI thread, so one ImGui copy serves both.
     target_compile_definitions(${TARGET} PRIVATE RENUT_RECOMP)
-    target_link_libraries(${TARGET} PRIVATE plume renut_zstd renut_smolv renut_xxhash rex::o1heap)
+    target_link_libraries(${TARGET} PRIVATE plume renut_zstd renut_smolv renut_xxhash)
+    # The SDK's shared SDL3 (rex::sdk no longer passes it on): the launcher's and the Guide's pads and sounds,
+    # and on Linux the overlay's window watch and the Vulkan surface.
+    target_link_libraries(${TARGET} PRIVATE SDL3::SDL3-shared)
 
     if(WIN32)
         target_link_libraries(${TARGET} PRIVATE d3d12 dxgi)

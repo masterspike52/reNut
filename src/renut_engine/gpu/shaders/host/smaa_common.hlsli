@@ -1,9 +1,5 @@
-// SMAA 1x (thirdparty/smaa, Jimenez et al., MIT) for renut_anti_aliasing,
-// run over the finished frame before it is scanned out (backend/smaa.cpp):
-// edge detection, blending weights, neighborhood blending, each a fullscreen
-// pass drawn by present_vs into a target of the frame's size. SMAA's own
-// HLSL ports declare their samplers in effect syntax, which DXC does not take:
-// this maps its porting macros onto the bindless tables instead.
+// SMAA 1x (thirdparty/smaa, Jimenez et al., MIT) for renut_anti_aliasing, with
+// its porting macros mapped onto the bindless tables (DXC rejects effect syntax).
 #include "utility.hlsli"
 
 // The pass's target size: 1 / width, 1 / height, width, height (SmaaBegin).

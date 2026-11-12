@@ -1,13 +1,3 @@
-/**
- * @file    gpu/d3d/d3d_native_state.cpp
- * @brief   N&B's D3D state-setting calls, natively (see d3d_native.h).
- *
- * The render and sampler state setters are the functions of N&B's state
- * tables (off_82E506F0, 101 render states; off_82E50BD0, 20 sampler states:
- * getter, setter, default), each ported from its disassembly. The rest are
- * D3DDevice_Set* and the CDevice internals they share. Their register
- * packets, which N&B's D3D writes into the ring, are left out.
- */
 #include "renut_engine/gpu/d3d/d3d_native.h"
 
 #include <algorithm>
@@ -78,9 +68,7 @@ u32 Fetch(u32 sampler, u32 dword) {
   return off::TextureFetch + sampler * 24 + dword * 4;
 }
 
-// ---------------------------------------------------------------------------
 // Blend
-// ---------------------------------------------------------------------------
 
 // RB_BLENDCONTROL from the blend state: without separate alpha blending the
 // alpha fields repeat the color ones.
@@ -129,9 +117,7 @@ void SetBlendAlphaField(Device d, u32 value, u32 shift, u32 width) {
   StoreBlendControl(d, blend, true);
 }
 
-// ---------------------------------------------------------------------------
 // Render states (off_82E506F0 order)
-// ---------------------------------------------------------------------------
 
 void RsNone(Device, u32) {}
 
@@ -361,8 +347,7 @@ void RsViewportEnable(Device d, u32 v) {  // 0x82205A80
   d.Dirty(kPendingStates, 0x20 | 0x80);
 }
 
-// RB_COLOR*_INFO's format for high precision blending (2, 3, 10 and 12 have
-// an alternative), as HighPrecisionBlendEnable and SetRenderTarget apply it.
+// Switches RB_COLOR*_INFO's format (2, 3, 10, 12) for high precision blending;
 // 'slot' is the target's register (0, 2, 3, 4: DepthInfo sits at 1).
 void ApplyHighPrecisionBlend(Device d, u32 slot, u32 enable) {
   const u32 offset = off::Color0Info + slot * 4;
@@ -558,9 +543,7 @@ constexpr RenderStateFn kRenderStateFns[kRenderStates] = {
     RsBuffer2Frames,                             // 100
 };
 
-// ---------------------------------------------------------------------------
 // Sampler states (off_82E50BD0 order)
-// ---------------------------------------------------------------------------
 
 // The texture's Z filter (fetch dword 4, bits 0-1) from the min/mag filters
 // in dword 3, or from the separate Z filter state when that is enabled.
@@ -587,9 +570,8 @@ void SsBorderColor(Device d, u32 s, u32 v) {  // 0x8264D590
   d.SetW(Fetch(s, 5), (d.W(Fetch(s, 5)) & ~3u) | (v ? 1u : 0u));
   d.Dirty(kPendingFetch, FetchBit(s));
 }
-// MagFilter (filter at dword 3 bits 19-20, aniso flag at dword 4 bit 10) and
-// MinFilter (21-22, flag at 11); the aniso filter (dword 3 bits 25-27) is set
-// while either is anisotropic.
+// MagFilter (dword 3 bits 19-20, aniso flag dword 4 bit 10) / MinFilter (21-22,
+// bit 11); the aniso filter (dword 3 bits 25-27) is set while either is aniso.
 void SsFilter(Device d, u32 s, u32 v, bool mag) {  // 0x8222F1B8 / 0x8222F280
   const u32 aniso = kAnisoFilter[d.B(kMaxAnisotropy + s) % kAnisoFilter.size()];
   const u32 anisotropic = v >> 2;
@@ -739,8 +721,6 @@ u32 TableWord(u32 table, u32 index, u32 field) {
 
 }  // namespace
 
-// ---------------------------------------------------------------------------
-
 void SetRenderState(Device device, u32 state, u32 value) {
   if (device && state < kRenderStates)
     kRenderStateFns[state](device, value);
@@ -877,10 +857,8 @@ u32 GetSamplerState(Device d, u32 s, u32 state) {
   }
 }
 
-// D3D::InitializeApiState (0x826597C8), its first part: each state's getter
-// and setter go into the device's dispatch tables (the game's inline
-// SetRenderState calls through them, and so reaches the hooked setters), and
-// the state is set to its default; then every sampler's texture is unset.
+// First part of D3D::InitializeApiState (0x826597C8): fills the device's state
+// dispatch tables, sets each state to its default and unsets every texture.
 void InitializeStateTables(Device device) {
   if (!device)
     return;
@@ -908,15 +886,12 @@ void TagResourceFence(Device device, u32 resource, bool read_fence) {
     if (read_fence)
       header[3] = fence;  // ReadFence
   }
-  // Otherwise (a device recording a command buffer) N&B's D3D adds the
-  // resource to the buffer's list, which fences it when the buffer runs; the
-  // buffers run on the host (command_buffers.h), so the list is left out.
+  // While recording, N&B's D3D adds the resource to the buffer's list instead;
+  // buffers run on the host (command_buffers.h), so that is left out.
 }
 
-// void D3DDevice_SetTexture(D3DDevice*, DWORD Sampler, D3DBaseTexture*,
-//     UINT64 PendingMask3) [0x8222F410]. The fetch constant takes the texture's
-// header, keeping the sampler state bits; its mip range is narrowed by the
-// sampler's MaxMipLevel / MinMipLevel.
+// D3DDevice_SetTexture [0x8222F410]: the fetch constant takes the texture's
+// header, keeping the sampler state bits and the sampler's mip level limits.
 void SetTexture(Device device, u32 sampler, u32 texture) {
   if (!device || sampler >= kTextureSamplers)
     return;
@@ -997,10 +972,8 @@ void SetVertexDeclaration(Device device, u32 declaration) {
   device.Dirty(kPendingStates, 0x80000);
 }
 
-// N&B's SetVertexShader/SetPixelShader (0x8222A0A8 / 0x82226730) also bind
-// the shader's microcode and literal constants. The renderer's shaders are
-// records with recompiled code that carry their literals, so only the device
-// slot (and the bound-shader flag) is kept.
+// SetVertexShader / SetPixelShader (0x8222A0A8 / 0x82226730): only the device
+// slot is kept, as the renderer's shader records carry their own literals.
 void SetVertexShader(Device device, u32 shader) {
   if (!device)
     return;
@@ -1071,9 +1044,8 @@ void SetScissorRect(Device device, i32 left, i32 top, i32 right, i32 bottom) {
   // SetSurfaceClip (0x82223270) then writes the clip into the ring only.
 }
 
-// D3D::SetViewport(D3DDevice*, float X, Y, Width, Height, MinZ, MaxZ)
-// [0x82222F20]: clamped to the bound surface (or the tiling extent), with
-// the PA_CL_VPORT values; nothing without a target or depth surface.
+// D3D::SetViewport [0x82222F20]: clamped to the bound surface (or the tiling
+// extent), with the PA_CL_VPORT values; nothing without a target or depth.
 void SetViewport(Device device, float x, float y, float width, float height, float min_z,
                  float max_z) {
   if (!device)
@@ -1355,9 +1327,7 @@ void InvalidateConstantsAndWait(Device device) {
   // sets it on a device without GPU hardware.
 }
 
-// ---------------------------------------------------------------------------
 // Clear and Resolve
-// ---------------------------------------------------------------------------
 
 namespace {
 
@@ -1381,8 +1351,7 @@ u32 Srw(u32 value, u32 amount) {
 }
 
 // The state flush both begin with: the dirty register packets go into the
-// ring and their bits are cleared. (Its SetPending_Predicated, 0x8226AAB8,
-// clears only bits these masks clear too.)
+// ring and their bits are cleared.
 void FlushStatePackets(Device d) {
   if (const u64 states = d.Pending(kPendingStates))
     d.SetPending(kPendingStates, states & ~(u64(0x1FFFF) | (u64(0x1FFFFFFFFF) << 21)));
@@ -1408,9 +1377,8 @@ void DirtyClearRects(Device d) {
   d.Dirty(kPendingStates, 0x800 | 8);
 }
 
-// D3D::ClearSurface (0x8220CB78): one color target's clear (or, with target
-// -1, the depth/stencil one), with the depth/stencil clear while flags have
-// it; tiled, in each tile it covers.
+// D3D::ClearSurface (0x8220CB78): one color target's clear (target -1: the
+// depth/stencil one), in each tile it covers when tiled.
 void ClearSurface(Device d, u32 flags, i32 target, i32 x1, i32 y1, i32 x2, i32 y2) {
   u32 color_info = 0;
   if (target >= 0) {
@@ -1554,9 +1522,8 @@ void Clear(Device device, u32 flags, const Rect *rect) {
   device.Dirty(kPendingStates, 0x20000);
 }
 
-// The copy's register images (RB_COPY_*, the destination's address, pitch and
-// format, and the packed clear color) are only read by the GPU's copy; their
-// dirty bits are kept.
+// The copy's register images (RB_COPY_*, destination, clear color) are only
+// read by the GPU's copy; their dirty bits are kept.
 void Resolve(Device device, u32 flags, u32 dest_texture, float clear_z, u32 clear_stencil,
              u32 parameters) {
   if (!device)
@@ -1599,9 +1566,7 @@ void Resolve(Device device, u32 flags, u32 dest_texture, float clear_z, u32 clea
   // goes into the buffer's resource list, the GPU's.
 }
 
-// ---------------------------------------------------------------------------
 // Memexport
-// ---------------------------------------------------------------------------
 
 namespace {
 

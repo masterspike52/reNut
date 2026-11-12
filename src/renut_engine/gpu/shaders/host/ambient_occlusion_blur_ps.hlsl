@@ -1,6 +1,5 @@
-// renut_ssao: one direction of a depth-aware blur of the AO (see
-// ambient_occlusion.hlsli): nine texels, gaussian, each weighed down the more
-// its view depth differs from the centre's, so the AO does not bleed over edges.
+// renut_ssao: one direction of a nine-texel gaussian blur of the AO, weighted by
+// view depth so it does not bleed over edges.
 #include "ambient_occlusion.hlsli"
 
 float4 main(PSInput input) : SV_Target0

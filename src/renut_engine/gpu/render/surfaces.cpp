@@ -1,6 +1,3 @@
-/**
- * @file    gpu/render/surfaces.cpp
- */
 #include "renut_engine/gpu/render/surfaces.h"
 
 #include <algorithm>
@@ -8,21 +5,26 @@
 #include <unordered_map>
 #include <vector>
 
-#include <rex/cvar.h>
+#include <rex/setting.h>
 
+#include "renut_engine/app/renut_settings.h"
 #include "renut_engine/gpu/backend/backend.h"
 #include "renut_engine/gpu/d3d/d3d.h"
 #include "renut_engine/gpu/render/format.h"
 #include "renut_engine/gpu/render/graphics_options.h"
 #include "renut_engine/gpu/guest/guest_memory.h"
-#include "renut_engine/gpu/guest/widescreen.h"
-#include "renut_engine/gpu/log.h"
 #include "renut_engine/gpu/backend/video.h"
 
-REXCVAR_DEFINE_STRING(renut_resolution, "720p", "Nuts&Bolts/Graphics",
-                      "Internal render resolution, by its height: 480p, 720p (the game's own), "
-                      "1080p, 1440p or 4K (2160 lines). Applies from the next frame.")
-    .allowed({"480p", "720p", "1080p", "1440p", "4K"});
+namespace {
+struct SurfaceSettings final : rex::SettingOwner {
+  SurfaceSettings() : rex::SettingOwner(renut::settings::kScope) { renut::settings::Add(*this); }
+  REX_SETTING(std::string, renut_resolution, "720p",
+              "Internal render resolution, by its height: 480p, 720p (the game's own), "
+              "1080p, 1440p or 4K (2160 lines). Applies from the next frame.",
+              rex::Allowed("480p", "720p", "1080p", "1440p", "4K"));
+};
+SurfaceSettings &g_surface_settings = *new SurfaceSettings();  // never freed, registered by RenutApp::OnConfigure
+} // namespace
 
 namespace renut::gpu {
 
@@ -52,18 +54,8 @@ struct CachedFramebuffer {
   std::unique_ptr<plume::RenderFramebuffer> framebuffer;
 };
 
-// A D3DSurface is a view of EDRAM: its base tile (RB_COLOR_INFO /
-// RB_DEPTH_INFO bits 0-11), pitch (RB_SURFACE_INFO bits 0-13) and sample
-// count. Surface objects over the same EDRAM with the same layout see the same
-// pixels on the GPU, and N&B relies on it: the depth surface its after-effects
-// pass binds is a second object over the scene's depth buffer (the character
-// holograms test against it), and each hologram renders through surfaces of
-// its own at the same EDRAM bases. So host targets belong to the EDRAM view,
-// shared by every surface object over it, as long as they also agree on the
-// host format, render scale and host sample count: graphics_options renders
-// some surfaces at another scale (the post-processing buffers at 1x), and a
-// view used by surfaces of both kinds would otherwise be rebuilt at every
-// switch; a new renut_msaa gives new targets from the next frame.
+// One target per EDRAM view (base tile, pitch, sample count), shared by every
+// surface over it, and per host format, render scale and host sample count.
 uint64_t TargetKey(const d3d::SurfaceDesc &desc, bool depth, plume::RenderFormat format,
                    RenderScale scale, plume::RenderSampleCounts samples) {
   const u32 info = desc.SurfaceInfo;
@@ -83,10 +75,8 @@ uint64_t g_next_generation = 1;
 uint32_t g_tiling_width = 0;
 uint32_t g_tiling_height = 0;
 
-// GetHostSurfaceLocked's targets by surface, its header and the tiling, within
-// a generation: every draw looks up each of its targets, two maps each. A
-// generation ends with the frame (the options latch) and whenever a target is
-// made or retired or a surface's target changes.
+// GetHostSurfaceLocked's lookups by surface, header and tiling, valid within a
+// generation (bumped each frame and whenever targets change).
 uint64_t g_surface_generation = 1;
 struct SurfaceMemo {
   uint64_t generation = 0;
@@ -135,7 +125,6 @@ bool BuildTarget(HostSurface &surface, const d3d::SurfaceDesc &desc, uint32_t mi
   surface.width = std::max(d3d::SurfaceWidth(surface.size_word), min_width);
   surface.height = std::max(d3d::SurfaceHeight(surface.size_word), min_height);
   surface.scale = scale;
-  std::fill(std::begin(surface.profile_labels), std::end(surface.profile_labels), UINT32_MAX);
   const uint32_t host_width = surface.scale.Size(surface.width);
   const uint32_t host_height = surface.scale.Size(surface.height);
   surface.depth = d3d::IsDepthFormat(surface.format_word);
@@ -160,16 +149,10 @@ bool BuildTarget(HostSurface &surface, const d3d::SurfaceDesc &desc, uint32_t mi
   surface.generation = g_next_generation++;
   if (!TextureCreated(surface.texture.get())) {
     surface.texture.reset();
-    if (!ReportDeviceLost(device)) {
-      RGPU_ERROR("Surface {:08X}: {}x{} {} target creation failed", surface.guest_va,
-                 host_width, host_height, surface.depth ? "depth" : "color");
-    }
+    ReportDeviceLost(device);
     return false;
   }
   surface.texture->setName(surface.depth ? "renut depth surface" : "renut color surface");
-  RGPU_DEBUG("Surface {:08X}: {}x{} (x{:.3g} scale) {} format {} x{} samples", surface.guest_va,
-             surface.width, surface.height, surface.scale.Factor(), surface.depth ? "depth" : "color",
-             u32(surface.format), u32(surface.samples));
   return true;
 }
 
@@ -182,19 +165,15 @@ RenderScale ResolutionScale() {
 void LatchResolutionScaleLocked() {
   ++g_surface_generation;
   LatchGraphicsOptionsLocked();
-  const std::string resolution = REXCVAR_GET(renut_resolution);
+  const std::string resolution = g_surface_settings.renut_resolution.Get();
   // Codes of RenderScale.
   const RenderScale scale{resolution == "480p"    ? 1u
                           : resolution == "1080p" ? 2u
                           : resolution == "1440p" ? 3u
                           : resolution == "4K"    ? 4u
                                                   : 0u};
-  if (!g_resolution_latched || scale != g_resolution_scale) {
-    RGPU_INFO("Render resolution {}x{} ({:.3g}x)", scale.Size(GuestScreenWidth()), scale.Size(720),
-              scale.Factor());
-    g_resolution_scale = scale;
-    g_resolution_latched = true;
-  }
+  g_resolution_scale = scale;
+  g_resolution_latched = true;
 }
 
 void SetTilingExtentLocked(uint32_t width, uint32_t height) {
@@ -309,16 +288,9 @@ HostSurface *GetHostSurfaceLocked(u32 surface_va) {
       return slot.get();
     }
     // A larger surface over the view, or a larger tiling: grow it, keeping
-    // the size the others gave it (what it held is lost). (Another scale is
-    // another target: TargetKey.)
+    // the size the others gave it (what it held is lost).
     min_width = std::max(min_width, slot->width);
     min_height = std::max(min_height, slot->height);
-    static uint32_t logged = 0;
-    if (logged++ < 32) {
-      RGPU_WARN("Surface {:08X}: target rebuilt {}x{} -> {}x{}{}: what it held is lost", surface_va,
-                slot->width, slot->height, min_width, min_height,
-                slot->scale != scale ? " (scale changed)" : "");
-    }
     RetireTarget(*slot);
   } else if (!slot) {
     slot = std::make_unique<HostSurface>();
@@ -362,16 +334,10 @@ void CoverHostExtentLocked(HostSurface *surface, uint32_t host_width, uint32_t h
                      : device->createTexture(plume::RenderTextureDesc::ColorTarget(
                            new_width, new_height, surface->format, multisampling));
   if (!TextureCreated(texture.get())) {
-    if (!ReportDeviceLost(device)) {
-      RGPU_ERROR("Surface {:08X}: growing the {} target to {}x{} failed", surface->guest_va,
-                 surface->depth ? "depth" : "color", new_width, new_height);
-    }
+    ReportDeviceLost(device);
     return;
   }
   texture->setName(surface->depth ? "renut depth surface" : "renut color surface");
-  RGPU_DEBUG("Surface {:08X}: {}x{} grown to {}x{} to cover a framebuffer of {}x{}",
-             surface->guest_va, surface->width, surface->height, width, height, host_width,
-             host_height);
 
   // What it held stays in the corner it covered. (A depth copy of part of a
   // subresource: Vulkan's image copies allow it; this runs on Vulkan only.)
@@ -400,19 +366,6 @@ void CoverHostExtentLocked(HostSurface *surface, uint32_t host_width, uint32_t h
   surface->width = width;
   surface->height = height;
   surface->generation = g_next_generation++;
-}
-
-void SurfaceMemoryLocked(size_t &targets, uint64_t &bytes) {
-  targets = 0;
-  bytes = 0;
-  for (const auto &[key, surface] : g_targets) {
-    if (!surface || !surface->texture)
-      continue;
-    ++targets;
-    const uint64_t texel = plume::RenderFormatSize(surface->format);
-    bytes += uint64_t(surface->scale.Size(surface->width)) * surface->scale.Size(surface->height) *
-             texel * surface->samples;
-  }
 }
 
 void ReleaseHostSurfaceLocked(u32 surface_va) {
@@ -482,10 +435,8 @@ plume::RenderFramebuffer *GetFramebufferLocked(HostSurface *const *colors, uint3
   plume::RenderFramebufferDesc desc(attachments, count,
                                     depth && depth->texture ? depth->texture.get() : nullptr);
   auto framebuffer = Video::Device()->createFramebuffer(desc);
-  if (!framebuffer) {
-    RGPU_ERROR("Framebuffer creation failed ({} color targets, depth {})", count, depth != nullptr);
+  if (!framebuffer)
     return nullptr;
-  }
   g_framebuffers.push_back({key, std::move(framebuffer)});
   return g_framebuffers.back().framebuffer.get();
 }

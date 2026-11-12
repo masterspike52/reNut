@@ -1,6 +1,3 @@
-/**
- * @file    gpu/backend/queued.cpp
- */
 #include "renut_engine/gpu/backend/queued.h"
 
 #include <cstring>
@@ -35,9 +32,8 @@ struct DeferredDraw {
 std::mutex g_deferred_mutex;
 std::unordered_map<u32, DeferredDraw> g_deferred;
 
-// The original draw calls consume the device's dirty masks as they write
-// their packets; a snapshot taken after this has them clear, as the command
-// buffer ops' do.
+// Clears the device's dirty masks, as the original draw calls do when they write
+// their packets.
 void ClearPending(d3d::Device *device) {
   for (auto &mask : device->m_Pending)
     mask = 0;

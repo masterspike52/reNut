@@ -1,17 +1,10 @@
-/**
- * @file    gpu/shaders/shader_cache.h
- * @brief   Layout of the XenosRecomp-generated shader cache (shader_cache.cpp in
- *          the build tree). The generator emits the definitions; this header
- *          is what it #includes and what the renderer reads.
- */
 #pragma once
 
 #include <cstddef>
 #include <cstdint>
 
-// One recompiled Xenos shader. hash is XXH3_64 of the whole guest shader
-// container (virtual + physical), the same key tools/dump_shaders.py names
-// the .bin files with. Offsets/sizes index the decompressed blob caches.
+// One recompiled Xenos shader, keyed by XXH3_64 of the whole guest shader
+// container; offsets/sizes index the decompressed blob caches.
 struct ShaderCacheEntry {
   uint64_t hash;
   uint32_t dxilOffset;
@@ -49,8 +42,7 @@ struct ShaderVertexInput {
 };
 
 // ShaderVertexInput::flags: the shader reads the element from the bound
-// declaration by an index other than the vertex index (vfetchBound in
-// shader_common.h), described per draw in SharedConstants.
+// declaration by an index other than the vertex index (vfetchBound).
 constexpr uint8_t kVertexInputBoundFetch = 4;
 constexpr uint32_t kMaxBoundFetches = 16;
 
@@ -58,9 +50,8 @@ extern ShaderCacheEntry g_shaderCacheEntries[];
 extern const size_t g_shaderCacheEntryCount;
 extern ShaderVertexInput g_shaderVertexInputs[];
 
-// Entry layout the generator wrote. A cache from an older XenosRecomp lacks
-// the symbol and fails to link rather than zero-filling the newer fields.
-// 6: the viewport epilogue (g_ScreenSpace) and the memexport rewrite.
+// Entry layout version the generator wrote; a cache from an older XenosRecomp
+// fails to link rather than zero-filling the newer fields.
 constexpr uint32_t kShaderCacheLayout = 6;
 extern const uint32_t g_shaderCacheLayout;
 
