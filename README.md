@@ -146,6 +146,8 @@ XephyrCraft for helping test mods made with his tool as well as testing the game
 <br>
 Leia and eli for testing renut (as well as anyone else who tested renut on windows)
 <br>
+EtoneDemid for nutstaller which has now been merged into renut itself.
+<br>
 .
 <br>
 .
