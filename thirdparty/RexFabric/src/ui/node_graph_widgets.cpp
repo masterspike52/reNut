@@ -13,16 +13,6 @@ namespace {
 // Space between the input and output columns, in multiples of the font size.
 constexpr float kOutputColumnGap = 2.0f;
 
-// Grows the string as ImGui types into it.
-int ResizeCallback(ImGuiInputTextCallbackData* data) {
-  if (data->EventFlag == ImGuiInputTextFlags_CallbackResize) {
-    auto* text = static_cast<std::string*>(data->UserData);
-    text->resize(static_cast<size_t>(data->BufTextLen));
-    data->Buf = text->data();
-  }
-  return 0;
-}
-
 }  // namespace
 
 void PinIcon(bool linked, ImU32 color, PinShape shape) {
@@ -99,16 +89,6 @@ ClipboardRequest TakeClipboardRequest() {
 void SelectNodes(std::span<const int> nodes) {
   ed::ClearSelection();
   for (int node : nodes) ed::SelectNode(ed::NodeId(static_cast<size_t>(node)), true);
-}
-
-bool InputString(const char* label, std::string& text, ImGuiInputTextFlags flags, const char* hint) {
-  flags |= ImGuiInputTextFlags_CallbackResize;
-  if (hint) return ImGui::InputTextWithHint(label, hint, text.data(), text.capacity() + 1, flags, ResizeCallback, &text);
-  return ImGui::InputText(label, text.data(), text.capacity() + 1, flags, ResizeCallback, &text);
-}
-
-bool InputStringMultiline(const char* label, std::string& text, const ImVec2& size, ImGuiInputTextFlags flags) {
-  return ImGui::InputTextMultiline(label, text.data(), text.capacity() + 1, size, flags | ImGuiInputTextFlags_CallbackResize, ResizeCallback, &text);
 }
 
 }  // namespace rexfabric::ui::node_widgets

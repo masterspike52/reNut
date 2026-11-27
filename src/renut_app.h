@@ -43,7 +43,10 @@
 #include "renut_engine/game/custom_shapes.h"
 #include "renut_engine/game/custom_materials.h"
 #include "renut_engine/game/sound_api.h"
+#include "renut_engine/game/audio_driver.h"
 #include "renut_engine/game/menu_api.h"
+#include "renut_engine/game/arcade_api.h"
+#include "nuttool/frontend.h"
 #include "renut_engine/online/net_api.h"
 #include "renut_engine/game/mod_data.h"
 #include "renut_engine/game/renut_lua.h"
@@ -111,6 +114,7 @@ protected:
 
     rex::Result<void> OnInit() override {
         (void)renut::gpu::StartRenderer(GetUI(), GetGraphics());
+        renut::game::audio_driver::Attach(GetAudio());
         config_path_ = REX_PATHS().config_file.Get();
         renut::graphics_menu::SetConfigPath(config_path_);
 
@@ -123,6 +127,8 @@ protected:
         renut::game::custom_materials::Declare();
         renut::game::sound_api::Declare();
         renut::game::menu_api::Declare();
+        renut::nuttool::Declare();  // after the menus: its icon is a menu row
+        renut::game::arcade_api::Declare();
         renut::online::net_api::Declare();
         renut::game::mod_data::Declare();
         renut::game::renut_lua::Declare();  // last: its Lua builds on the others'
@@ -174,6 +180,7 @@ protected:
         renut::mods::LoadMods(title);
         rexfabric::Start();
         renut::mods::FinishCustomParts();
+        renut::game::NoteModsLoaded();
         return rex::Ok();
     }
 
@@ -241,9 +248,11 @@ private:
                                 .blurred_game_frame = renut::gpu::BlurredGameFrameTexture,
                                 .config_file = config_path_,
                                 .leaderboard_block = [] {
-                                    return renut::game::AnyCheatOn()
-                                               ? std::string("cheats were used this session; restart the game to post again")
-                                               : std::string();
+                                    if (renut::game::AnyCheatOn())
+                                        return std::string("cheats were used this session; restart the game to post again");
+                                    if (renut::game::AnyModUsed())
+                                        return std::string("mods were used this session; turn them off and restart the game to post again");
+                                    return std::string();
                                 },
                                 .build = RENUT_BUILD});
         // Glass only for the windows RexFabric opens with it (mods menu, node editor); reNut's own keep their look.

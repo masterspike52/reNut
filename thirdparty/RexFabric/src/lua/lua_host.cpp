@@ -183,7 +183,7 @@ PPCRegister* CheckRegister(lua_State* L, const Frame& frame, std::string_view na
     if (name == frame.regs[i].name) return frame.regs[i].reg;
   }
   // A register the stub didn't lend is a mod bug; nil would only turn up as arithmetic on nil later.
-  luaL_error(L, "midasm site 0x%08X did not expose register '%s'", frame.address, std::string(name).c_str());
+  luaL_error(L, "midasm site %s did not expose register '%s'", Hex(frame.address).c_str(), std::string(name).c_str());
   return nullptr;
 }
 

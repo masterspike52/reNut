@@ -178,6 +178,8 @@ class Emitter {
   std::string Key(int instance, int node) const;
   void CheckLinks();
   void CheckVariables();
+  // A variable or param of an object type that went away (a class removed, a mod no longer there).
+  void CheckObjectType(const std::string& what, const PinType& type);
   void CheckRoutines();
   void CheckDispatchers();
 

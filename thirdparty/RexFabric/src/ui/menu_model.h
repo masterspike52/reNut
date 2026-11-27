@@ -41,11 +41,24 @@ class MenuModel {
   // Mods load at startup, so a change takes a restart. Only Lua mods can reload in place.
   bool restart_needed() const { return changed_; }
   bool Restart();
+  // Loads every enabled mod's classes again, then its scripts, as at startup: only the mods whose requirements are
+  // met, each after what it depends on.
   void ReloadScripts();
+  // Loads the classes again, for the content editors after a save; scripts keep running as they were.
+  void ReloadContent();
 
   // ImTextureID_Invalid while loading (PackageIcon then sets *loading), or when there's no image.
   ImTextureID ModIcon(const ModInfo& mod);
   ImTextureID PackageIcon(const net::Package& package, bool* loading = nullptr);
+
+  // A picture file as an ImGui texture with its size, read again when the file changes; an invalid id when it can't
+  // be read. For the content browser's textures.
+  struct Picture {
+    ImTextureID id = ImTextureID_Invalid;
+    uint32_t width = 0;
+    uint32_t height = 0;
+  };
+  Picture AssetPicture(const std::filesystem::path& file);
   void OpenModsFolder() const;
 
  private:
@@ -63,7 +76,8 @@ class MenuModel {
     ImTextureID id_;
   };
 
-  std::unique_ptr<Texture> MakeTexture(const std::vector<uint8_t>& encoded);
+  std::vector<ModInfo> Loadable() const;
+  std::unique_ptr<Texture> MakeTexture(const std::vector<uint8_t>& encoded, uint32_t* width = nullptr, uint32_t* height = nullptr);
   void PrunePackageIcons();
 
   struct CachedIcon {
@@ -77,6 +91,15 @@ class MenuModel {
   Images images_;
   std::unordered_map<std::string, CachedIcon> mod_icons_;
   std::unordered_map<std::string, CachedIcon> package_icons_;
+  struct CachedPicture {
+    std::unique_ptr<Texture> texture;
+    std::filesystem::file_time_type written;
+    uint32_t width = 0;
+    uint32_t height = 0;
+  };
+  std::unordered_map<std::string, CachedPicture> pictures_;
+  // Pictures replaced since the last Poll, freed then: this frame's draw list may still hold them.
+  std::vector<std::unique_ptr<Texture>> retired_;
   std::vector<net::Thunderstore::Failure> failures_;
   uint64_t frame_ = 0;
   uint64_t seen_revision_ = 0;  // ModsRevision as of the last scan

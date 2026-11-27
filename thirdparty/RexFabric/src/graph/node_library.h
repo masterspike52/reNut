@@ -12,6 +12,7 @@
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -24,6 +25,10 @@
 
 namespace rexfabric {
 struct EnumDef;
+}
+
+namespace rexfabric::content {
+struct ValueType;
 }
 
 namespace rexfabric::graph {
@@ -41,8 +46,13 @@ struct ChoiceSource {
 
 struct PinType {
   PinKind kind = PinKind::kExec;
-  // kObject: the game type's full name, "tip.Pinata". Empty is any object.
+  // What the kind names: kObject, the game type's full name ("tip.Pinata") or a class, empty for any object; kEnum,
+  // the enum; kStruct, the struct.
   std::string object;
+  PinContainer container = PinContainer::kSingle;
+  // A map's keys.
+  PinKind key = PinKind::kString;
+  std::string key_object;
   bool operator==(const PinType&) const = default;
 };
 
@@ -74,6 +84,10 @@ enum class SettingKind : uint8_t {
   kList,        // entries added in the details panel, one a line: a switch's cases, a select's options
   kScript,      // a file in the mod's scripts folder, its code read and edited in the details panel
   kCode,        // Lua typed into the details panel, several lines
+  kEnum,        // one of the enums the graph's mod may use (content/types.h)
+  kStruct,      // one of the structs the graph's mod may use
+  kTable,       // one of the data tables the graph's mod may use (content/tables.h)
+  kAvatarClass, // one of the classes the graph's mod may spawn avatars of (content/classes.h)
 };
 
 struct SettingDesc {
@@ -159,11 +173,19 @@ void AddBuiltinNodes(Library& library);
 void AddGameNodes(Library& library);
 // From the game's Lua API definitions (LuaLS ---@meta files) in lua_api beside its executable (nodes_api.cpp).
 void AddApiNodes(Library& library);
+// For content's enums, structs and tables (nodes_content.cpp): Make and Break for a struct, an enum's value and its
+// text, a table's rows.
+void AddContentNodes(Library& library);
 
 // Pins, for the node descriptions.
 Pin ExecPin(std::string_view name = kExecIn);
 Pin DataPin(std::string_view name, PinKind kind, nlohmann::json initial = nullptr);
 Pin ObjectPin(std::string_view name, std::string_view type);
+// A data pin of any type: an Object pin for an object type, otherwise as DataPin.
+Pin ValuePin(std::string_view name, const PinType& type);
+// The type a variable or a routine's or dispatcher's param carries.
+PinType VariableType(const Variable& variable);
+PinType ParamType(const Param& param);
 // A delegate input, which has to be linked to an event's delegate pin.
 Pin DelegatePin(std::string_view name = kDelegatePin);
 // What an unlinked input of this kind starts as.
@@ -190,14 +212,37 @@ const EnumDef* FindEnum(std::string_view name);
 // Every enum the game declared, by full name.
 std::vector<std::string> EnumNames();
 
-// "Int", "Float", "tip.Pinata": a type as messages and tooltips name it.
+// "Int", "Float", "tip.Pinata", "Array of MyMod/Colour": a type as messages and tooltips name it.
 std::string TypeName(const PinType& type);
+// One element of an array or a map, and a map's key, as single types.
+PinType ElementOf(const PinType& type);
+PinType KeyOf(const PinType& type);
+// A game enum's name (one the game declared through its API, "tip.Weather") rather than a mod's path. Its values are
+// the game's numbers, so it goes into an Int and an Int into it.
+bool IsGameEnum(std::string_view name);
+// The list an Enum pin's value is picked from: the enum's values as they are now, each shown by its display name and
+// typed as its name. Lives as long as the program.
+const ChoiceSource* EnumChoices(std::string_view enum_path);
+// The type as content keeps values of it, for typing them in and writing them as Lua: none for a type content has no
+// values of (an Object, Any, an array of them).
+std::optional<content::ValueType> ContentType(const PinType& type);
+// A content type as pins carry it: text and assets as Strings.
+PinType PinTypeOf(const content::ValueType& type);
+// A content value as an input of a single Bool, Int, Float, String or Enum has it typed in (an Int as its text).
+nlohmann::json TypedValue(PinKind kind, const nlohmann::json& value);
 // Typed number text with a fraction or an exponent, so a Number pin it's typed into is a float.
 bool IsFloatText(std::string_view text);
 
 // The type an output carries, with Number resolved to Int or Float from what goes into the node.
 PinType OutputType(const Graph& graph, const PinRef& output);
-// A value of `from` can go into an input of `to`. Ints go into floats; anything goes into and comes from Any.
+// What links into a node's input, when something does: for a node whose pins take the types of an array or a map
+// linked into it.
+std::optional<PinType> LinkedType(const Node& node, const Graph& graph, std::string_view input);
+// The pin named `name` on `side` is a pin of `type` now, with that type's default and choices.
+void Retype(std::vector<Pin>& side, std::string_view name, const PinType& type);
+// A value of `from` can go into an input of `to`. Ints go into floats; anything goes into and comes from Any. An object
+// goes into an input of its own type or of one above it (content::TypeIsA): a pinata into an avatar input, not the
+// other way round, which takes a cast.
 bool Fits(const PinType& from, const PinType& to);
 
 // From an output to an input of another node, with fitting types and no loop through data links. Sets `reason`

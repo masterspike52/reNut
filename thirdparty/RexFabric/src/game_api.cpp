@@ -67,6 +67,15 @@ TypeDef& TypeDef::Field(std::string name, uint32_t offset, FieldType type) {
   return *this;
 }
 
+TypeDef& TypeDef::Held(Handles handles) {
+  if (!handles.hold || !handles.resolve) {
+    RF_ERROR("type {} needs both a hold and a resolve function to be held by handle", name_);
+    return *this;
+  }
+  handles_ = std::move(handles);
+  return *this;
+}
+
 TypeDef& TypeDef::Array(std::string name, uint32_t offset, FieldType type, uint32_t count, uint32_t stride) {
   fields_.push_back({std::move(name), offset, type, count, stride ? stride : SizeOf(type)});
   return *this;
@@ -176,6 +185,74 @@ const TypeDef* FindType(std::string_view name) {
   }
   return nullptr;
 }
+
+// Guest function names -----------------------------------------------------------------------------------
+
+namespace {
+
+// Named before Start from one thread, then only read. The vector stays sorted by name; the maps index into it, rebuilt
+// once the last name is in.
+struct FunctionNames {
+  std::mutex mutex;
+  std::vector<GuestFunctionName> functions;
+  std::unordered_map<std::string, uint32_t> by_name;
+  std::unordered_map<uint32_t, size_t> by_address;  // index into functions, once sorted
+  bool sorted = true;
+};
+
+FunctionNames& GetFunctionNames() {
+  static FunctionNames names;
+  return names;
+}
+
+// The names sorted and indexed, the first time anything is looked up after the last one was added.
+FunctionNames& SortedFunctionNames() {
+  FunctionNames& names = GetFunctionNames();
+  std::lock_guard lock(names.mutex);
+  if (!names.sorted) {
+    std::sort(names.functions.begin(), names.functions.end(), [](const GuestFunctionName& a, const GuestFunctionName& b) { return a.name < b.name; });
+    names.by_address.clear();
+    for (size_t i = 0; i < names.functions.size(); ++i) names.by_address.emplace(names.functions[i].address, i);
+    names.sorted = true;
+  }
+  return names;
+}
+
+}  // namespace
+
+bool NameGuestFunction(GuestFunctionName function) {
+  FunctionNames& names = GetFunctionNames();
+  std::lock_guard lock(names.mutex);
+  if (function.name.empty() || function.address == 0) {
+    RF_WARN("a guest function needs a name and an address to be named ({}, {:08X})", function.name, function.address);
+    return false;
+  }
+  if (const auto taken = names.by_name.find(function.name); taken != names.by_name.end()) {
+    RF_WARN("guest function name {} is taken by {:08X}; {:08X} stays unnamed", function.name, taken->second, function.address);
+    return false;
+  }
+  names.by_name.emplace(function.name, function.address);
+  names.functions.push_back(std::move(function));
+  names.sorted = false;
+  return true;
+}
+
+uint32_t FindGuestFunction(std::string_view name) {
+  FunctionNames& names = GetFunctionNames();
+  std::lock_guard lock(names.mutex);
+  const auto found = names.by_name.find(std::string(name));
+  return found != names.by_name.end() ? found->second : 0;
+}
+
+const GuestFunctionName* GuestFunctionAt(uint32_t address) {
+  FunctionNames& names = SortedFunctionNames();
+  const auto found = names.by_address.find(address);
+  return found != names.by_address.end() ? &names.functions[found->second] : nullptr;
+}
+
+const std::vector<GuestFunctionName>& GuestFunctionNames() { return SortedFunctionNames().functions; }
+
+// Native interfaces --------------------------------------------------------------------------------------
 
 void PublishInterface(std::string name, uint32_t version, const void* table) {
   Registry& registry = GetRegistry();

@@ -627,6 +627,14 @@ bool WantsCursor() {
   return g_wants_cursor.load(std::memory_order_relaxed);
 }
 
+namespace {
+std::atomic<bool> g_under_menus{false};
+}  // namespace
+
+void SetUnderMenus(bool under) { g_under_menus.store(under, std::memory_order_relaxed); }
+
+bool UnderMenus() { return g_under_menus.load(std::memory_order_relaxed); }
+
 int32_t ConsumeMouseWheel() {
   return g_wheel.exchange(0, std::memory_order_relaxed);
 }

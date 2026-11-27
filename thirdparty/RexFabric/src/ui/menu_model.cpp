@@ -7,6 +7,7 @@
 
 #include <rexfabric/rexfabric.h>
 
+#include "../content/classes.h"
 #include "../log.h"
 #include "../platform.h"
 #include "../lua/lua_scripts.h"
@@ -82,6 +83,7 @@ void MenuModel::Poll() {
       changed_ = true;
     }
   }
+  retired_.clear();
   // Something changed the mods since the last scan: an install, or the game.
   if (ModsRevision() != seen_revision_) {
     seen_revision_ = ModsRevision();
@@ -118,24 +120,48 @@ bool MenuModel::Restart() {
   std::_Exit(0);
 }
 
-void MenuModel::ReloadScripts() {
-  std::vector<ModInfo> enabled(mods_.mods().begin(), mods_.mods().begin() + static_cast<ptrdiff_t>(mods_.EnabledCount()));
-  lua::Reload(enabled);
+std::vector<ModInfo> MenuModel::Loadable() const {
+  const std::vector<ModInfo> enabled(mods_.mods().begin(), mods_.mods().begin() + static_cast<ptrdiff_t>(mods_.EnabledCount()));
+  return LoadableMods(enabled, GetConfig().game_version, nullptr);
 }
+
+void MenuModel::ReloadScripts() {
+  const std::vector<ModInfo> loadable = Loadable();
+  content::LoadModContent(loadable);
+  lua::Reload(loadable);
+}
+
+void MenuModel::ReloadContent() { content::LoadModContent(Loadable()); }
 
 MenuModel::Texture::~Texture() {
   if (id_ != ImTextureID_Invalid && images_.destroy) images_.destroy(id_);
 }
 
-std::unique_ptr<MenuModel::Texture> MenuModel::MakeTexture(const std::vector<uint8_t>& encoded) {
+std::unique_ptr<MenuModel::Texture> MenuModel::MakeTexture(const std::vector<uint8_t>& encoded, uint32_t* width_out, uint32_t* height_out) {
   if (!images_.create || encoded.empty()) return nullptr;
   int width = 0;
   int height = 0;
   const std::vector<uint8_t> rgba = DecodeImageRGBA(encoded.data(), encoded.size(), width, height);
   if (rgba.empty() || width <= 0 || height <= 0) return nullptr;
+  if (width_out) *width_out = static_cast<uint32_t>(width);
+  if (height_out) *height_out = static_cast<uint32_t>(height);
   const ImTextureID id = images_.create(static_cast<uint32_t>(width), static_cast<uint32_t>(height), rgba.data());
   if (id == ImTextureID_Invalid) return nullptr;
   return std::make_unique<Texture>(images_, id);
+}
+
+MenuModel::Picture MenuModel::AssetPicture(const std::filesystem::path& file) {
+  std::error_code code;
+  const std::filesystem::file_time_type written = std::filesystem::last_write_time(file, code);
+  if (code) return {};
+  CachedPicture& picture = pictures_[file.string()];
+  // Read once per change, failed or not, so a picture that can't be read isn't read every frame.
+  if (!picture.texture || picture.written != written) {
+    if (picture.texture) retired_.push_back(std::move(picture.texture));
+    picture.written = written;
+    picture.texture = MakeTexture(ReadFile(file), &picture.width, &picture.height);
+  }
+  return picture.texture ? Picture{picture.texture->id(), picture.width, picture.height} : Picture{};
 }
 
 ImTextureID MenuModel::ModIcon(const ModInfo& mod) {

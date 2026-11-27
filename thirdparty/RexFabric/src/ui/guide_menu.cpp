@@ -204,17 +204,29 @@ void Build(Menu& menu) {
   actions.push_back({"Reload Scripts"});
   actions.push_back({"Open Folder"});
 #if REXFABRIC_WITH_NODE_EDITOR
-  actions.push_back({"Node Editor"});
+  if (EditorsShown()) actions.push_back({"Node Editor"});
 #endif
+  if (EditorsShown()) actions.push_back({"Content Browser"});
+  if (EditorsShown()) actions.push_back({"Lua Console"});
   const int action = menu.Bar("Actions", actions);
   const std::string_view chosen = action >= 0 ? std::string_view(actions[static_cast<size_t>(action)].label) : std::string_view();
   if (chosen == "Reload Scripts") model->ReloadScripts();
   if (chosen == "Open Folder") model->OpenModsFolder();
-  // The editor wants a mouse, so the Guide steps aside for it.
+  // The editors want a mouse, so the Guide steps aside for them.
   if (chosen == "Node Editor") {
     rexglue_guide::ShowMenu(kBladeId, false);
     Show(false);
     ShowNodeEditor();
+  }
+  if (chosen == "Content Browser") {
+    rexglue_guide::ShowMenu(kBladeId, false);
+    Show(false);
+    ShowContentBrowser();
+  }
+  if (chosen == "Lua Console") {
+    rexglue_guide::ShowMenu(kBladeId, false);
+    Show(false);
+    ShowLuaConsole();
   }
 
   // Available and enabled side by side, as on a pack screen; the enabled in load order.

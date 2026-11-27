@@ -93,15 +93,15 @@ void GuideDialog::ConfigRows(std::vector<Row>& rows, Page& page) {
   std::vector<std::string> names;
   for (const rex::SettingBase* s : settings) {
     using rex::SettingType;
-    using rex::SettingLife;
+    using rex::SettingMode;
     const std::string name = s->GetName();
     names.push_back(name);
     const std::string value = s->GetText();
     const rex::SettingConstraints& c = s->GetConstraints();
     Row row{.label = s->GetHelp().empty() ? name : s->GetHelp(), .detail = Shown(*s, value)};
     row.sub = name;
-    if (c.life == SettingLife::kRestart) row.sub += "  -  applies after a restart";
-    if (c.life == SettingLife::kStartupOnly || s->IsFrozen()) {
+    if (c.mode == SettingMode::kRequiresRestart) row.sub += "  -  applies after a restart";
+    if (c.mode == SettingMode::kInitOnly || s->IsFrozen()) {
       row.sub += "  -  set at startup";
       row.disabled = true;
       rows.push_back(std::move(row));
@@ -158,7 +158,7 @@ void GuideDialog::ChangeSetting(const std::string& name, const std::string& valu
   }
   SaveSettings();
   const auto found = REX_SETTINGS().Find(name);
-  if (notify && found && (*found)->GetConstraints().life == rex::SettingLife::kRestart) {
+  if (notify && found && (*found)->GetConstraints().mode == rex::SettingMode::kRequiresRestart) {
     const std::string& help = (*found)->GetHelp();
     ShowToast({.glyph = Glyph::kInfo, .line1 = "Restart to apply", .line2 = help.empty() ? name : help});
   }

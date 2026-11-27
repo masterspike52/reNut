@@ -163,6 +163,11 @@ constexpr float kVolumeSilent = 10.0f;
 constexpr float kVolumeBarGap = 3.0f;
 constexpr float kVolumeBottom = kMuteTop + 35.0f;
 constexpr ImU32 kVolumeUnlit = IM_COL32(255, 255, 255, 45);
+// AUTO UPDATE's check box, centred at the picture's bottom; the update's line above it.
+constexpr float kAutoUpdateTop = 896.0f;
+constexpr float kAutoUpdateBox = 22.0f;
+constexpr float kAutoUpdateGap = 10.0f;
+constexpr float kUpdateLineTop = kAutoUpdateTop - 32.0f;
 
 // In slot order. kScreenshot is no row of the menu: a file picker's answer
 // for the share page.
@@ -237,6 +242,8 @@ constexpr Setting kInputSettings[] = {
 #endif
     {"renut.renut_disable_extra_controllers", "Player 1 Only"},
 };
+// The bottom middle check box: reNut's own updates (app/updater.h).
+constexpr const char kAutoUpdateSetting[] = "renut.renut_auto_update";
 constexpr const char kInputCategory[] = "Nuts&Bolts/Input";
 constexpr const char kKeyPrefix[] = "renut_key_";
 // Controller Input's choices: hid.drivers is a list of drivers, without its own.
@@ -401,7 +408,7 @@ bool StepSetting(const rex::SettingBase &s, int dir, const fs::path &config_path
     }
     if (next == current)
         return false;
-    if (s.IsFrozen() && c.life == rex::SettingLife::kStartupOnly) {
+    if (s.IsFrozen() && c.mode == rex::SettingMode::kInitOnly) {
         (void)REX_SETTINGS().Save(config_path);
         if (!WriteStartupSetting(config_path, s.GetName(), next))
             return false;
@@ -1160,6 +1167,12 @@ struct LauncherMenu::Impl {
         }
         switch (row) {
         case Row::kPlay: {
+            // The update stops here; one already installed restarts reNut into it instead.
+            if (!renut::update::Stop() && !restart_failed) {
+                RestartForUpdate(busy);
+                if (!restart_failed)
+                    break;
+            }
             setup::SavePaths(app_name, paths);
             // Hidden by Draw once the game presents: until then the title loading shows the launcher, not a blank.
             starting = true;
@@ -1449,11 +1462,11 @@ struct LauncherMenu::Impl {
             about = row->cvar == kLanguageSetting ? kLanguageAbout : entry ? entry->GetHelp() : "";
             if (about.size() > 240)
                 about = about.substr(0, 237) + "...";
-            const rex::SettingLife life = entry ? entry->GetConstraints().life : rex::SettingLife::kLive;
-            if (entry && row->cvar != kLanguageSetting && life == rex::SettingLife::kRestart &&
+            const rex::SettingMode mode = entry ? entry->GetConstraints().mode : rex::SettingMode::kNormal;
+            if (entry && row->cvar != kLanguageSetting && mode == rex::SettingMode::kRequiresRestart &&
                 about.find("restart") == std::string::npos)
                 about += " Takes effect after a restart.";
-            if (entry && row->cvar != kLanguageSetting && life == rex::SettingLife::kStartupOnly)
+            if (entry && row->cvar != kLanguageSetting && mode == rex::SettingMode::kInitOnly)
                 about += " Changing it restarts reNut.";
         }
         f.draw->AddText(f.font, f.small_text, f.At(kColumnLeft + 30.0f, kInfoTop), binding.empty() ? kDim : kNeeded,
@@ -1693,7 +1706,42 @@ struct LauncherMenu::Impl {
         default: return;
         }
         line = FitEnd(f.font, f.small_text, line, kTextWidth * f.scale);
-        f.draw->AddText(f.font, f.small_text, f.At(kColumnLeft + 30.0f, kImageHeight - 34.0f), colour, line.c_str());
+        const float width = f.font->CalcTextSizeA(f.small_text, FLT_MAX, 0.0f, line.c_str()).x / f.scale;
+        f.draw->AddText(f.font, f.small_text, f.At((kImageWidth - width) * 0.5f, kUpdateLineTop), colour, line.c_str());
+    }
+
+    // AUTO UPDATE's check box, bottom middle; true when it is clicked.
+    bool DrawAutoUpdate(const Frame &f, bool enabled) const {
+        enabled = enabled && !picking && binding.empty() && bind_wait <= 0.0f;
+        const char label[] = "AUTO UPDATE";
+        const float label_width = f.font->CalcTextSizeA(f.small_text, FLT_MAX, 0.0f, label).x / f.scale;
+        const float left = (kImageWidth - kAutoUpdateBox - kAutoUpdateGap - label_width) * 0.5f;
+        const float right = left + kAutoUpdateBox + kAutoUpdateGap + label_width;
+        const ImVec2 a = f.At(left - 6.0f, kAutoUpdateTop - 6.0f);
+        const ImVec2 b = f.At(right + 6.0f, kAutoUpdateTop + kAutoUpdateBox + 6.0f);
+        const bool hovered = enabled && ImGui::IsMouseHoveringRect(a, b, false);
+        if (hovered)
+            f.draw->AddRectFilled(a, b, kHighlight, 6.0f * f.scale);
+
+        const bool on = ValueOf(kAutoUpdateSetting) == "true";
+        const ImU32 colour = on ? kWhite : kDim;
+        const float line = std::max(1.0f, 2.5f * f.scale);
+        f.draw->AddRect(f.At(left, kAutoUpdateTop), f.At(left + kAutoUpdateBox, kAutoUpdateTop + kAutoUpdateBox), colour,
+                        3.0f * f.scale, 0, line);
+        if (on) {
+            const ImVec2 tick[] = {f.At(left + 5.0f, kAutoUpdateTop + 11.0f), f.At(left + 9.5f, kAutoUpdateTop + 16.0f),
+                                   f.At(left + 17.0f, kAutoUpdateTop + 6.0f)};
+            f.draw->AddPolyline(tick, int(std::size(tick)), colour, 0, line);
+        }
+        const float text_top = kAutoUpdateTop + (kAutoUpdateBox - kSmallTextSize) * 0.5f;
+        f.draw->AddText(f.font, f.small_text, f.At(left + kAutoUpdateBox + kAutoUpdateGap, text_top), colour, label);
+        return hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Left);
+    }
+
+    void ToggleAutoUpdate() {
+        const bool on = ValueOf(kAutoUpdateSetting) == "true";
+        if (REX_SETTINGS().SetText(kAutoUpdateSetting, on ? "false" : "true") && !config_path.empty())
+            (void)REX_SETTINGS().Save(config_path);
     }
 
     // An installed update starts at once, while the menu is idle: not over a
@@ -2200,7 +2248,13 @@ struct LauncherMenu::Impl {
         }
         if (DrawMusic(f, editing == ShareRow::kNone && !starting))
             mute = true;
+        const bool toggle_update = page == Page::kMain && DrawAutoUpdate(f, !starting);
         ImGui::End();
+        if (toggle_update)
+            ToggleAutoUpdate();
+        // AUTO UPDATE ticked here starts the check at once.
+        if (!starting)
+            renut::update::Start();
         RestartForUpdate(busy);
         if (mute)
             ToggleMusic();

@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <filesystem>
+#include <string>
 
 struct PPCContext;
 
@@ -34,6 +35,15 @@ void SetModSoundPitch(uint32_t handle, float pitch);
 void StopModSound(uint32_t handle);
 // It's still playing (or paused with the game).
 bool ModSoundPlaying(uint32_t handle);
+
+// NutTool's studio music, the Stereo's songs (the game's, then the music folder's files), one looping at a time.
+// Game thread, each studio tick: plays the chosen song while `on`, else stops it.
+void StudioMusicTick(PPCContext &ctx, uint8_t *base, bool on);
+// Any thread: moves `step` songs along (wrapping, skipping those that won't play), pauses, and the song's title.
+void StudioMusicStep(int step);
+void StudioMusicPause(bool paused);
+bool StudioMusicPaused();
+std::string StudioMusicTitle();
 
 // Game thread, each frame of a level: keeps PlayOneShot's and the mods' sounds going (placing those with a position),
 // and loads the dialog wavebanks of the game voices that scene script 'scene''s NPCs have (renut.npcs.add's voice).

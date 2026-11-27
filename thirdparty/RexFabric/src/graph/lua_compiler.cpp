@@ -1,5 +1,8 @@
 #include "lua_compiler.h"
 
+#include "../content/classes.h"
+#include "../content/types.h"
+
 #include <algorithm>
 #include <array>
 #include <cctype>
@@ -77,6 +80,62 @@ bool NumberLiteral(std::string_view typed, std::string& literal) {
   if (end != text.c_str() + text.size()) return false;
   literal = FloatLiteral(value);
   return true;
+}
+
+// A key in a table constructor: name for a name Lua takes as one, ["odd name"] for the rest.
+std::string TableKey(const std::string& name) {
+  const std::string member = LuaMember(name);
+  return member.starts_with(".") ? name : member;
+}
+
+std::string ContentSingle(const content::ValueType& type, const nlohmann::json& value, int depth);
+
+// A content value (content/values.h), fitted to its type, as a Lua literal: arrays and structs as tables, maps as tables
+// under their keys, a game enum's value as its number and a mod enum's as its name.
+std::string ContentLiteral(const content::ValueType& type, const nlohmann::json& value, int depth = 0) {
+  if (type.container == content::Container::kSingle) return ContentSingle(type, value, depth);
+  std::string out = "{";
+  bool first = true;
+  for (const nlohmann::json& entry : value) {
+    if (type.container == content::Container::kMap && (!entry.is_array() || entry.size() != 2 || entry[0].is_null())) continue;
+    out += first ? "" : ", ";
+    first = false;
+    if (type.container == content::Container::kArray) out += ContentSingle(content::ElementType(type), entry, depth);
+    else out += "[" + ContentSingle(content::KeyType(type), entry[0], depth) + "] = " + ContentSingle(content::ElementType(type), entry[1], depth);
+  }
+  return out + "}";
+}
+
+std::string ContentSingle(const content::ValueType& type, const nlohmann::json& value, int depth) {
+  switch (type.type) {
+    case content::PropertyType::kBool: return value.is_boolean() && value.get<bool>() ? "true" : "false";
+    case content::PropertyType::kInt: return value.is_number_integer() ? std::to_string(value.get<int64_t>()) : "0";
+    case content::PropertyType::kFloat: return FloatLiteral(value.is_number() ? value.get<double>() : 0.0);
+    case content::PropertyType::kString:
+    case content::PropertyType::kText: return LuaQuote(value.is_string() ? value.get<std::string>() : std::string());
+    case content::PropertyType::kAsset: return value.is_string() ? LuaQuote(value.get<std::string>()) : "nil";
+    case content::PropertyType::kEnum: {
+      const std::string name = value.is_string() ? value.get<std::string>() : std::string();
+      if (const std::optional<content::Enum> found = content::FindEnum(type.of)) {
+        for (size_t i = 0; i < found->numbers.size() && i < found->values.size(); ++i) {
+          if (found->values[i].name == name) return std::to_string(found->numbers[i]);
+        }
+      }
+      return LuaQuote(name);
+    }
+    case content::PropertyType::kStruct: {
+      const std::optional<content::Struct> found = content::FindStruct(type.of);
+      if (!found || !value.is_object() || depth > 16) return "{}";
+      std::string out = "{";
+      for (size_t i = 0; i < found->fields.size(); ++i) {
+        const content::Property& field = found->fields[i];
+        const auto held = value.find(field.name);
+        out += (i ? ", " : "") + TableKey(field.name) + " = " + ContentLiteral(field.type, held != value.end() ? *held : field.value, depth + 1);
+      }
+      return out + "}";
+    }
+  }
+  return "nil";
 }
 
 }  // namespace
@@ -424,6 +483,17 @@ std::string Emitter::ValueOf(const PinRef& output) {
 }
 
 std::string Emitter::Literal(const Pin& pin, const nlohmann::json& value) {
+  // Arrays, maps, structs and enums are written as content keeps them; an array of objects starts empty.
+  if (pin.type.container != PinContainer::kSingle || pin.type.kind == PinKind::kStruct || pin.type.kind == PinKind::kEnum) {
+    const std::optional<content::ValueType> type = ContentType(pin.type);
+    if (!type) return "{}";
+    nlohmann::json fitted;
+    std::string why;
+    const nlohmann::json given = value.is_null() || (value.is_string() && value.get<std::string>().empty()) ? content::EmptyValue(content::LoadedTypes(), *type) : value;
+    if (content::FitValue(content::LoadedTypes(), *type, given, &fitted, &why)) return ContentLiteral(*type, fitted);
+    Error(pin.name + ": " + why);
+    return "nil";
+  }
   const std::string text = value.is_string() ? value.get<std::string>() : std::string();
   std::string literal;
   switch (pin.type.kind) {
@@ -560,6 +630,7 @@ void Emitter::CheckRoutines() {
         if (param.name.empty()) problems_.push_back({0, what + " has an input or output without a name", false});
         else if (!params.insert(param.name).second) problems_.push_back({0, what + " has two inputs or outputs named " + param.name, false});
         if (routine.kind == RoutineKind::kFunction && (param.type == PinKind::kExec || param.name == kExecIn || param.name == kExecOut)) problems_.push_back({0, what + ": " + param.name + " is kept for the function's own exec pins", false});
+        CheckObjectType(what + ": " + param.name, ParamType(param));
       }
     }
   }
@@ -577,6 +648,7 @@ void Emitter::CheckDispatchers() {
     for (const graph::Param& param : dispatcher.params) {
       if (param.name.empty()) problems_.push_back({0, what + " has a param without a name", false});
       else if (!params.insert(param.name).second) problems_.push_back({0, what + " has two params named " + param.name, false});
+      CheckObjectType(what + ": " + param.name, ParamType(param));
     }
   }
 }
@@ -587,7 +659,15 @@ void Emitter::CheckVariables() {
     std::string reason;
     if (!IsVariableName(variable.name, options_.globals, &reason)) problems_.push_back({0, "Variable " + variable.name + ": " + reason, false});
     if (!seen.insert(variable.name).second) problems_.push_back({0, "Two variables are named " + variable.name, false});
+    CheckObjectType("Variable " + variable.name, VariableType(variable));
   }
+}
+
+void Emitter::CheckObjectType(const std::string& what, const PinType& type) {
+  if (type.kind == PinKind::kObject && !type.object.empty() && !content::IsType(type.object)) problems_.push_back({0, what + " holds a " + type.object + ", which isn't a type or class any more", false});
+  if (type.kind == PinKind::kEnum && !content::FindEnum(type.object)) problems_.push_back({0, what + " holds a " + type.object + ", which isn't an enum any more", false});
+  if (type.kind == PinKind::kStruct && !content::FindStruct(type.object)) problems_.push_back({0, what + " holds a " + type.object + ", which isn't a struct any more", false});
+  if (type.container == PinContainer::kMap && type.key == PinKind::kEnum && !content::FindEnum(type.key_object)) problems_.push_back({0, what + " has keys of " + type.key_object + ", which isn't an enum any more", false});
 }
 
 Compiled Emitter::Finish(std::string_view source) {
@@ -652,9 +732,11 @@ Compiled Emitter::Finish(std::string_view source) {
 
   if (!graph_.variables().empty() || !graph_.dispatchers().empty() || !state_.empty()) lua += "\n";
   for (const Variable& variable : graph_.variables()) {
-    const Pin pin = DataPin(variable.name, variable.type);
+    const Pin pin = ValuePin(variable.name, VariableType(variable));
     lua += "local " + variable.name;
-    if (!variable.initial.is_null()) lua += " = " + Literal(pin, variable.initial);
+    // An array, a map or a struct starts as one, empty when nothing says otherwise.
+    const bool table = pin.type.container != PinContainer::kSingle || pin.type.kind == PinKind::kStruct;
+    if (!variable.initial.is_null() || table) lua += " = " + Literal(pin, variable.initial);
     if (!variable.comment.empty()) {
       std::string comment = variable.comment;
       std::replace(comment.begin(), comment.end(), '\n', ' ');

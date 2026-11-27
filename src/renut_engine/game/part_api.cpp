@@ -36,6 +36,7 @@
 #include <utility>
 #include <vector>
 
+#include "renut_engine/app/renut_logging.h"
 #include "renut_engine/game/field_of_view.h"
 #include "renut_engine/game/flag_editor.h"
 #include "renut_engine/game/keyboard_input.h"
@@ -50,6 +51,8 @@
 #include "renut_engine/gpu/render/shape_weights.h"
 #include "renut_engine/mods/custom_parts.h"
 #include "renut_engine/mods/mod_loader.h"
+#include "nuttool/frontend.h"
+#include "nuttool/session.h"
 
 // What mods call. A float argument takes the next of f1.. and also uses up the next of r3..r10.
 REX_IMPORT(__imp__sub_82256130, PushBody, void(u32, f64, u32));            // (body, dt, &force): wakes it, force through its centre
@@ -61,6 +64,9 @@ REX_IMPORT(__imp__sub_8254B988, VehicleDriver, u32(u32));                  // th
 REX_IMPORT(sub_82201350, DriverPad, u32(u32, u32));                        // (vehicle, 0): the driver's pad (vehicle_drivers.cpp)
 REX_IMPORT(__imp__sub_82626070, FireProjectile, u32(u32, u32, u32, u32));  // (weapon, &pos, &rotation, &velocity): projectile or 0
 REX_IMPORT(__imp__sub_8224AA08, CopyObjparams, u32(u32));       // (&aid): a copy of the loaded objparams, or 0
+REX_IMPORT(__imp__sub_8221AC00, ApplyToModel, void(u32, u32));  // (anim player, &matrices): AnimPlayer_ApplyToModel
+REX_IMPORT(__imp__sub_822AE098, AvatarHitBodies, void(u32, u32, u32, u32, u32));  // (avatar, nodes, &aid or 0, depth, -)
+REX_IMPORT(__imp__rex_meCalculateProjection, CalculateProjection, void());  // the projection, from the camera's near and far
 REX_IMPORT(__imp__sub_821E5370, ClassIdByName, u32(u32));       // (&name): the class id, or 0
 REX_IMPORT(__imp__sub_8236A570, CreateObject, u32(u32, u32, u32));  // (class id, objparams copy, 0)
 REX_IMPORT(__imp__rex_meInternalFree, FreeObject, void(u32));      // sub_82332C30 (config/renut_funcs.toml)
@@ -121,6 +127,10 @@ REX_IMPORT(__imp__sub_8255AAE0, ShowChoiceBox, void(u32, u32, u32, u32, u32, u32
 REX_IMPORT(__imp__sub_8255AD38, CloseMessageBox, void(u32, u32));           // (profile, 1): at once
 REX_IMPORT(__imp__sub_825CA310, BoxButton, u32(u32, u32, u32, u32));        // (box, pressed element, -, -)
 REX_IMPORT(__imp__sub_822B0BC8, MakeEntityModel, u32(u32, u32, u32));      // (entity, &model aid, world or 0)
+// (avatar, &animation aid, 0): plays an animation asset in its first slot, as an avatar's default one starts.
+REX_IMPORT(__imp__sub_8229AFD0, PlayAnimationAsset, u32(u32, u32, u32));
+// (avatar, switch, 4-bit state, 1): sets it on each of the avatar's model instances (+ 2240 and + 2488).
+REX_IMPORT(__imp__sub_822B0CC0, SetAvatarSwitch, void(u32, u32, u32, u32));
 REX_IMPORT(__imp__sub_82228A88, HudPlayer, u32(u32, u32, u32));             // (hud, last, profile): its HUD container
 REX_IMPORT(__imp__sub_8221A350, ProfileIndex, u32(u32));                    // (profile)
 REX_IMPORT(__imp__sub_825B2858, OpenScorePanel, void(u32, u32, u32));       // (container, profile, &params[13])
@@ -548,6 +558,7 @@ struct CameraOverride {
   bool active = false;
   float at[3] = {};
   float look[3] = {};
+  float reach = 0;  // the projection's far distance (the game caps it at 5000); 0 keeps the camera's own
 };
 std::mutex g_camera_mutex;
 CameraOverride g_camera;
@@ -5292,6 +5303,337 @@ bool ModSpawned(uint32_t object) {
   return g_mod_spawned.contains(object);
 }
 
+void SetCamera(const float at[3], const float look[3], float reach) {
+  std::lock_guard lock(g_camera_mutex);
+  g_camera = {true, {at[0], at[1], at[2]}, {look[0], look[1], look[2]}, reach};
+}
+
+void ReleaseCamera() {
+  std::lock_guard lock(g_camera_mutex);
+  g_camera.active = false;
+}
+
+namespace {
+
+// ShowModel's objects: a copy of the car park's stone arch (its bundle the studio's scene loads) made as the plainest
+// avatar class instead of a portal, whose own setup reads a level's door data. Its model is swapped for the one shown.
+constexpr const char kShowCarrier[] = "banjox_portal_hubtemp_default";
+constexpr const char kShowClass[] = "entityAvatarSimpleHits";
+constexpr uint32_t kCopyClassNameSize = 56;  // + 75 up to the copy's world (+ 132)
+// A copy's u16 at + 0 is its params' size, which 0x8236A570 checks against the class's (avatar_GetSize: 448; a
+// portal's 648 begin with an avatar's).
+constexpr uint16_t kShowParamsSize = 448;
+// A copy's havok asset (+ 196): 0 takes the model's namesake (sub_8229E7A8), a whole world's for a world model. A
+// havok asset no bundle has gives none, so no body crosses the studio's Havok border (which removes the object).
+constexpr uint32_t kCopyHavok = 196;
+constexpr uint8_t kTypeHavok = 0x05;
+constexpr const char kShowNoHavok[] = "renut_nuttool_show_nohavok";
+
+// Runs `f` with the guest context lent, as inside a renut event, so the spawn helpers can call the game.
+template <typename F> auto Lent(PPCContext &ctx, uint8_t *base, F &&f) {
+  PPCContext *const outer_ctx = t_ctx;
+  uint8_t *const outer_base = t_base;
+  t_ctx = &ctx;
+  t_base = base;
+  ++t_events;
+  struct Restore {
+    PPCContext *ctx;
+    uint8_t *base;
+    ~Restore() {
+      --t_events;
+      t_ctx = ctx;
+      t_base = base;
+    }
+  } restore{outer_ctx, outer_base};
+  return f();
+}
+
+// ShowModel's objects, by the world they were made in, and whether one is being made on this thread. They get no hit
+// bodies (AvatarHitBodies_hook): a world's reach past the studio's Havok border, which removes the object they're on.
+std::mutex g_shown_mutex;
+std::map<uint32_t, uint32_t> g_shown;
+thread_local bool t_showing = false;
+
+bool ShownObject(uint32_t avatar) {
+  if (t_showing)
+    return true;
+  std::lock_guard lock(g_shown_mutex);
+  const auto it = g_shown.find(avatar);
+  return it != g_shown.end() && it->second == RunningWorld();
+}
+
+// Logging: a shown object's state (alive, model instance, visibility, culling sphere), to find why one isn't seen.
+void LogShown(const char *when, uint32_t object) {
+  if (!Heap(object)) {
+    RNUT_INFO("[studio show] {}: object {:08X} isn't in the heap", when, object);
+    return;
+  }
+  const V3 at = LoadV3(object + kAvatarPosition);
+  const uint32_t instance = Load32(object + 0x8C0);
+  RNUT_INFO("[studio show] {}: object {:08X} vtable {:08X} world {:08X} (running {:08X}) flags +16 {:08X} +20 {:08X} "
+            "at {} {} {}",
+            when, object, Load32(object), Load32(object + 76), RunningWorld(), Load32(object + 16), Load32(object + 20),
+            at.x, at.y, at.z);
+  RNUT_INFO("[studio show] {}: instance {:08X} (model {:08X}, render graph {:08X}), bones {}, havok {:08X}, "
+            "viewports seen in {:08X}",
+            when, instance, instance ? Load32(instance) : 0, instance ? Load32(instance + 8) : 0,
+            instance ? ModelBoneCount(instance) : 0, Load32(object + 2192), Load32(object + 480));
+  RNUT_INFO("[studio show] {}: cull sphere model centre {} {} {} radius {} x factor {} x scale {} {} {} x {}", when,
+            float(LoadFloat(object + 656)), float(LoadFloat(object + 660)), float(LoadFloat(object + 664)),
+            float(LoadFloat(object + 672)), float(LoadFloat(object + 2236)), float(LoadFloat(object + 160)),
+            float(LoadFloat(object + 164)), float(LoadFloat(object + 168)), float(LoadFloat(object + 736)));
+}
+std::chrono::steady_clock::time_point g_shown_log_next;
+
+} // namespace
+
+uint32_t ShowModel(PPCContext &ctx, uint8_t *base, uint32_t model, uint32_t bundle, const float at[3]) {
+  return Lent(ctx, base, [&]() -> uint32_t {
+    const uint32_t world = RunningWorld();
+    if (!world)
+      throw Error("models are shown in a world");
+    if (bundle) {
+      const uint32_t s = Scratch() + 32;
+      Store32(s, bundle);
+      LoadDataBundle(world, s, 1, 0, 0);
+      Store32(s, kTypeStreamBundle << 24 | (bundle & 0xFFFFFF));
+      LoadBundle(world, s, 1);
+    }
+    {
+      SpawnGuard guard;
+      if (!AssetOpens(model))
+        throw Error("that model isn't in its bundle, or its bundle didn't load here");
+    }
+    const uint32_t carrier = renut::mods::AssetId(kTypeObjparams, kShowCarrier);
+    struct Showing {
+      Showing() { t_showing = true; }
+      ~Showing() { t_showing = false; }
+    } showing;
+    const uint32_t object = SpawnObject(carrier, at[0], at[1], at[2], 0.0, [model, base](uint32_t copy) {
+      Store32(copy + kCopyModel, model);
+      Store32(copy + kCopyHavok, renut::mods::AssetId(kTypeHavok, kShowNoHavok));
+      base[copy] = uint8_t(kShowParamsSize >> 8);
+      base[copy + 1] = uint8_t(kShowParamsSize & 0xFF);
+      std::memset(base + copy + kCopyClassName, 0, kCopyClassNameSize);
+      std::memcpy(base + copy + kCopyClassName, kShowClass, sizeof(kShowClass));
+    });
+    RNUT_INFO("[studio show] made: model {:08X} bundle {:08X} in world {:08X} at {} {} {}", model, bundle, world, at[0],
+              at[1], at[2]);
+    LogShown("made", object);
+    g_shown_log_next = std::chrono::steady_clock::now();
+    std::lock_guard lock(g_shown_mutex);
+    std::erase_if(g_shown, [world](const auto &shown) { return shown.second != world; });
+    g_shown[object] = world;
+    return object;
+  });
+}
+
+// An entity's model instance (sub_822B0BC8 makes it there); a bone's skin matrix, its graph + 16 + 64 * bone, is four
+// rows of which the first three take a model-space point (sub_82211A40 hands it out transposed).
+constexpr uint32_t kEntityModelInstance = 0x8C0, kGraphMatrices = 16, kGraphMatrix = 64;
+
+// A model instance's render graph instance (+ 8, sub_822E2F90), whose + 4 is what sub_82BC3F98 picks the detail levels
+// of (sub_822E82C0 passes it). The shown objects', noted on the game thread while they're whole (lod.cpp reads them).
+constexpr uint32_t kModelRenderGraph = 8, kRenderGraphLevels = 4;
+std::map<uint32_t, uint32_t> g_shown_render;  // object -> what its detail levels are picked for (under g_shown_mutex)
+
+// Game thread, the object live: what its detail levels are picked for, or 0. The model instance can be above the heap.
+uint32_t RenderInstanceOf(uint32_t object) {
+  const uint32_t model = Load32(object + kEntityModelInstance);
+  const uint32_t graph = model ? Load32(model + kModelRenderGraph) : 0;
+  return graph ? Load32(graph + kRenderGraphLevels) : 0;
+}
+
+void NoteShownRender(uint32_t object) {
+  const uint32_t instance = RenderInstanceOf(object);
+  std::lock_guard lock(g_shown_mutex);
+  std::erase_if(g_shown_render, [](const auto &shown) { return !g_shown.contains(shown.first); });
+  if (g_shown.contains(object))
+    g_shown_render[object] = instance;
+}
+
+bool ShownRenderInstance(uint32_t instance) {
+  if (!instance)
+    return false;
+  std::lock_guard lock(g_shown_mutex);
+  for (const auto &[object, render] : g_shown_render)
+    if (render == instance)
+      return true;
+  return false;
+}
+
+namespace {
+// The held pose: the shown object, the matrices AnimPlayer_ApplyToModel writes for it (graph + 16) and the rows put
+// over them. It lapses when HoldShownPose isn't called again for a while (NutTool's studio closed or left).
+constexpr auto kHoldLapse = std::chrono::milliseconds(500);
+std::mutex g_heldMutex;
+uint32_t g_heldObject = 0, g_heldMatrices = 0;
+std::vector<float> g_heldRows;
+std::chrono::steady_clock::time_point g_heldUntil;
+
+void ReleaseHeldPose() {
+  g_heldObject = g_heldMatrices = 0;
+  g_heldRows.clear();
+}
+
+void WriteHeldPose() {
+  for (size_t b = 0; b * 12 < g_heldRows.size(); ++b)
+    for (uint32_t r = 0; r < 3; ++r)
+      for (uint32_t c = 0; c < 4; ++c)
+        StoreFloat(g_heldMatrices + kGraphMatrix * uint32_t(b) + 16 * r + 4 * c, g_heldRows[b * 12 + r * 4 + c]);
+}
+} // namespace
+
+void RemoveShown(PPCContext &ctx, uint8_t *base, uint32_t object) {
+  {
+    std::lock_guard lock(g_heldMutex);
+    if (object == g_heldObject)
+      ReleaseHeldPose();
+  }
+  {
+    std::lock_guard lock(g_shown_mutex);
+    g_shown.erase(object);
+    g_shown_render.erase(object);
+  }
+  // The caller knows it's this visit's (NutTool's studio visits): a new avatar may not be in the list InWorld walks.
+  Lent(ctx, base, [&] {
+    if (Heap(object))
+      RemoveObject(object, 0);
+  });
+}
+
+void SetShownSwitch(PPCContext &ctx, uint8_t *base, uint32_t object, int id, int state) {
+  // Switch states are 4-bit; 15 is one no part uses. The last 1 skips the avatar's own switch callback.
+  constexpr uint32_t kSwitchNone = 15;
+  Lent(ctx, base, [&] {
+    if (!Heap(object) || id < 0)
+      return;
+    SetAvatarSwitch(object, uint32_t(id), state < 0 || state > 14 ? kSwitchNone : uint32_t(state), 1);
+  });
+}
+
+void HidePlayer(PPCContext &ctx, uint8_t *base) {
+  Lent(ctx, base, [&] {
+    const uint32_t avatar = PlayerAvatar();
+    if (!avatar || BodyStateNow(avatar) == "Hidden")
+      return;
+    const uint32_t body = Load32(avatar + kActorBody);
+    if (Heap(body))
+      SetBodyState(body, StateId(kBodyStateNames, kBodyPrefix, 0, "Hidden"));
+  });
+}
+
+void PlayShownAnimation(PPCContext &ctx, uint8_t *base, uint32_t object, uint32_t anim) {
+  Lent(ctx, base, [&] {
+    if (!Heap(object))
+      return;
+    {
+      SpawnGuard guard;  // one this world hasn't loaded (another character's) is skipped quietly
+      if (!AssetOpens(anim))
+        return;
+    }
+    const uint32_t s = Scratch() + 48;
+    Store32(s, anim);
+    PlayAnimationAsset(object, s, 0);
+  });
+}
+
+bool ShownPose(PPCContext &ctx, uint8_t *base, uint32_t object, const float at[3], std::vector<float> &rows) {
+  return Lent(ctx, base, [&]() -> bool {
+    rows.clear();
+    if (const auto now = std::chrono::steady_clock::now(); now >= g_shown_log_next) {
+      g_shown_log_next = now + std::chrono::seconds(1);
+      LogShown("each second", object);
+    }
+    if (!Heap(object))
+      return false;
+    if (at) {
+      const V3 now = LoadV3(object + kAvatarPosition);
+      if (std::fabs(now.x - at[0]) + std::fabs(now.y - at[1]) + std::fabs(now.z - at[2]) > 1e-4f) {
+        const uint32_t s = Scratch();
+        StoreVec4(s, at[0], at[1], at[2], 1);
+        MoveActor(object, s, 0, 0, 0);
+      }
+    }
+    NoteShownRender(object);
+    // The model instance and its matrices can be in physical memory, above the heap.
+    const uint32_t instance = Load32(object + kEntityModelInstance), world = RunningWorld();
+    if (!instance || !world)
+      return false;
+    const uint32_t bones = ModelBoneCount(instance);
+    const uint32_t graph = Load32(instance + 4 * (Load32(world + kLevelView) + 3));
+    if (!bones || !graph || Load32(graph) != 0)
+      return false;
+    rows.resize(size_t(bones) * 12);
+    for (uint32_t b = 0; b < bones; ++b)
+      for (uint32_t r = 0; r < 3; ++r)
+        for (uint32_t c = 0; c < 4; ++c)
+          rows[size_t(b) * 12 + r * 4 + c] = float(LoadFloat(graph + kGraphMatrices + kGraphMatrix * b + 16 * r + 4 * c));
+    return true;
+  });
+}
+
+void HoldShownPose(PPCContext &ctx, uint8_t *base, uint32_t object, const std::vector<float> &rows) {
+  Lent(ctx, base, [&] {
+    std::lock_guard lock(g_heldMutex);
+    ReleaseHeldPose();
+    if (rows.empty() || !Heap(object))
+      return;
+    const uint32_t instance = Load32(object + kEntityModelInstance), world = RunningWorld();
+    if (!instance || !world)
+      return;
+    const uint32_t bones = ModelBoneCount(instance);
+    const uint32_t graph = Load32(instance + 4 * (Load32(world + kLevelView) + 3));
+    if (!bones || !graph || Load32(graph) != 0)
+      return;
+    g_heldObject = object;
+    g_heldMatrices = graph + kGraphMatrices;
+    g_heldRows.assign(rows.begin(), rows.begin() + std::min<size_t>(rows.size() / 12, bones) * 12);
+    g_heldUntil = std::chrono::steady_clock::now() + kHoldLapse;
+    WriteHeldPose();  // a model no animation plays keeps it as written
+  });
+}
+
+// void sub_8221AC00(player, matrices): the animation's pose written as the model's skin matrices; a held pose goes over it.
+void ApplyToModel_hook(uint32_t player, uint32_t matrices) {
+  ApplyToModel(player, matrices);
+  std::lock_guard lock(g_heldMutex);
+  if (!matrices || matrices != g_heldMatrices)
+    return;
+  if (std::chrono::steady_clock::now() > g_heldUntil)
+    ReleaseHeldPose();
+  else
+    WriteHeldPose();
+}
+
+// void sub_822AE098(avatar, nodes, &model aid or 0, depth, -): fixed bodies for the hits of an avatar's model and its
+// pieces, added to the Havok world. ShowModel's objects get none, so they're only seen.
+void AvatarHitBodies_hook(uint32_t avatar, uint32_t nodes, uint32_t model, uint32_t depth, uint32_t a5) {
+  if (ShownObject(avatar))
+    return;
+  AvatarHitBodies(avatar, nodes, model, depth, a5);
+}
+
+// void rex_meCalculateProjection(): the projection from the current camera's far distance (+ 104, capped at 5000).
+// A SetCamera far further than the player's view's own stands in for it while it's built.
+constexpr uint32_t kCameraFar = 104;
+void CalculateProjection_hook() {
+  float reach;
+  {
+    std::lock_guard lock(g_camera_mutex);
+    reach = g_camera.active ? g_camera.reach : 0;
+  }
+  const uint32_t camera = Load32(kCurrentCamera);
+  if (reach <= 0 || !Heap(camera) || camera != Load32(kViewportCamera)) {
+    CalculateProjection();
+    return;
+  }
+  const double own = LoadFloat(camera + kCameraFar);
+  StoreFloat(camera + kCameraFar, std::max(own, double(reach)));
+  CalculateProjection();
+  StoreFloat(camera + kCameraFar, own);
+}
+
 } // namespace renut::game::part_api
 
 // --- Events for every vehicle and part, from the game's own functions ------------
@@ -5322,6 +5664,9 @@ uint32_t BoxButton_hook(uint32_t box, uint32_t element, uint32_t a3, uint32_t a4
   return BoxButton(box, element, a3, a4);
 }
 REX_HOOK(sub_825CA310, BoxButton_hook);
+REX_HOOK(sub_8221AC00, part_api::ApplyToModel_hook);
+REX_HOOK(sub_822AE098, part_api::AvatarHitBodies_hook);
+REX_HOOK(rex_meCalculateProjection, part_api::CalculateProjection_hook);
 
 // u32 sub_822B0BC8(entity, &model aid, world or 0): makes an entity's model; Banjo's aid is swapped for the call. Raw,
 // so it runs in the game's context: sub_82559790's camera later reads the vector registers it leaves (v40 | v72).
@@ -5409,6 +5754,11 @@ REX_HOOK_RAW(sub_825EF480) {
 
 // gameSaveSave (profile): a save of the game begins (1) or doesn't (0). renut.game_save once it has.
 REX_HOOK_RAW(rex_gameSaveSave) {
+  // NutTool's studio loads without the player's save: a save there would write over theirs with nothing.
+  if (renut::nuttool::Opened()) {
+    ctx.r3.u64 = 0;
+    return;
+  }
   REXFABRIC_ORIGINAL(rex_gameSaveSave)(ctx, base);
   if ((ctx.r3.u32 & 0xFF) && part_api::g_events)
     part_api::Fire(&ctx, base, part_api::g_events->game_save);
@@ -5539,6 +5889,12 @@ REX_HOOK_RAW(sub_82289C30) {
   }
   part_api::g_last_spawned.store(0);
   const uint32_t world = part_api::Heap(ctx.r3.u32) ? part_api::Load32(ctx.r3.u32 + 4) : 0;
+  // NutTool's studio ending however it's left (its Exit, the pause menu's quit): NutTool lets go of the game.
+  if (part_api::Heap(world)) {
+    const PPCContext saved = ctx;  // its guest calls use the hook's registers, which the game's teardown needs
+    renut::nuttool::WorldEnding(ctx, base, part_api::Load32(world + part_api::kWorldScene));
+    ctx = saved;
+  }
   if (part_api::Heap(world) && part_api::g_events) {
     const uint32_t number = part_api::Load32(world + part_api::kWorldNumber);
     part_api::Fire(&ctx, base, part_api::g_events->world_leave, int64_t(number),

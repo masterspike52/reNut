@@ -61,6 +61,15 @@ add_custom_command(
     COMMAND "${CMAKE_COMMAND}" -E rm -rf "${renut_appdir}"
     COMMAND "${CMAKE_COMMAND}" -E make_directory "${renut_appdir}/usr/bin"
     COMMAND "${CMAKE_COMMAND}" -E copy "$<TARGET_FILE:renut>" "${renut_appdir}/usr/bin/renut"
+    # Every shared library beside renut but the Xenos GPU modules, in usr/lib with a link to each in usr/bin: the
+    # runtime loads its modules from beside the executable, and renut links some of the same ones from usr/lib. One
+    # file each keeps a module loaded once (two copies give two kernels, one never started).
+    COMMAND "${CMAKE_COMMAND}" -E make_directory "${renut_appdir}/usr/lib"
+    COMMAND sh -c "for f in \"$<TARGET_FILE_DIR:renut>\"/*.so*; do case \"$f\" in */librexgpu-xenos-*) ;; *) n=$(basename \"$f\"); cp -L \"$f\" \"${renut_appdir}/usr/lib/$n\"; ln -sf \"../lib/$n\" \"${renut_appdir}/usr/bin/$n\" ;; esac; done"
+    # RexFabric's node editor reads the API definitions beside the executable, which is inside the AppImage.
+    COMMAND "${CMAKE_COMMAND}" -E make_directory "${renut_appdir}/usr/bin/lua_api"
+    COMMAND "${CMAKE_COMMAND}" -E copy "${CMAKE_SOURCE_DIR}/src/renut_engine/lua_api/renut.lua"
+            "${renut_appdir}/usr/bin/lua_api/renut.lua"
     ${renut_sentry_crash}
     # The rexglue runtime is found where the SDK installed it. linuxdeploy runs
     # extracted, so FUSE is not needed on the build machine.
@@ -70,11 +79,13 @@ add_custom_command(
             "LDAI_OUTPUT=${renut_appimage}" "OUTPUT=${renut_appimage}"
             "${renut_linuxdeploy}" --appdir "${renut_appdir}"
             --executable "${renut_appdir}/usr/bin/renut"
+            --deploy-deps-only "${renut_appdir}/usr/lib"
             ${renut_sentry_crash_executable}
             --desktop-file "${CMAKE_SOURCE_DIR}/icon/renut.desktop"
             --icon-file "${CMAKE_SOURCE_DIR}/icon/renut.png"
             --output appimage
     DEPENDS renut "${CMAKE_SOURCE_DIR}/icon/renut.desktop" "${CMAKE_SOURCE_DIR}/icon/renut.png"
+            "${CMAKE_SOURCE_DIR}/src/renut_engine/lua_api/renut.lua"
     WORKING_DIRECTORY "${CMAKE_BINARY_DIR}"
     COMMENT "Packing renut into ${renut_appimage}"
     USES_TERMINAL VERBATIM)

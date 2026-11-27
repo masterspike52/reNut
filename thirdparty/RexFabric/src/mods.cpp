@@ -68,6 +68,18 @@ void ReadMetadata(ModInfo& mod) {
       take("description", mod.description);
       take("version", mod.version);
       take("author", mod.author);
+      take("min_game_version", mod.min_game_version);
+      take("language", mod.language);
+      // [[dependencies]] tables of mod and version, or plain folder names.
+      if (const toml::array* dependencies = table["dependencies"].as_array()) {
+        for (const toml::node& entry : *dependencies) {
+          if (auto folder = entry.value<std::string>()) {
+            mod.dependencies.push_back({*folder, {}});
+          } else if (const toml::table* dependency = entry.as_table()) {
+            if (auto folder = (*dependency)["mod"].value<std::string>(); folder && !folder->empty()) mod.dependencies.push_back({*folder, (*dependency)["version"].value_or(std::string())});
+          }
+        }
+      }
     } catch (const toml::parse_error& parse_error) {
       // The folder is read often (the menu, a game's content loaders), so a broken file is reported once.
       static std::mutex warned_mutex;
@@ -94,6 +106,137 @@ bool Listed(const std::vector<std::string>& names, std::string_view folder) {
 }
 
 }  // namespace
+
+int CompareVersions(std::string_view a, std::string_view b) {
+  const auto split = [](std::string_view version) {
+    std::vector<std::string_view> parts;
+    size_t start = 0;
+    for (size_t i = 0; i <= version.size(); ++i) {
+      if (i == version.size() || version[i] == '.' || version[i] == '-' || version[i] == '_') {
+        parts.push_back(version.substr(start, i - start));
+        start = i + 1;
+      }
+    }
+    return parts;
+  };
+  const auto number = [](std::string_view part, uint64_t* value) {
+    if (part.empty() || !std::all_of(part.begin(), part.end(), [](unsigned char c) { return std::isdigit(c); })) return false;
+    *value = 0;
+    for (const char c : part) *value = *value * 10 + static_cast<uint64_t>(c - '0');
+    return true;
+  };
+  const std::vector<std::string_view> left = split(a);
+  const std::vector<std::string_view> right = split(b);
+  for (size_t i = 0; i < std::max(left.size(), right.size()); ++i) {
+    const std::string_view x = i < left.size() ? left[i] : std::string_view("0");
+    const std::string_view y = i < right.size() ? right[i] : std::string_view("0");
+    uint64_t nx = 0;
+    uint64_t ny = 0;
+    if (number(x, &nx) && number(y, &ny)) {
+      if (nx != ny) return nx < ny ? -1 : 1;
+    } else if (const int text = Lower(std::string(x)).compare(Lower(std::string(y))); text != 0) {
+      return text < 0 ? -1 : 1;
+    }
+  }
+  return 0;
+}
+
+std::vector<ModInfo> LoadableMods(const std::vector<ModInfo>& enabled, std::string_view game_version, std::vector<RefusedMod>* refused) {
+  const auto find = [&enabled](std::string_view folder) {
+    return std::find_if(enabled.begin(), enabled.end(), [folder](const ModInfo& mod) { return SameModName(mod.folder, folder); });
+  };
+  std::vector<std::string> reason(enabled.size());
+  for (size_t i = 0; i < enabled.size(); ++i) {
+    const ModInfo& mod = enabled[i];
+    if (!game_version.empty() && !mod.min_game_version.empty() && CompareVersions(game_version, mod.min_game_version) < 0) {
+      reason[i] = "needs game version " + mod.min_game_version + " or later, and this is " + std::string(game_version);
+      continue;
+    }
+    for (const ModDependency& dependency : mod.dependencies) {
+      const auto found = find(dependency.mod);
+      if (found == enabled.end()) {
+        reason[i] = "needs the mod " + dependency.mod + ", which isn't installed and enabled";
+        break;
+      }
+      if (!dependency.version.empty() && CompareVersions(found->version, dependency.version) < 0) {
+        reason[i] = "needs " + dependency.mod + " " + dependency.version + " or later, and it is " + (found->version.empty() ? std::string("unversioned") : found->version);
+        break;
+      }
+    }
+  }
+  // A mod whose dependency can't load can't either, however deep.
+  for (bool changed = true; changed;) {
+    changed = false;
+    for (size_t i = 0; i < enabled.size(); ++i) {
+      if (!reason[i].empty()) continue;
+      for (const ModDependency& dependency : enabled[i].dependencies) {
+        const size_t index = static_cast<size_t>(find(dependency.mod) - enabled.begin());
+        if (!reason[index].empty()) {
+          reason[i] = "needs " + dependency.mod + ", which can't load";
+          changed = true;
+          break;
+        }
+      }
+    }
+  }
+  // Each mod after its dependencies, otherwise in load order; what can never be placed is in a circle.
+  std::vector<ModInfo> order;
+  std::vector<bool> placed(enabled.size());
+  for (bool progress = true; progress;) {
+    progress = false;
+    for (size_t i = 0; i < enabled.size(); ++i) {
+      if (placed[i] || !reason[i].empty()) continue;
+      const bool ready = std::all_of(enabled[i].dependencies.begin(), enabled[i].dependencies.end(), [&](const ModDependency& dependency) { return placed[static_cast<size_t>(find(dependency.mod) - enabled.begin())]; });
+      if (!ready) continue;
+      order.push_back(enabled[i]);
+      placed[i] = true;
+      progress = true;
+      break;
+    }
+  }
+  for (size_t i = 0; i < enabled.size(); ++i) {
+    if (!placed[i] && reason[i].empty()) reason[i] = "its dependencies go round in a circle";
+    if (!reason[i].empty() && refused) refused->push_back({enabled[i].folder, reason[i]});
+  }
+  return order;
+}
+
+bool WriteMetadata(const ModInfo& mod, std::string* error) {
+  const std::filesystem::path file = mod.dir / "mod.toml";
+  toml::table table;
+  std::error_code code;
+  if (std::filesystem::is_regular_file(file, code)) {
+    try {
+      table = toml::parse_file(file.string());
+    } catch (const toml::parse_error& parse_error) {
+      if (error) *error = "mod.toml can't be read (" + std::string(parse_error.description()) + "), so it's left as it is";
+      return false;
+    }
+  }
+  const auto put = [&table](const char* key, const std::string& value) {
+    if (value.empty()) table.erase(key);
+    else table.insert_or_assign(key, value);
+  };
+  put("name", mod.name);
+  put("description", mod.description);
+  put("version", mod.version);
+  put("author", mod.author);
+  put("min_game_version", mod.min_game_version);
+  put("language", mod.language);
+  toml::array dependencies;
+  for (const ModDependency& dependency : mod.dependencies) {
+    toml::table entry{{"mod", dependency.mod}};
+    if (!dependency.version.empty()) entry.insert_or_assign("version", dependency.version);
+    dependencies.push_back(std::move(entry));
+  }
+  if (dependencies.empty()) table.erase("dependencies");
+  else table.insert_or_assign("dependencies", std::move(dependencies));
+
+  std::ofstream out(file, std::ios::binary | std::ios::trunc);
+  out << table << '\n';
+  if (!out && error) *error = "couldn't write " + file.string();
+  return static_cast<bool>(out);
+}
 
 bool SameModName(std::string_view a, std::string_view b) {
   return a.size() == b.size() && std::equal(a.begin(), a.end(), b.begin(), [](unsigned char x, unsigned char y) { return std::tolower(x) == std::tolower(y); });

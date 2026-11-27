@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cstring>
+#include <exception>
 #include <memory>
 #include <mutex>
 #include <unordered_map>
@@ -103,6 +104,26 @@ const RexFabricType* AsHandle(const TypeDef* type) { return reinterpret_cast<con
 // Strings a result points at, until this thread's next call.
 thread_local std::string result_text;
 
+// Native mods see objects by address. An object of a type held by handle is resolved on the way out, and an address
+// held on the way back in; a refusal, or a gone object, is no object.
+uint32_t NativeAddress(const Object& object) {
+  if (!object.type || !object.type->held()) return object.address;
+  try {
+    return object.type->Resolve(object.address);
+  } catch (const std::exception&) {
+    return 0;
+  }
+}
+
+uint32_t GameHandle(uint32_t address, const TypeDef* type) {
+  if (!type || !type->held() || !address) return address;
+  try {
+    return type->Hold(address);
+  } catch (const std::exception&) {
+    return 0;
+  }
+}
+
 RexFabricValue ToNative(const Value& value) {
   RexFabricValue out{static_cast<uint32_t>(TypeOf(value))};
   switch (TypeOf(value)) {
@@ -112,7 +133,7 @@ RexFabricValue ToNative(const Value& value) {
     case ValueType::kFloat: out.f = std::get<double>(value); break;
     case ValueType::kString: out.s = std::get<std::string>(value).c_str(); break;
     case ValueType::kObject:
-      out.address = std::get<Object>(value).address;
+      out.address = NativeAddress(std::get<Object>(value));
       out.object_type = AsHandle(std::get<Object>(value).type);
       break;
   }
@@ -127,12 +148,16 @@ bool FromNative(const RexFabricValue& in, ValueType want, Value& out) {
     case ValueType::kInt: out = in.i; return in.type == REXFABRIC_VALUE_INT || in.type == REXFABRIC_VALUE_BOOL;
     case ValueType::kFloat: out = in.type == REXFABRIC_VALUE_INT ? static_cast<double>(in.i) : in.f; return in.type == REXFABRIC_VALUE_FLOAT || in.type == REXFABRIC_VALUE_INT;
     case ValueType::kString: out = std::string(in.s ? in.s : ""); return in.type == REXFABRIC_VALUE_STRING && in.s;
-    case ValueType::kObject:
-      out = Object{in.type == REXFABRIC_VALUE_INT ? static_cast<uint32_t>(in.i) : in.address, AsType(in.object_type)};
+    case ValueType::kObject: {
+      const TypeDef* type = AsType(in.object_type);
+      out = Object{GameHandle(in.type == REXFABRIC_VALUE_INT ? static_cast<uint32_t>(in.i) : in.address, type), type};
       return in.type == REXFABRIC_VALUE_OBJECT || in.type == REXFABRIC_VALUE_INT || in.type == REXFABRIC_VALUE_NONE;
+    }
   }
   return false;
 }
+
+uint32_t FindGuestFunctionC(const char* name) { return name ? FindGuestFunction(name) : 0; }
 
 const RexFabricFunction* FindFunctionC(const char* name) { return reinterpret_cast<const RexFabricFunction*>(name ? FindFunction(name) : nullptr); }
 
@@ -288,6 +313,7 @@ constexpr RexFabricApi kApi = {
     .set_switch = SetSwitchC,
     .get_cvar = GetCvar,
     .set_cvar = SetCvar,
+    .find_guest_function = FindGuestFunctionC,
 };
 
 }  // namespace

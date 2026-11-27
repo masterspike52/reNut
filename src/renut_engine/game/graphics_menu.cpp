@@ -441,7 +441,7 @@ bool IsRanged(const rex::SettingBase &setting) {
 // Whether the pad can change it here: an on/off switch, a list of values or a
 // ranged number (the rest is left to the settings window, F4). Commands always can.
 bool PadEditable(const rex::SettingBase &setting) {
-  if (setting.GetConstraints().life == rex::SettingLife::kStartupOnly)
+  if (setting.GetConstraints().mode == rex::SettingMode::kInitOnly)
     return false;
   return setting.GetType() == rex::SettingType::kBool || setting.GetConstraints().allowed.size() >= 2 ||
          IsRanged(setting);
@@ -504,7 +504,7 @@ std::string RowText(const Row &row) {
   if (setting->GetType() == rex::SettingType::kBool)
     value = value == "true" || value == "1" ? "On" : "Off";
   std::string text = row.label + ": " + value;
-  if (setting->GetConstraints().life == rex::SettingLife::kRestart)
+  if (setting->GetConstraints().mode == rex::SettingMode::kRequiresRestart)
     text += " (restart)";
   return Upper(text);
 }

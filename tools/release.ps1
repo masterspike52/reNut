@@ -78,11 +78,16 @@ try {
         # The launcher music the Windows build just made from the game's
         # assets: the Linux build embeds the same file, so WSL needs no ffmpeg.
         $music = "/mnt/f/renut2/out/build/win-amd64-dist/renut_assets/launcher_music.ogg"
-        $configure = "cd /mnt/f/renut2 && cmake --preset linux-amd64-dist -DCMAKE_C_COMPILER=/usr/bin/clang-20 " +
-                     "-DCMAKE_CXX_COMPILER=/usr/bin/clang++-20 '-Drexglue_DIR=$rexglue' " +
-                     "'-DRENUT_LAUNCHER_MUSIC=$music'"
+        # WSL's PATH holds the Windows one, and CMake finds packages beside its bin folders (MSYS2's curl).
+        # A Linux-only PATH keeps them out; -U CURL_DIR drops the one a past configure cached.
+        $linuxPath = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+        $configure = "export PATH=$linuxPath && cd /mnt/f/renut2 && cmake --preset linux-amd64-dist -U CURL_DIR " +
+                     "-DCMAKE_C_COMPILER=/usr/bin/clang-20 -DCMAKE_CXX_COMPILER=/usr/bin/clang++-20 " +
+                     "'-Drexglue_DIR=$rexglue' '-DRENUT_LAUNCHER_MUSIC=$music'"
         Invoke-Step "Linux: configure" { wsl -d Ubuntu-24.04 -u root -- bash -c $configure }
-        Invoke-Step "Linux: build" { wsl -d Ubuntu-24.04 -u root -- cmake --build /mnt/f/renut2/out/build/linux-amd64-dist }
+        Invoke-Step "Linux: build" {
+            wsl -d Ubuntu-24.04 -u root -- env "PATH=$linuxPath" cmake --build /mnt/f/renut2/out/build/linux-amd64-dist
+        }
         if ($UploadSymbols) {
             # From Windows, with the sentry-cli the Windows build found: WSL has no
             # sentry-cli of its own, and sentry-cli uploads Linux files from any OS.

@@ -16,6 +16,7 @@
 
 #include <rexfabric/game_api.h>
 
+#include "../content/classes.h"
 #include "lua_compiler.h"
 #include "node_library.h"
 
@@ -86,11 +87,6 @@ PinType FieldPinType(const FieldType& type) {
     case FieldKind::kChars: return {PinKind::kString};
     default: return {PinKind::kInt};
   }
-}
-
-Pin TypedPin(std::string name, const PinType& type) {
-  if (type.kind == PinKind::kObject) return ObjectPin(name, type.object);
-  return DataPin(name, type.kind);
 }
 
 // A declaration's arguments as the game named them (Namespace::Args), each with the full name of the game type it
@@ -173,7 +169,7 @@ Pin ArgPin(const NamedArgs* named, size_t index, const PinType& plain) {
     pin.required = !ArgOptional(named, index);
     return pin;
   }
-  Pin pin = TypedPin(ArgName(named, index), plain);
+  Pin pin = ValuePin(ArgName(named, index), plain);
   if (named && index < named->choices.size() && !named->choices[index].empty() && (plain.kind == PinKind::kInt || plain.kind == PinKind::kString)) {
     pin.choices = &named->choices[index];
     if (!pin.choices->fixed.empty()) pin.initial = pin.choices->fixed.front().second;
@@ -211,7 +207,7 @@ void AddFunction(Library& library, const std::string& category, const std::strin
   desc.pins.outputs = {ExecPin(kExecOut)};
   if (function.result != ValueType::kNone) {
     const bool typed = named && !named->result.empty();
-    desc.pins.outputs.push_back(typed ? ObjectPin("Result", named->result) : TypedPin("Result", ValuePinType(function.result)));
+    desc.pins.outputs.push_back(typed ? ObjectPin("Result", named->result) : ValuePin("Result", ValuePinType(function.result)));
   }
   desc.emit = [&function, named](Emitter& emit) { EmitCall(emit, LuaPath(function.name), function, 0, named); };
   library.Add(std::move(desc));
@@ -219,7 +215,7 @@ void AddFunction(Library& library, const std::string& category, const std::strin
 
 void AddConstant(Library& library, const std::string& category, const std::string& title, const ConstantDef& constant) {
   NodeDesc desc{.id = "game.const:" + constant.name, .title = title, .category = category, .description = "The game's constant " + constant.name + ".", .role = NodeRole::kPure};
-  desc.pins.outputs = {TypedPin("Value", ValuePinType(TypeOf(constant.value)))};
+  desc.pins.outputs = {ValuePin("Value", ValuePinType(TypeOf(constant.value)))};
   desc.expression = [path = LuaPath(constant.name)](Emitter&, std::string_view) { return path; };
   library.Add(std::move(desc));
 }
@@ -250,6 +246,31 @@ void AddType(Library& library, const std::string& category, const std::string& s
   make.expression = [path = LuaPath(type.name())](Emitter& emit, std::string_view) { return path + "(" + emit.Input("Address") + ")"; };
   library.Add(std::move(make));
 
+  // As Unreal's Cast To: any value in, the type's object out, and on through Valid or Not Valid. An object of another
+  // type or an address is one of these when one is there; nil, anything else, or an object the game destroyed is not.
+  const std::string as = "As " + short_name;
+  NodeDesc cast{.id = "game.cast:" + type.name(), .title = "Cast To " + short_name, .category = type_category, .description = "Object as a " + short_name + ": goes on through Valid with it, or through Not Valid when it isn't one, is gone, or is nil.", .keywords = "cast convert is valid check"};
+  cast.pins.inputs = {ExecPin(), DataPin("Object", PinKind::kAny)};
+  cast.pins.outputs = {ExecPin("Valid"), ExecPin("Not Valid"), ObjectPin(as, type.name())};
+  cast.emit = [path = LuaPath(type.name()), as](Emitter& emit) {
+    const std::string value = emit.Output("Value");
+    const std::string object = emit.Output(as);
+    emit.Line(value + " = " + emit.Input("Object"));
+    emit.Line(object + " = (type(" + value + ") == \"userdata\" or math.type(" + value + ") == \"integer\") and " + path + "(" + value + ") or nil");
+    emit.Line("if " + object + " ~= nil and " + object + ".valid then");
+    emit.Indent();
+    emit.Chain("Valid");
+    emit.Dedent();
+    if (emit.Linked("Not Valid")) {
+      emit.Line("else");
+      emit.Indent();
+      emit.Chain("Not Valid");
+      emit.Dedent();
+    }
+    emit.Line("end");
+  };
+  library.Add(std::move(cast));
+
   for (const FieldDef& field : type.fields()) {
     const std::string label = short_name + "." + field.name;
     const PinType value_type = FieldPinType(field.type);
@@ -259,7 +280,7 @@ void AddType(Library& library, const std::string& category, const std::string& s
     const auto access = [name = field.name, array = field.count != 0](Emitter& emit) { return emit.Input("Target") + LuaMember(name) + (array ? "[" + emit.Input("Index") + "]" : std::string()); };
 
     NodeDesc get{.id = "game.get:" + type.name() + "." + field.name, .title = "Get " + label, .category = type_category, .description = "Reads " + label + (field.count ? ", element Index of " + std::to_string(field.count) : std::string()) + ".", .role = NodeRole::kPure};
-    get.pins = {target, {TypedPin("Value", value_type)}};
+    get.pins = {target, {ValuePin("Value", value_type)}};
     get.expression = [access](Emitter& emit, std::string_view) { return access(emit); };
     library.Add(std::move(get));
 
@@ -267,7 +288,7 @@ void AddType(Library& library, const std::string& category, const std::string& s
     NodeDesc set{.id = "game.set:" + type.name() + "." + field.name, .title = "Set " + label, .category = type_category, .description = "Writes " + label + "."};
     set.pins.inputs = {ExecPin()};
     for (const Pin& pin : target) set.pins.inputs.push_back(pin);
-    set.pins.inputs.push_back(TypedPin("Value", value_type));
+    set.pins.inputs.push_back(ValuePin("Value", value_type));
     set.pins.outputs = {ExecPin(kExecOut)};
     set.emit = [access](Emitter& emit) { emit.Line(access(emit) + " = " + emit.Input("Value")); };
     library.Add(std::move(set));
@@ -278,10 +299,37 @@ void AddType(Library& library, const std::string& category, const std::string& s
     method.pins.inputs = {ExecPin(), ObjectPin("Target", type.name())};
     for (Pin& pin : ArgPins(function, 1)) method.pins.inputs.push_back(std::move(pin));
     method.pins.outputs = {ExecPin(kExecOut)};
-    if (function.result != ValueType::kNone) method.pins.outputs.push_back(TypedPin("Result", ValuePinType(function.result)));
+    if (function.result != ValueType::kNone) method.pins.outputs.push_back(ValuePin("Result", ValuePinType(function.result)));
     method.emit = [&function, name = name](Emitter& emit) { EmitCall(emit, emit.Input("Target") + ":" + name, function, 1); };
     library.Add(std::move(method));
   }
+}
+
+// Cast To for a game class without a type of its own (rexfabric/content.h): an object of its type that the class's
+// test takes. Classes standing for a type have the type's Cast To. Mods' classes have none: nothing can be one yet.
+void AddClassCast(Library& library, const content::Class& game_class) {
+  const std::string short_name = game_class.path.substr(game_class.path.rfind('/') + 1);
+  const std::string folder = game_class.path.substr(0, game_class.path.rfind('/'));
+  const std::string as = "As " + short_name;
+  NodeDesc cast{.id = "content.cast:" + game_class.path, .title = "Cast To " + short_name, .category = "Classes/" + folder, .description = "Object as a " + game_class.path + ": goes on through Valid with it, or through Not Valid when it isn't one, is gone, or is nil." + (game_class.help.empty() ? std::string() : "\n" + game_class.help), .keywords = "cast convert is valid check class"};
+  cast.pins.inputs = {ExecPin(), DataPin("Object", PinKind::kAny)};
+  cast.pins.outputs = {ExecPin("Valid"), ExecPin("Not Valid"), ObjectPin(as, game_class.path)};
+  cast.emit = [path = game_class.path, as](Emitter& emit) {
+    const std::string object = emit.Output(as);
+    emit.Line(object + " = rex.content.cast(" + emit.Input("Object") + ", " + LuaQuote(path) + ")");
+    emit.Line("if " + object + " ~= nil then");
+    emit.Indent();
+    emit.Chain("Valid");
+    emit.Dedent();
+    if (emit.Linked("Not Valid")) {
+      emit.Line("else");
+      emit.Indent();
+      emit.Chain("Not Valid");
+      emit.Dedent();
+    }
+    emit.Line("end");
+  };
+  library.Add(std::move(cast));
 }
 
 void AddEvent(Library& library, const std::string& category, const std::string& title, const std::string& event, const NamedArgs* named) {
@@ -341,6 +389,10 @@ void AddGameNodes(Library& library) {
     for (size_t i = 0; i < enums.size(); ++i) AddEnum(library, enums[i].category, title(enums[i]), space->enums[i]);
     for (const std::unique_ptr<TypeDef>& type : space->types) AddType(library, CategoryOf(*space, type->name(), game), space->name, *type);
     for (size_t i = 0; i < events.size(); ++i) AddEvent(library, events[i].category, title(events[i]), space->events[i], NamedArgsOf(*space, space->events[i]));
+  }
+  for (const std::string& path : content::ClassPaths()) {
+    const std::optional<content::Class> game_class = content::FindClass(path);
+    if (game_class && game_class->mod.empty() && game_class->type.empty() && !content::TypeOfClass(path).empty()) AddClassCast(library, *game_class);
   }
 }
 

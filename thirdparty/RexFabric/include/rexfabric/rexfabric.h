@@ -50,11 +50,19 @@ struct Config {
   // The key that opens the node editor, by name; it becomes the rebindable ui.bind.node_editor. Only with
   // WITH_NODE_EDITOR. Empty: no key; the mods menu still opens it.
   std::string node_editor_key;
+  // The key that opens the content browser, by name ("Ctrl+Space"); it becomes the rebindable
+  // ui.bind.content_browser. Empty: no key; the mods menu still opens it.
+  std::string content_browser_key;
+  // The key that opens the Lua console, by name ("Ctrl+Backtick"); it becomes the rebindable ui.bind.lua_console.
+  // Empty: no key; the mods menu still opens it.
+  std::string lua_console_key;
   // A guest function the game runs once a frame, such as its present. RexFabric hooks it and fires the
   // frame event from there, on the guest thread. 0: the game calls Tick itself.
   uint32_t frame_function = 0;
   bool native_mods = true;
   bool lua_mods = true;
+  // The game's version, which mods' min_game_version is compared with ("1.2.0"). Empty: not checked.
+  std::string game_version;
 };
 
 // Call once, after Configure and before anything else here.
@@ -80,13 +88,29 @@ struct Images {
 rex::Result<void> CreateMenus(rex::ui::IUISystem& ui, Images images);
 void ShowMenu(bool show = true);
 void ToggleMenu();
-// A RexFabric window is open: the mods menu, or the node editor. For a game deciding whether mods get input.
+// A RexFabric window is open: the mods menu, the node editor or the content browser. For a game deciding whether mods
+// get input.
 bool MenuShown();
 
 // The node editor, which makes Lua mods from node graphs in game. Only with WITH_NODE_EDITOR; without it these do
 // nothing. Closing it asks first when a graph has unsaved changes.
 void ShowNodeEditor(bool show = true);
 bool NodeEditorShown();
+
+// The content browser: every mod's content as folders of assets, and the editors they open in. Closing it asks
+// first when an asset has unsaved changes.
+void ShowContentBrowser(bool show = true);
+bool ContentBrowserShown();
+
+// The Lua console: a line of Lua run in the mods' VM on the next frame, its results shown. One of the editors, so
+// only while they're shown.
+void ShowLuaConsole(bool show = true);
+bool LuaConsoleShown();
+
+// Whether the editors can be opened: the setting rexfabric.show_editors. Off, every button and key that opens an
+// editor (the node editor and the content browser) is hidden and ShowNodeEditor and ShowContentBrowser do nothing; mods still
+// run as they are. The one thing that keeps players from changing what mods do, by choice, not by locking it away.
+bool EditorsShown();
 
 // A mod in the mods folder, for the game to show or report.
 struct InstalledMod {

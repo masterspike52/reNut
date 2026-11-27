@@ -21,10 +21,12 @@
 #include <thread>
 
 #include "renut_engine/app/renut_settings.h"
+#include "renut_engine/game/arcade_api.h"
 #include "renut_engine/game/custom_npcs.h"
 #include "renut_engine/game/part_api.h"
 #include "renut_engine/game/stereo.h"
 #include "renut_engine/ui/position_overlay.h"
+#include "nuttool/session.h"
 
 namespace {
 
@@ -146,6 +148,7 @@ REX_HOOK_RAW(sub_821BD590)
 	renut::game::WorldMusicTick(ctx, base, renut::game::custom_npcs::ActiveScene());
 	renut::game::NpcSoundsTick(ctx, base, renut::game::custom_npcs::ActiveScene());
 	renut::game::part_api::GameTick(ctx, base);  // renut.game_tick, and the mods' calls waiting for it
+	renut::nuttool::StudioTick(ctx, base);       // the in-game NutTool's work on the game's thread
 }
 
 // void challengeManTeardown(challengeMan*, bool). The tick may stop with the
@@ -362,12 +365,13 @@ static int renutUserFrameCapFps()
 }
 
 // What the limiter holds the game to: the user's cap, lowered to 30 fps in
-// Klungo's arcade and The Saucer of Peril Returns (a lower user cap stays).
+// Klungo's arcade (unless a mod runs it at full speed) and The Saucer of Peril Returns.
 static int renutFrameCapFps()
 {
 	const int fps = renutUserFrameCapFps();
-	if (!g_klungoArcade.load(std::memory_order_relaxed) &&
-		!g_saucerOfPeril.load(std::memory_order_relaxed))
+	const bool arcade = g_klungoArcade.load(std::memory_order_relaxed) &&
+		!renut::game::arcade_api::FullSpeed();
+	if (!arcade && !g_saucerOfPeril.load(std::memory_order_relaxed))
 		return fps;
 	return fps > 0 ? std::min(fps, kKlungoArcadeFps) : kKlungoArcadeFps;
 }

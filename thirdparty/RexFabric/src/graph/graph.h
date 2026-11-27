@@ -27,10 +27,19 @@ enum class PinKind : uint8_t {
   kRegisters,  // a hook's or a midasm site's registers
   kDelegate,   // an event's chain, handed to something that runs it later: a timer, an event dispatcher
   kAny,        // whatever Lua value comes in
+  kEnum,       // a value of an enum: a mod's by its name, a game's by its number
+  kStruct,     // a value of a struct: a table of its fields
 };
 
 const char* PinKindName(PinKind kind);
 bool ParsePinKind(std::string_view name, PinKind& kind);
+
+// How many values a pin, a variable or a param carries: one, an array of them, or a map of them under keys. As Lua
+// tables: an array from [1], a map under its keys.
+enum class PinContainer : uint8_t { kSingle, kArray, kMap };
+
+const char* PinContainerName(PinContainer container);
+bool ParsePinContainer(std::string_view name, PinContainer& container);
 
 struct Node {
   int id = 0;
@@ -65,6 +74,15 @@ struct Link {
 struct Variable {
   std::string name;
   PinKind type = PinKind::kFloat;
+  // What the type names: an Object's game type ("tip.Avatar") or class ("MyMod/Rocks/Rock"), empty for any object; an
+  // Enum's enum ("tip.Weather", "MyMod/Colour"); a Struct's struct.
+  std::string object;
+  PinContainer container = PinContainer::kSingle;
+  // A map's keys: a Bool, an Int, a String or an Enum, with the enum.
+  PinKind key = PinKind::kString;
+  std::string key_object;
+  // A single Bool, Int, Float or String as the details panel types it; anything else as content keeps it
+  // (content/values.h): an enum value by its name, a struct as an object, an array, a map as [key, value] pairs.
   nlohmann::json initial;
   std::string comment;
 };
@@ -80,6 +98,11 @@ enum class RoutineKind : uint8_t { kFunction, kMacro };
 struct Param {
   std::string name;
   PinKind type = PinKind::kFloat;
+  // As Variable's.
+  std::string object;
+  PinContainer container = PinContainer::kSingle;
+  PinKind key = PinKind::kString;
+  std::string key_object;
 };
 
 // A list of events to run, as Unreal's event dispatchers are: Bind adds an event to it, Call runs every event bound to

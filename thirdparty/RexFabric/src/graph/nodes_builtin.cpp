@@ -71,11 +71,7 @@ PinKind CvarKind(std::string_view type) {
 }
 
 // Swaps the pin named `name` for one of `kind`, keeping its place.
-void Retype(std::vector<Pin>& pins, std::string_view name, PinKind kind) {
-  for (Pin& pin : pins) {
-    if (pin.name == name) pin = DataPin(name, kind);
-  }
-}
+void Retype(std::vector<Pin>& pins, std::string_view name, PinKind kind) { Retype(pins, name, PinType{kind}); }
 
 std::string Joined(const std::vector<std::string>& parts) {
   std::string joined;
@@ -241,7 +237,7 @@ void AddCustomEvent(Library& library) {
                    {.name = "Params From", .kind = SettingKind::kDispatcher, .tooltip = "A dispatcher whose params the event takes, to be bound to it", .optional = true}},
       .shape = [](const Node& node, const Graph& graph, NodePins& pins) {
         if (const Dispatcher* dispatcher = graph.FindDispatcher(SettingOf(node, "Params From"))) {
-          for (const Param& param : dispatcher->params) pins.outputs.push_back(DataPin(param.name, param.type));
+          for (const Param& param : dispatcher->params) pins.outputs.push_back(ValuePin(param.name, ParamType(param)));
         }
       },
       .title_of = [](const Node& node) { return Titled(node, "", "Name"); },
@@ -434,9 +430,9 @@ void AddMemory(Library& library) {
 
 // Variables ----------------------------------------------------------------------------------------------
 
-PinKind VariableKind(const Node& node, const Graph& graph) {
+PinType VariableTypeOf(const Node& node, const Graph& graph) {
   const Variable* variable = graph.FindVariable(SettingOf(node, "Variable"));
-  return variable ? variable->type : PinKind::kAny;
+  return variable ? VariableType(*variable) : PinType{PinKind::kAny};
 }
 
 // The variable's name, or an error when the graph has no such variable.
@@ -462,7 +458,7 @@ void AddVariables(Library& library) {
       .description = "A variable's value. Variables keep their values between events.",
       .role = NodeRole::kPure, .compact = true, .pins = {{}, {DataPin("Value", PinKind::kAny)}},
       .settings = {variable},
-      .shape = [](const Node& node, const Graph& graph, NodePins& pins) { Retype(pins.outputs, "Value", VariableKind(node, graph)); },
+      .shape = [](const Node& node, const Graph& graph, NodePins& pins) { Retype(pins.outputs, "Value", VariableTypeOf(node, graph)); },
       .title_of = [](const Node& node) { return Titled(node, "", "Variable"); },
       .expression = [](Emitter& emit, std::string_view) { return VariableName(emit); }});
 
@@ -496,7 +492,7 @@ void AddVariables(Library& library) {
         .keywords = std::move(keywords),
         .pins = {{ExecPin()}, {ExecPin(kExecOut), DataPin("Value", PinKind::kNumber)}},
         .settings = {number},
-        .shape = [](const Node& node, const Graph& graph, NodePins& pins) { Retype(pins.outputs, "Value", VariableKind(node, graph)); },
+        .shape = [](const Node& node, const Graph& graph, NodePins& pins) { Retype(pins.outputs, "Value", VariableTypeOf(node, graph)); },
         .title_of = [title](const Node& node) { return Titled(node, title + " ", "Variable"); },
         .emit = [op](Emitter& emit) {
           const std::string name = VariableName(emit);
@@ -514,7 +510,11 @@ void AddVariables(Library& library) {
       .description = "Gives a variable a new value.",
       .pins = {{ExecPin(), DataPin("Value", PinKind::kAny)}, {ExecPin(kExecOut)}},
       .settings = {variable},
-      .shape = [](const Node& node, const Graph& graph, NodePins& pins) { Retype(pins.inputs, "Value", VariableKind(node, graph)); },
+      .shape = [](const Node& node, const Graph& graph, NodePins& pins) {
+        Retype(pins.inputs, "Value", VariableTypeOf(node, graph));
+        // An object variable left unlinked is set to nil: none.
+        for (Pin& pin : pins.inputs) pin.required = pin.required && pin.name != "Value";
+      },
       .title_of = [](const Node& node) { return Titled(node, "Set ", "Variable"); },
       .emit = [](Emitter& emit) {
         const std::string name = VariableName(emit);
@@ -524,7 +524,7 @@ void AddVariables(Library& library) {
 
 // Functions and macros ---------------------------------------------------------------------------------
 
-Pin ParamPin(const Param& param) { return param.type == PinKind::kExec ? ExecPin(param.name) : DataPin(param.name, param.type); }
+Pin ParamPin(const Param& param) { return param.type == PinKind::kExec ? ExecPin(param.name) : ValuePin(param.name, ParamType(param)); }
 
 // The routine's name, kept on its nodes (entry, calls) for their titles.
 std::string RoutineName(const Node& node, std::string_view fallback) {
@@ -825,7 +825,7 @@ void AddDispatchers(Library& library) {
       .settings = {dispatcher},
       .shape = [](const Node& node, const Graph& graph, NodePins& pins) {
         if (const Dispatcher* found = graph.FindDispatcher(SettingOf(node, "Dispatcher"))) {
-          for (const Param& param : found->params) pins.inputs.push_back(DataPin(param.name, param.type));
+          for (const Param& param : found->params) pins.inputs.push_back(ValuePin(param.name, ParamType(param)));
         }
       },
       .title_of = [](const Node& node) { return Titled(node, "Call ", "Dispatcher"); },
@@ -963,6 +963,23 @@ PinKind ItemKind(std::string_view type) {
   return PinKind::kAny;
 }
 
+// The item type of an array linked into `input`, when a typed one is.
+std::optional<PinType> LinkedItem(const Node& node, const Graph& graph, std::string_view input) {
+  const std::optional<PinType> linked = LinkedType(node, graph, input);
+  if (!linked || linked->container != PinContainer::kArray) return std::nullopt;
+  return ElementOf(*linked);
+}
+
+// A shape that types `outputs` and `inputs` (by name) as the items of the array linked into `array`.
+std::function<void(const Node&, const Graph&, NodePins&)> ItemsOf(std::string array, std::vector<std::string> inputs, std::vector<std::string> outputs) {
+  return [array = std::move(array), inputs = std::move(inputs), outputs = std::move(outputs)](const Node& node, const Graph& graph, NodePins& pins) {
+    const std::optional<PinType> item = LinkedItem(node, graph, array);
+    if (!item) return;
+    for (const std::string& name : inputs) Retype(pins.inputs, name, *item);
+    for (const std::string& name : outputs) Retype(pins.outputs, name, *item);
+  };
+}
+
 // A Make Array's item count: its Size setting as a whole number, 0 when it isn't one.
 int ArraySize(const Node& node) {
   const std::string text = SettingOf(node, "Size");
@@ -1006,11 +1023,13 @@ void AddTables(Library& library) {
   library.Add(Keyed(Pure("table.length", "Length", category, "How many items an array has.",
       {DataPin("Array", PinKind::kAny)}, DataPin("Length", PinKind::kInt),
       [](Emitter& emit) { return "#" + emit.Input("Array"); }), "count size #"));
-  library.Add(Keyed(Pure("table.contains", "Contains Item", category, "True when Item is one of the array's items.",
+  NodeDesc contains = Keyed(Pure("table.contains", "Contains Item", category, "True when Item is one of the array's items.",
       {DataPin("Array", PinKind::kAny), DataPin("Item", PinKind::kAny)}, DataPin("Result", PinKind::kBool),
       [](Emitter& emit) {
         return "(function(array, item) for _, value in ipairs(array) do if value == item then return true end end return false end)(" + emit.Input("Array") + ", " + emit.Input("Item") + ")";
-      }), "has find includes"));
+      }), "has find includes");
+  contains.shape = ItemsOf("Array", {"Item"}, {});
+  library.Add(std::move(contains));
 
   library.Add({.id = "table.set", .title = "Set Item", .category = category,
       .description = "Sets the value at Key: an array's item by its index, or a map's by its key. Nil removes a map's.",
@@ -1024,6 +1043,7 @@ void AddTables(Library& library) {
       .description = "Puts Item at the end of the array.",
       .keywords = "append push insert",
       .pins = {{ExecPin(), DataPin("Array", PinKind::kAny), DataPin("Item", PinKind::kAny)}, {ExecPin(kExecOut)}},
+      .shape = ItemsOf("Array", {"Item"}, {}),
       .emit = [](Emitter& emit) {
         emit.Line("table.insert(" + emit.Input("Array") + ", " + emit.Input("Item") + ")");
         emit.Chain(kExecOut);
@@ -1041,6 +1061,7 @@ void AddTables(Library& library) {
       .description = "Runs Body once for each of the array's items in order, then goes on through Completed. Index and Item only exist in Body's chain.",
       .keywords = "loop ipairs foreach array",
       .pins = {{ExecPin(), DataPin("Array", PinKind::kAny)}, {ExecPin("Body"), DataPin("Index", PinKind::kInt), DataPin("Item", PinKind::kAny), ExecPin("Completed")}},
+      .shape = ItemsOf("Array", {}, {"Item"}),
       .emit = [](Emitter& emit) {
         emit.Line("for " + emit.Param("Index") + ", " + emit.Param("Item") + " in ipairs(" + emit.Input("Array") + ") do");
         emit.Indent();
@@ -1247,6 +1268,67 @@ void AddLua(Library& library) {
 
 }  // namespace
 
+// Drawing over the game (rex.draw): text and shapes at fractions of the screen. A shape lasts one frame unless Seconds
+// says longer, so On Frame draws what stays on the screen; a Key replaces the shape drawn with the same key.
+void AddDraw(Library& library) {
+  const std::string category = "Draw";
+  const std::vector<std::pair<std::string, std::string>> colors = {{"White", "0xFFFFFF"}, {"Cyan", "0x00A8FF"}, {"Yellow", "0xFFD84A"}, {"Orange", "0xFF9A3C"}, {"Red", "0xFF5A50"}, {"Green", "0x5CFF6E"}, {"Pink", "0xFF6EC7"}, {"Black", "0x000000"}};
+  SettingDesc color{.name = "Color", .kind = SettingKind::kChoice, .initial = "White", .tooltip = "The shape's color"};
+  for (const auto& [name, hex] : colors) color.choices.push_back(name);
+  const std::vector<Pin> common = {DataPin("Alpha", PinKind::kFloat, 1.0), DataPin("Seconds", PinKind::kFloat, 0.0), DataPin("Key", PinKind::kString, "")};
+
+  // The options table every shape takes (rex.DrawOptions), with the shape's own options after the common ones.
+  const auto options = [colors](Emitter& emit, const std::vector<std::string>& own) {
+    const auto found = std::find_if(colors.begin(), colors.end(), [&](const auto& entry) { return entry.first == emit.Setting("Color"); });
+    std::string table = "{rgb = " + (found != colors.end() ? found->second : colors.front().second) + ", alpha = " + emit.Input("Alpha") + ", seconds = " + emit.Input("Seconds") + ", key = " + emit.Input("Key");
+    for (const std::string& option : own) table += ", " + option;
+    return table + "}";
+  };
+  const auto shape = [&](std::string id, std::string title, std::string description, std::vector<Pin> pins, std::function<void(Emitter&)> draw, std::vector<SettingDesc> settings = {}) {
+    NodeDesc desc{.id = "draw." + id, .title = std::move(title), .category = category, .description = std::move(description), .keywords = "draw screen overlay hud"};
+    desc.pins.inputs = {ExecPin()};
+    for (Pin& pin : pins) desc.pins.inputs.push_back(std::move(pin));
+    for (const Pin& pin : common) desc.pins.inputs.push_back(pin);
+    desc.pins.outputs = {ExecPin(kExecOut)};
+    desc.settings = {color};
+    for (SettingDesc& setting : settings) desc.settings.push_back(std::move(setting));
+    desc.emit = std::move(draw);
+    library.Add(std::move(desc));
+  };
+
+  shape("text", "Draw Text", "Text at X and Y, fractions of the screen (0.5, 0.5 is its middle). Size is a fraction of the screen's height.",
+        {DataPin("Text", PinKind::kAny, "Hello"), DataPin("X", PinKind::kFloat, 0.5), DataPin("Y", PinKind::kFloat, 0.5), DataPin("Size", PinKind::kFloat, 0.03), DataPin("Background", PinKind::kBool, false)},
+        [options](Emitter& emit) {
+          emit.Line("rex.draw.text(tostring(" + emit.Input("Text") + "), " + emit.Input("X") + ", " + emit.Input("Y") + ", " + options(emit, {"size = " + emit.Input("Size"), "background = " + emit.Input("Background"), "align = " + LuaQuote(emit.Setting("Align"))}) + ")");
+        },
+        {{.name = "Align", .kind = SettingKind::kChoice, .initial = "center", .choices = {"center", "left", "right"}}});
+
+  shape("rect", "Draw Rectangle", "A rectangle from X and Y, Width and Height across, all fractions of the screen; filled, or its outline Thickness pixels wide.",
+        {DataPin("X", PinKind::kFloat, 0.4), DataPin("Y", PinKind::kFloat, 0.4), DataPin("Width", PinKind::kFloat, 0.2), DataPin("Height", PinKind::kFloat, 0.2), DataPin("Filled", PinKind::kBool, true), DataPin("Thickness", PinKind::kFloat, 2.0)},
+        [options](Emitter& emit) {
+          emit.Line("rex.draw.rect(" + emit.Input("X") + ", " + emit.Input("Y") + ", " + emit.Input("Width") + ", " + emit.Input("Height") + ", " + options(emit, {"filled = " + emit.Input("Filled"), "thickness = " + emit.Input("Thickness")}) + ")");
+        });
+
+  shape("line", "Draw Line", "A line between two points, fractions of the screen, Thickness pixels wide.",
+        {DataPin("X1", PinKind::kFloat, 0.4), DataPin("Y1", PinKind::kFloat, 0.5), DataPin("X2", PinKind::kFloat, 0.6), DataPin("Y2", PinKind::kFloat, 0.5), DataPin("Thickness", PinKind::kFloat, 2.0)},
+        [options](Emitter& emit) {
+          emit.Line("rex.draw.line(" + emit.Input("X1") + ", " + emit.Input("Y1") + ", " + emit.Input("X2") + ", " + emit.Input("Y2") + ", " + options(emit, {"thickness = " + emit.Input("Thickness")}) + ")");
+        });
+
+  shape("circle", "Draw Circle", "A circle around X and Y, fractions of the screen; Radius is a fraction of the screen's height.",
+        {DataPin("X", PinKind::kFloat, 0.5), DataPin("Y", PinKind::kFloat, 0.5), DataPin("Radius", PinKind::kFloat, 0.05), DataPin("Filled", PinKind::kBool, true), DataPin("Thickness", PinKind::kFloat, 2.0)},
+        [options](Emitter& emit) {
+          emit.Line("rex.draw.circle(" + emit.Input("X") + ", " + emit.Input("Y") + ", " + emit.Input("Radius") + ", " + options(emit, {"filled = " + emit.Input("Filled"), "thickness = " + emit.Input("Thickness")}) + ")");
+        });
+
+  library.Add({.id = "draw.remove", .title = "Remove Drawing", .category = category, .description = "Takes away the shape drawn with Key.",
+      .pins = {{ExecPin(), DataPin("Key", PinKind::kString, "")}, {ExecPin(kExecOut)}},
+      .emit = [](Emitter& emit) { emit.Line("rex.draw.remove(" + emit.Input("Key") + ")"); }});
+  library.Add({.id = "draw.clear", .title = "Clear Drawings", .category = category, .description = "Takes away every shape, or only those whose key starts with Prefix.",
+      .pins = {{ExecPin(), DataPin("Prefix", PinKind::kString, "")}, {ExecPin(kExecOut)}},
+      .emit = [](Emitter& emit) { emit.Line("rex.draw.clear(" + emit.Input("Prefix") + ")"); }});
+}
+
 void AddBuiltinNodes(Library& library) {
   AddScripts(library);
   AddLua(library);
@@ -1265,6 +1347,7 @@ void AddBuiltinNodes(Library& library) {
   AddText(library);
   AddTables(library);
   AddHost(library);
+  AddDraw(library);
 }
 
 }  // namespace rexfabric::graph

@@ -1,5 +1,6 @@
 #include "renut_engine/app/updater.h"
 
+#include <atomic>
 #include <cstdlib>
 #include <fstream>
 #include <mutex>
@@ -9,8 +10,10 @@
 #include <vector>
 #include <nlohmann/json.hpp>
 #include <rex/platform/file.h>
+#include <rex/setting.h>
 #include <rex/string/text.h>
 #include "renut_engine/app/app_paths.h"
+#include "renut_engine/app/renut_settings.h"
 #include "renut_engine/mods/sha256.h"
 #include "renut_engine/mods/zip_reader.h"
 #include "thirdparty/rexglue_guide/src/http.h"
@@ -39,8 +42,24 @@ constexpr const char kInstalledFile[] = "installed_release.txt";
 constexpr int kApiTimeoutMs = 15000;
 constexpr int kDownloadTimeoutMs = 15 * 60 * 1000;
 
+struct UpdateSettings final : rex::SettingOwner {
+    UpdateSettings() : rex::SettingOwner(renut::settings::kScope) { renut::settings::Add(*this); }
+    REX_SETTING(bool, renut_auto_update, true,
+                "Look for a new reNut release at the launcher and install it there, then restart into it. "
+                "Off: reNut stays on the version it has.");
+};
+UpdateSettings &g_settings = *new UpdateSettings();  // never freed, registered by RenutApp::OnConfigure
+
 std::mutex g_mutex;
 Status g_status;
+// Stop (PLAY) sets it under g_install, so an install either finished before the game or never starts.
+std::mutex g_install;
+std::atomic<bool> g_stopped{false};
+std::atomic<bool> g_started{false};
+
+bool Halted() {
+    return g_stopped || !g_settings.renut_auto_update.Get();
+}
 
 void Set(State state, std::string release = {}, std::string error = {}) {
     std::lock_guard lock(g_mutex);
@@ -232,13 +251,14 @@ void Run() {
         return;
     }
     const std::string installed = ReadInstalled();
-    if (installed.empty()) {
-        WriteInstalled(tag);
-        Set(State::kUpToDate, name);
-        return;
-    }
-
-    if (installed == tag) {
+    if (installed.empty() || installed == tag) {
+        std::lock_guard install(g_install);
+        if (Halted()) {
+            Set(State::kOff);
+            return;
+        }
+        if (installed.empty())
+            WriteInstalled(tag);
         Set(State::kUpToDate, name);
         return;
     }
@@ -247,25 +267,34 @@ void Run() {
         const std::vector<Asset> assets = PlatformAssets(release);
         if (assets.empty())
             throw Failure{"the release has no download for this system"};
-        Set(State::kDownloading, name);
         std::vector<std::string> files;
-        for (const Asset &asset : assets)
+        for (const Asset &asset : assets) {
+            if (Halted()) {
+                Set(State::kOff);
+                return;
+            }
+            Set(State::kDownloading, name);
             files.push_back(Download(asset));
+        }
+        // Nothing is written once the game has started (or updates were turned off).
+        std::lock_guard install(g_install);
+        if (Halted()) {
+            Set(State::kOff);
+            return;
+        }
         Set(State::kInstalling, name);
 #if defined(_WIN32)
         for (const std::string &zip : files) InstallZip(zip, target);
 #else
         InstallAppImage(files.front(), target);
 #endif
+        WriteInstalled(tag);
+        Set(State::kReady, name);
     } catch (const Failure &f) {
         Set(State::kFailed, name, f.what);
-        return;
     } catch (const std::exception &e) {
         Set(State::kFailed, name, e.what());
-        return;
     }
-    WriteInstalled(tag);
-    Set(State::kReady, name);
 }
 
 void DeleteOldFiles() {
@@ -281,12 +310,17 @@ void DeleteOldFiles() {
 
 void Start() {
 #if defined(RENUT_RELEASE_BUILD)
-    static std::once_flag once;
-    std::call_once(once, [] {
-        DeleteOldFiles();
-        std::thread(Run).detach();
-    });
+    if (Halted() || g_started.exchange(true))
+        return;
+    DeleteOldFiles();
+    std::thread(Run).detach();
 #endif
+}
+
+bool Stop() {
+    std::lock_guard install(g_install);
+    g_stopped = true;
+    return Get().state != State::kReady;
 }
 
 Status Get() {

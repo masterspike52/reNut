@@ -24,18 +24,18 @@ struct BackendSettings final : rex::SettingOwner {
   REX_SETTING(std::string, renut_gpu_backend, "d3d12",
               "Renderer backend: d3d12 or vulkan. Takes effect after a restart. "
               "Non-Windows builds always use vulkan.",
-              rex::Allowed("d3d12", "vulkan"), rex::kRestart);
+              rex::Allowed("d3d12", "vulkan"), rex::kRequiresRestart);
   REX_SETTING(bool, renut_gpu_dred, false,
               "D3D12 device removed diagnostics (DRED breadcrumbs and page faults) for "
               "debugging GPU crashes. Costs CPU and GPU time on every command. Takes "
               "effect after a restart.",
-              rex::kRestart);
+              rex::kRequiresRestart);
   REX_SETTING(bool, renut_vulkan_debug_layers, false,
               "Vulkan validation and crash diagnostic layers (needs the Vulkan SDK): API "
               "misuse goes to logs/vulkan_validation.log, and a lost device writes what the "
               "GPU was executing to logs/vulkan_crash. Very slow. Takes effect after a "
               "restart.",
-              rex::kRestart);
+              rex::kRequiresRestart);
 };
 BackendSettings &g_backend_settings = *new BackendSettings();  // never freed, registered by RenutApp::OnConfigure
 } // namespace

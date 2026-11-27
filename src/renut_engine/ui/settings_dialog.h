@@ -229,7 +229,7 @@ private:
         if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
             ImGui::SetTooltip("%s\n\n%s%s", full.c_str(), help.c_str(),
                               not_host ? "\n\nOnly the session's host can change this." : "");
-        if (setting && setting->GetConstraints().life == rex::SettingLife::kRestart) {
+        if (setting && setting->GetConstraints().mode == rex::SettingMode::kRequiresRestart) {
             ImGui::SameLine();
             ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.3f, 1.0f), "(restart)");
         }

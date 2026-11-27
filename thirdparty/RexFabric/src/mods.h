@@ -18,6 +18,12 @@ namespace rexfabric {
 // The load order, in the mods directory.
 inline constexpr const char* kOrderFile = "mods.json";
 
+// A mod another needs: its folder, and the lowest version it works with (empty for any).
+struct ModDependency {
+  std::string mod;
+  std::string version;
+};
+
 struct ModInfo {
   std::string folder;
   std::filesystem::path dir;
@@ -26,8 +32,33 @@ struct ModInfo {
   std::string description;
   std::string version;
   std::string author;
+  // From mod.toml only (docs/content_and_classes.md, The mod's metadata).
+  std::vector<ModDependency> dependencies;
+  std::string min_game_version;
+  // The language its texts are written in, as the game names it ("englishus"); empty for the game's first.
+  std::string language;
   bool enabled = true;
 };
+
+// Writes the mod's metadata into its mod.toml: name, description, version, author, min_game_version and
+// dependencies, each left out when empty, keeping whatever else the file has (its comments don't survive). A mod
+// without one gets one. False with `error` for a mod.toml that doesn't parse, which is left as it is.
+bool WriteMetadata(const ModInfo& mod, std::string* error);
+
+// Why a mod can't load, for the log and the menu.
+struct RefusedMod {
+  std::string folder;
+  std::string reason;
+};
+
+// The enabled mods that can load, each after the mods it depends on and otherwise in load order. A mod can't load
+// when the game is older than its min_game_version, when a dependency isn't enabled or is older than it asks, when a
+// dependency can't load itself, or when dependencies go round in a circle. `game_version` empty skips the game check.
+std::vector<ModInfo> LoadableMods(const std::vector<ModInfo>& enabled, std::string_view game_version, std::vector<RefusedMod>* refused);
+
+// Compares two versions part by part ("1.10" is above "1.9"): numbers as numbers, anything else as text, a missing
+// part as 0. Below zero when a is older.
+int CompareVersions(std::string_view a, std::string_view b);
 
 class ModList {
  public:

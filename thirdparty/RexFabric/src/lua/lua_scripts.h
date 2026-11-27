@@ -8,8 +8,11 @@
 
 #pragma once
 
+#include <cstdint>
 #include <string>
 #include <vector>
+
+#include <nlohmann/json.hpp>
 
 #include "../mods.h"
 
@@ -27,5 +30,23 @@ void Reload(const std::vector<ModInfo>& mods);
 void Stop();
 bool Running();
 const std::vector<ScriptMod>& Loaded();
+
+// The console (lua_console.cpp): a line queued to run in the VM on the next frame, and what each line gave back, its
+// results joined or its error. Any thread.
+struct ConsoleReply {
+  uint64_t id = 0;
+  std::string text;
+  bool error = false;
+};
+uint64_t QueueConsole(std::string code);
+std::vector<ConsoleReply> TakeConsoleReplies();
+// Runs the queued lines. Each frame, on the frame thread, before the frame event.
+void RunConsole();
+
+// The mods' world data (lua_world_data.cpp, rex.world_data) for the world's save: an object of each mod's data by its
+// folder, the mods without a table now included as they were loaded. Restoring replaces it all, filling the tables the
+// mods have in place; an empty object empties them. Both on the thread the world is saved and loaded on.
+nlohmann::json SaveWorldData();
+void RestoreWorldData(const nlohmann::json& mods);
 
 }  // namespace rexfabric::lua

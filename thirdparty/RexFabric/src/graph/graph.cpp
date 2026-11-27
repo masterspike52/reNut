@@ -7,7 +7,7 @@
 namespace rexfabric::graph {
 namespace {
 
-constexpr std::array<std::pair<PinKind, const char*>, 10> kKindNames = {{
+constexpr std::array<std::pair<PinKind, const char*>, 12> kKindNames = {{
     {PinKind::kExec, "exec"},
     {PinKind::kBool, "bool"},
     {PinKind::kInt, "int"},
@@ -18,6 +18,14 @@ constexpr std::array<std::pair<PinKind, const char*>, 10> kKindNames = {{
     {PinKind::kRegisters, "registers"},
     {PinKind::kDelegate, "delegate"},
     {PinKind::kAny, "any"},
+    {PinKind::kEnum, "enum"},
+    {PinKind::kStruct, "struct"},
+}};
+
+constexpr std::array<std::pair<PinContainer, const char*>, 3> kContainerNames = {{
+    {PinContainer::kSingle, "single"},
+    {PinContainer::kArray, "array"},
+    {PinContainer::kMap, "map"},
 }};
 
 }  // namespace
@@ -33,6 +41,23 @@ bool ParsePinKind(std::string_view name, PinKind& kind) {
   for (const auto& [value, text] : kKindNames) {
     if (name == text) {
       kind = value;
+      return true;
+    }
+  }
+  return false;
+}
+
+const char* PinContainerName(PinContainer container) {
+  for (const auto& [value, name] : kContainerNames) {
+    if (value == container) return name;
+  }
+  return "single";
+}
+
+bool ParsePinContainer(std::string_view name, PinContainer& container) {
+  for (const auto& [value, text] : kContainerNames) {
+    if (name == text) {
+      container = value;
       return true;
     }
   }

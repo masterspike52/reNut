@@ -6,6 +6,11 @@
 
 #include <rexfabric/game_api.h>
 
+#include <map>
+#include <mutex>
+
+#include "../content/classes.h"
+#include "../content/types.h"
 #include "lua_compiler.h"
 
 namespace rexfabric::graph {
@@ -81,6 +86,7 @@ const Library& Library::Get() {
     AddBuiltinNodes(made);
     AddGameNodes(made);
     AddApiNodes(made);
+    AddContentNodes(made);
     return made;
   }();
   return library;
@@ -118,6 +124,106 @@ Pin ObjectPin(std::string_view name, std::string_view type) {
   return pin;
 }
 
+Pin ValuePin(std::string_view name, const PinType& type) {
+  if (type.container == PinContainer::kSingle && type.kind == PinKind::kObject) return ObjectPin(name, type.object);
+  Pin pin = DataPin(name, type.kind);
+  pin.type = type;
+  // An array, a map or a struct left unlinked is an empty one; an enum is picked from its values.
+  if (type.container != PinContainer::kSingle || type.kind == PinKind::kStruct) {
+    pin.initial = nullptr;
+    pin.required = false;
+  } else if (type.kind == PinKind::kEnum) {
+    const std::optional<content::Enum> found = content::FindEnum(type.object);
+    pin.initial = found && !found->values.empty() ? found->values.front().name : std::string();
+    pin.choices = EnumChoices(type.object);
+  }
+  return pin;
+}
+
+namespace {
+
+// What a variable's or a param's type names, for a kind that names something.
+std::string Named(PinKind kind, const std::string& object) { return kind == PinKind::kObject || kind == PinKind::kEnum || kind == PinKind::kStruct ? object : std::string(); }
+
+}  // namespace
+
+PinType VariableType(const Variable& variable) { return {variable.type, Named(variable.type, variable.object), variable.container, variable.key, variable.key == PinKind::kEnum ? variable.key_object : std::string()}; }
+
+PinType ParamType(const Param& param) { return {param.type, Named(param.type, param.object), param.container, param.key, param.key == PinKind::kEnum ? param.key_object : std::string()}; }
+
+PinType ElementOf(const PinType& type) { return {type.kind, type.object}; }
+
+PinType KeyOf(const PinType& type) { return {type.key, type.key_object}; }
+
+bool IsGameEnum(std::string_view name) { return !name.empty() && name.find('/') == std::string_view::npos; }
+
+const ChoiceSource* EnumChoices(std::string_view enum_path) {
+  static std::mutex mutex;
+  static std::map<std::string, std::unique_ptr<ChoiceSource>, std::less<>> sources;
+  std::lock_guard lock(mutex);
+  if (const auto found = sources.find(enum_path); found != sources.end()) return found->second.get();
+  auto source = std::make_unique<ChoiceSource>();
+  source->live = [path = std::string(enum_path)] {
+    ChoiceList list;
+    if (const std::optional<content::Enum> found = content::FindEnum(path)) {
+      for (const content::EnumValue& value : found->values) list.emplace_back(value.display.empty() ? value.name : value.display, value.name);
+    }
+    return list;
+  };
+  return sources.emplace(std::string(enum_path), std::move(source)).first->second.get();
+}
+
+std::optional<content::ValueType> ContentType(const PinType& type) {
+  const auto single = [](PinKind kind) -> std::optional<content::PropertyType> {
+    switch (kind) {
+      case PinKind::kBool: return content::PropertyType::kBool;
+      case PinKind::kInt: return content::PropertyType::kInt;
+      case PinKind::kFloat: return content::PropertyType::kFloat;
+      case PinKind::kString: return content::PropertyType::kString;
+      case PinKind::kEnum: return content::PropertyType::kEnum;
+      case PinKind::kStruct: return content::PropertyType::kStruct;
+      default: return std::nullopt;
+    }
+  };
+  const std::optional<content::PropertyType> element = single(type.kind);
+  if (!element) return std::nullopt;
+  content::ValueType made{.type = *element, .of = type.kind == PinKind::kEnum || type.kind == PinKind::kStruct ? type.object : std::string()};
+  if (type.container == PinContainer::kArray) made.container = content::Container::kArray;
+  if (type.container != PinContainer::kMap) return made;
+  const std::optional<content::PropertyType> key = single(type.key);
+  if (!key || !content::CanBeKey(*key)) return std::nullopt;
+  made.container = content::Container::kMap;
+  made.key = *key;
+  made.key_of = type.key == PinKind::kEnum ? type.key_object : std::string();
+  return made;
+}
+
+PinType PinTypeOf(const content::ValueType& type) {
+  const auto single = [](content::PropertyType kind) {
+    switch (kind) {
+      case content::PropertyType::kBool: return PinKind::kBool;
+      case content::PropertyType::kInt: return PinKind::kInt;
+      case content::PropertyType::kFloat: return PinKind::kFloat;
+      case content::PropertyType::kEnum: return PinKind::kEnum;
+      case content::PropertyType::kStruct: return PinKind::kStruct;
+      default: return PinKind::kString;
+    }
+  };
+  PinType made{single(type.type), type.type == content::PropertyType::kEnum || type.type == content::PropertyType::kStruct ? type.of : std::string()};
+  if (type.container == content::Container::kArray) made.container = PinContainer::kArray;
+  if (type.container == content::Container::kMap) {
+    made.container = PinContainer::kMap;
+    made.key = single(type.key);
+    made.key_object = type.key == content::PropertyType::kEnum ? type.key_of : std::string();
+  }
+  return made;
+}
+
+nlohmann::json TypedValue(PinKind kind, const nlohmann::json& value) {
+  if (kind == PinKind::kInt && value.is_number_integer()) return std::to_string(value.get<int64_t>());
+  return value;
+}
+
 nlohmann::json DefaultValue(PinKind kind) {
   switch (kind) {
     case PinKind::kBool: return false;
@@ -125,7 +231,8 @@ nlohmann::json DefaultValue(PinKind kind) {
     case PinKind::kNumber: return "0";
     case PinKind::kFloat: return 0.0;
     case PinKind::kString:
-    case PinKind::kAny: return "";
+    case PinKind::kAny:
+    case PinKind::kEnum: return "";
     default: return nullptr;
   }
 }
@@ -334,7 +441,7 @@ void DeleteVariable(Graph& graph, const std::string& name) {
 }
 
 std::vector<PinKind> ParamKinds(RoutineKind kind) {
-  std::vector<PinKind> kinds = {PinKind::kBool, PinKind::kInt, PinKind::kFloat, PinKind::kString, PinKind::kAny};
+  std::vector<PinKind> kinds = {PinKind::kBool, PinKind::kInt, PinKind::kFloat, PinKind::kString, PinKind::kObject, PinKind::kEnum, PinKind::kStruct, PinKind::kAny};
   if (kind == RoutineKind::kMacro) kinds.insert(kinds.begin(), PinKind::kExec);
   return kinds;
 }
@@ -398,20 +505,36 @@ std::string TitleCase(std::string_view name) {
   return title;
 }
 
-std::string TypeName(const PinType& type) {
-  switch (type.kind) {
+namespace {
+
+std::string SingleTypeName(PinKind kind, const std::string& object) {
+  switch (kind) {
     case PinKind::kExec: return "Exec";
     case PinKind::kBool: return "Bool";
     case PinKind::kInt: return "Int";
     case PinKind::kFloat: return "Float";
     case PinKind::kNumber: return "Number";
     case PinKind::kString: return "String";
-    case PinKind::kObject: return type.object.empty() ? "Object" : type.object;
+    case PinKind::kObject: return object.empty() ? "Object" : object;
     case PinKind::kRegisters: return "Registers";
     case PinKind::kDelegate: return "Event";
     case PinKind::kAny: return "Any";
+    case PinKind::kEnum: return object.empty() ? "Enum" : object;
+    case PinKind::kStruct: return object.empty() ? "Struct" : object;
   }
   return "Any";
+}
+
+}  // namespace
+
+std::string TypeName(const PinType& type) {
+  const std::string element = SingleTypeName(type.kind, type.object);
+  switch (type.container) {
+    case PinContainer::kSingle: return element;
+    case PinContainer::kArray: return "Array of " + element;
+    case PinContainer::kMap: return "Map of " + SingleTypeName(type.key, type.key_object) + " to " + element;
+  }
+  return element;
 }
 
 bool IsFloatText(std::string_view text) {
@@ -422,15 +545,48 @@ bool IsFloatText(std::string_view text) {
 
 PinType OutputType(const Graph& graph, const PinRef& output) { return ResolveOutput(graph, output, 0); }
 
+std::optional<PinType> LinkedType(const Node& node, const Graph& graph, std::string_view input) {
+  const Link* link = graph.LinkInto({node.id, std::string(input)});
+  if (!link) return std::nullopt;
+  return OutputType(graph, link->from);
+}
+
+void Retype(std::vector<Pin>& side, std::string_view name, const PinType& type) {
+  for (Pin& pin : side) {
+    if (pin.name == name) pin = ValuePin(name, type);
+  }
+}
+
+namespace {
+
+bool SameName(std::string_view a, std::string_view b) { return std::equal(a.begin(), a.end(), b.begin(), b.end(), [](unsigned char x, unsigned char y) { return std::tolower(x) == std::tolower(y); }); }
+
+// One value of `from` going where one of `to` goes.
+bool FitsSingle(PinKind from, const std::string& from_object, PinKind to, const std::string& to_object) {
+  if (from == PinKind::kAny || to == PinKind::kAny) return true;
+  // A game enum's values are the game's numbers.
+  if (from == PinKind::kEnum && to == PinKind::kInt) return IsGameEnum(from_object);
+  if (from == PinKind::kInt && to == PinKind::kEnum) return IsGameEnum(to_object);
+  switch (to) {
+    case PinKind::kFloat:
+    case PinKind::kNumber: return from == PinKind::kInt || from == PinKind::kFloat || from == PinKind::kNumber;
+    case PinKind::kObject: return from == PinKind::kObject && (to_object.empty() || from_object.empty() || content::TypeIsA(from_object, to_object));
+    case PinKind::kEnum:
+    case PinKind::kStruct: return from == to && SameName(from_object, to_object);
+    default: return from == to;
+  }
+}
+
+}  // namespace
+
 bool Fits(const PinType& from, const PinType& to) {
   if (from.kind == PinKind::kExec || to.kind == PinKind::kExec) return from.kind == to.kind;
-  if (from.kind == PinKind::kAny || to.kind == PinKind::kAny) return true;
-  switch (to.kind) {
-    case PinKind::kFloat:
-    case PinKind::kNumber: return from.kind == PinKind::kInt || from.kind == PinKind::kFloat || from.kind == PinKind::kNumber;
-    case PinKind::kObject: return from.kind == PinKind::kObject && (to.object.empty() || from.object.empty() || to.object == from.object);
-    default: return from.kind == to.kind;
-  }
+  // A plain Any takes and gives anything, a whole array or map too.
+  const auto plain_any = [](const PinType& type) { return type.kind == PinKind::kAny && type.container == PinContainer::kSingle; };
+  if (plain_any(from) || plain_any(to)) return true;
+  if (from.container != to.container) return false;
+  if (from.container == PinContainer::kMap && !FitsSingle(from.key, from.key_object, to.key, to.key_object)) return false;
+  return FitsSingle(from.kind, from.object, to.kind, to.object);
 }
 
 bool CanConnect(const Graph& graph, const PinRef& from, const PinRef& to, std::string* reason) {

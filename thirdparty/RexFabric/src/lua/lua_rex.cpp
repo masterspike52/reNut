@@ -129,6 +129,24 @@ uint32_t CheckAddress(lua_State* L, int arg) {
   return static_cast<uint32_t>(address);
 }
 
+}  // namespace
+
+std::string Hex(uint32_t value) {
+  char text[16];
+  std::snprintf(text, sizeof(text), "0x%08X", value);
+  return text;
+}
+
+uint32_t CheckFunction(lua_State* L, int arg) {
+  if (lua_type(L, arg) != LUA_TSTRING) return CheckAddress(L, arg);
+  const char* name = lua_tostring(L, arg);
+  const uint32_t address = FindGuestFunction(name);
+  if (!address) luaL_error(L, "the game names no function '%s'", name);
+  return address;
+}
+
+namespace {
+
 template <typename T>
 int MemRead(lua_State* L) {
   const uint32_t address = CheckAddress(L, 1);
@@ -469,9 +487,9 @@ void Dispatch(RexFabricCall* call, void*) {
 }
 
 int Attach(lua_State* L, bool after) {
-  const uint32_t address = CheckAddress(L, 1);
+  const uint32_t address = CheckFunction(L, 1);
   luaL_checktype(L, 2, LUA_TFUNCTION);
-  if (!Hooks::Get().IsHookable(address)) return luaL_error(L, "cannot hook 0x%08X: no recompiled function at this address", address);
+  if (!Hooks::Get().IsHookable(address)) return luaL_error(L, "cannot hook %s: no recompiled function at this address", Hex(address).c_str());
   HookState& state = LuaHooks();
   Site& site = state.sites[address];
   if (!site.core) site.core = Hooks::Get().Add(Vm().owner, address, Dispatch, nullptr);
@@ -523,6 +541,10 @@ int ListHooks(lua_State* L) {
     lua_setfield(L, -2, "id");
     lua_pushinteger(L, hooks[i].second->address);
     lua_setfield(L, -2, "address");
+    if (const GuestFunctionName* named = GuestFunctionAt(hooks[i].second->address)) {
+      lua_pushstring(L, named->name.c_str());
+      lua_setfield(L, -2, "name");
+    }
     lua_pushstring(L, hooks[i].second->after ? "post" : "pre");
     lua_setfield(L, -2, "phase");
     lua_pushstring(L, hooks[i].second->owner.c_str());
@@ -532,22 +554,24 @@ int ListHooks(lua_State* L) {
   return 1;
 }
 
+// rex.hookable(address or name): false for a name the game doesn't have, too.
 int Hookable(lua_State* L) {
-  lua_pushboolean(L, Hooks::Get().IsHookable(CheckAddress(L, 1)));
+  const uint32_t address = lua_type(L, 1) == LUA_TSTRING ? FindGuestFunction(lua_tostring(L, 1)) : CheckAddress(L, 1);
+  lua_pushboolean(L, address != 0 && Hooks::Get().IsHookable(address));
   return 1;
 }
 
 // Calling guest functions --------------------------------------------------------------------------------
 
-// rex.call(address, ...): up to eight integer arguments in r3 to r10, returns r3. It runs on the calling
+// rex.call(address or name, ...): up to eight integer arguments in r3 to r10, returns r3. It runs on the calling
 // guest thread, below its stack, so it has to be called from a hook or an event a guest thread fires.
 int Call(lua_State* L) {
-  const uint32_t address = CheckAddress(L, 1);
+  const uint32_t address = CheckFunction(L, 1);
   const rex::ppc::BoundThread thread = rex::ppc::GetBoundThread();
   if (!thread.ctx) return luaL_error(L, "rex.call must run on a guest thread (call it from inside a hook, not from a frame event)");
   rex::kernel::TitleRuntime* runtime = REX_RUNTIME();
   rex::Result<PPCFunc*> function = runtime ? runtime->FindFunction(address) : rex::Result<PPCFunc*>(nullptr);
-  if (!function || !*function) return luaL_error(L, "no guest function at 0x%08X", address);
+  if (!function || !*function) return luaL_error(L, "no guest function at %s", Hex(address).c_str());
   const int argc = lua_gettop(L) - 1;
   if (argc > 8) return luaL_error(L, "rex.call supports at most 8 register arguments (got %d)", argc);
   uint64_t args[8] = {};
@@ -806,6 +830,7 @@ void OpenRex(lua_State* L) {
   lua_setfield(L, -2, "cvar");
   luaL_newlib(L, kDrawFuncs);
   lua_setfield(L, -2, "draw");
+  OpenContent(L);
 
   luaL_newmetatable(L, kContextMeta);
   luaL_newlib(L, kContextMethods);

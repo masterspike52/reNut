@@ -31,6 +31,9 @@ std::filesystem::path SaveFolder();
 // The .nbpatch mods LoadMods applied, by name (for crash reports).
 std::vector<std::string> LoadedMods();
 
+// The game's data folder (Bundle, Debug...), as LoadMods found it; empty before it.
+std::filesystem::path GameFolder();
+
 // The size of one of the game's own files (relative to its data folder: "Bundle/4f/01ede7"), or 0 when it has none.
 std::uintmax_t GameFileSize(const std::string &rel);
 // ...as the game reads it: a compressed (XCTD) file's unpacked size from its block table, else its size.
@@ -38,5 +41,9 @@ std::uintmax_t GameFileUnpackedSize(const std::string &rel);
 
 // Whether stream bundle `id` is a character pack served from <mods>/.characters (NutTool's renut-characters).
 bool HasCharacterPack(uint32_t id);
+
+// Whether the mod in folder `dir` was on at launch, so its bundles and worlds are in the game's files. A mod turned on
+// later runs its Lua at once, but its files only come with the next start.
+bool ModFilesServed(const std::filesystem::path &dir);
 
 } // namespace renut::mods

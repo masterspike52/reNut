@@ -39,7 +39,8 @@ namespace rexfabric {
 
 class TypeDef;
 
-// A guest object: where it is and what it is. A null address is "no object".
+// A guest object: where it is and what it is. A null address is "no object". For a type whose objects are held by
+// handle (TypeDef::Held), `address` is the handle; the type's Resolve gives the address.
 struct Object {
   uint32_t address = 0;
   const TypeDef* type = nullptr;
@@ -235,6 +236,23 @@ class TypeDef {
     return *this;
   }
 
+  // For a type whose objects the game destroys while a mod may still hold them: mods then hold a handle, never the
+  // address. `hold` gives the handle of the object at an address, the same handle for the same object every time, or
+  // 0 when no such object is there; `resolve` gives the object's address again, or 0 once it is gone. Lua reads fields
+  // and calls methods through `resolve`, so a gone object is an error rather than a read of freed memory. Either may
+  // throw to refuse, with the reason as its message (a game that only allows it on its own thread, say). Native mods
+  // keep seeing addresses: objects reach them resolved, and their addresses are held on the way back.
+  struct Handles {
+    std::function<uint32_t(uint32_t address)> hold;
+    std::function<uint32_t(uint32_t handle)> resolve;
+  };
+  TypeDef& Held(Handles handles);
+  bool held() const { return static_cast<bool>(handles_.resolve); }
+  // The handle of the object at `address`, or the address itself for a type without handles.
+  uint32_t Hold(uint32_t address) const { return held() ? handles_.hold(address) : address; }
+  // The address of the object a mod holds, or `held` itself for a type without handles.
+  uint32_t Resolve(uint32_t held) const { return this->held() ? handles_.resolve(held) : held; }
+
   const std::string& name() const { return name_; }  // full name, "tip.Pinata"
   uint32_t size() const { return size_; }
   const std::vector<FieldDef>& fields() const { return fields_; }
@@ -249,6 +267,7 @@ class TypeDef {
   uint32_t size_;
   std::vector<FieldDef> fields_;
   std::vector<std::pair<std::string, FunctionDef>> methods_;
+  Handles handles_;
 };
 
 // A named event the game fires and mods listen for. Cheap to copy and to fire with nobody listening.
@@ -340,6 +359,25 @@ struct NamespaceDef {
 const std::vector<std::unique_ptr<NamespaceDef>>& Namespaces();
 const FunctionDef* FindFunction(std::string_view name);
 const TypeDef* FindType(std::string_view name);
+
+// Names for the game's guest functions, so mods hook and call them by name, rex.hook("obj.objInstIsDerivedFrom", fn),
+// rather than by address. A name is the contract with mods; where the function is stays the game's business.
+struct GuestFunctionName {
+  std::string name;       // "obj.objInstIsDerivedFrom"
+  uint32_t address = 0;
+  std::string signature;  // its C++ type for the reference ("int (*)(const objInst_s *, int)"), or empty
+  std::string source;     // where the game defines it, for the reference, or empty
+};
+
+// Names a guest function. Before Start, from one thread. A name or an address named already is refused with a
+// warning, and false.
+bool NameGuestFunction(GuestFunctionName function);
+// The address of the function named `name`, or 0.
+uint32_t FindGuestFunction(std::string_view name);
+// The name of the function at `address`, or null.
+const GuestFunctionName* GuestFunctionAt(uint32_t address);
+// Every named function, by name.
+const std::vector<GuestFunctionName>& GuestFunctionNames();
 
 // Native interfaces: a game can publish a plain C table of its own for native mods, which find it by name
 // with RexFabricApi::find_interface. Versions only grow; a mod asks for the oldest version it can use.

@@ -6,6 +6,7 @@
 //   p.happiness = p.happiness + 1       -- fields read and write guest memory
 //   p:feed(3)                           -- methods
 //   p.needs[1]                          -- arrays index from 1, as Lua tables do
+//   p.valid                             -- false once the game destroyed it (types held by handle)
 
 #include <exception>
 #include <string>
@@ -20,33 +21,102 @@ namespace {
 constexpr const char* kObjectMeta = "rexfabric.object";
 constexpr const char* kArrayMeta = "rexfabric.array";
 
+// Where something a mod holds is: `offset` bytes into the object `holder` holds by handle `held`, or at the address
+// `held` itself when no type holds it by handle. Fields, inline structs and array elements of a held object keep the
+// object's handle, so they stop working when it is gone instead of reaching freed memory.
+struct Place {
+  uint32_t held = 0;
+  const TypeDef* holder = nullptr;
+  uint32_t offset = 0;
+  bool operator==(const Place&) const = default;
+};
+
 struct ObjectUD {
-  uint32_t address;
+  Place place;
   const TypeDef* type;
 };
 
 struct ArrayUD {
-  uint32_t address;  // the first element
+  Place place;  // the first element
   const FieldDef* field;
 };
 
-void PushObject(lua_State* L, Object object) {
-  if (!object.address) {
+// Runs one of a type's handle functions, turning its refusal (an exception) into a Lua error.
+template <typename F>
+uint32_t RunHandles(lua_State* L, const TypeDef& type, F&& function) {
+  std::string refusal;
+  try {
+    return function();
+  } catch (const std::exception& error) {
+    refusal = error.what();
+  }
+  return static_cast<uint32_t>(luaL_error(L, "%s: %s", type.name().c_str(), refusal.c_str()));
+}
+
+// The address of a place now, or 0 once the object holding it is gone.
+uint32_t TryAddress(lua_State* L, const Place& place) {
+  if (!place.holder) return place.held;
+  const uint32_t base = RunHandles(L, *place.holder, [&] { return place.holder->Resolve(place.held); });
+  return base ? base + place.offset : 0;
+}
+
+// The address of a place now; an error once the object holding it is gone.
+uint32_t Address(lua_State* L, const Place& place) {
+  const uint32_t address = TryAddress(L, place);
+  if (!address) luaL_error(L, "%s is gone", place.holder ? place.holder->name().c_str() : "the object");
+  return address;
+}
+
+// The place of the object at `address`: its handle, for a type that holds its objects by handle.
+Place PlaceOf(lua_State* L, uint32_t address, const TypeDef* type) {
+  if (!type || !type->held() || !address) return {address};
+  return {RunHandles(L, *type, [&] { return type->Hold(address); }), type};
+}
+
+// The place `offset` bytes into `outer`.
+Place Inside(const Place& outer, uint32_t offset) {
+  if (!outer.holder) return {outer.held + offset};
+  return {outer.held, outer.holder, outer.offset + offset};
+}
+
+void PushObjectAt(lua_State* L, const Place& place, const TypeDef* type) {
+  if (!place.held) {
     lua_pushnil(L);
     return;
   }
   auto* ud = static_cast<ObjectUD*>(lua_newuserdatauv(L, sizeof(ObjectUD), 0));
-  *ud = {object.address, object.type};
+  *ud = {place, type};
   luaL_setmetatable(L, kObjectMeta);
 }
 
-// Accepts an object, an address, or nil for none.
-Object CheckObject(lua_State* L, int arg) {
-  if (lua_isnoneornil(L, arg)) return {};
-  if (auto* ud = static_cast<ObjectUD*>(luaL_testudata(L, arg, kObjectMeta))) return {ud->address, ud->type};
+// An object the game hands a mod. For a type held by handle, its address is the handle already.
+void PushObject(lua_State* L, Object object) {
+  const bool held = object.type && object.type->held();
+  PushObjectAt(L, held ? Place{object.address, object.type} : Place{object.address}, object.type);
+}
+
+// The address an object or an integer argument stands for; 0 for nil.
+uint32_t CheckAddress(lua_State* L, int arg) {
+  if (lua_isnoneornil(L, arg)) return 0;
+  if (auto* ud = static_cast<ObjectUD*>(luaL_testudata(L, arg, kObjectMeta))) return Address(L, ud->place);
   const lua_Integer address = luaL_checkinteger(L, arg);
   if (address < 0 || address > 0xFFFFFFFFll) luaL_argerror(L, arg, "guest address out of range");
-  return {static_cast<uint32_t>(address), nullptr};
+  return static_cast<uint32_t>(address);
+}
+
+// Accepts an object, an address, or nil for none. An object held by handle reaches the game as its handle, as the
+// game handed it out; anything else as its address.
+Object CheckObject(lua_State* L, int arg) {
+  // An avatar of a mod's class goes to the game as its backing's object.
+  if (Object backing; AvatarObject(L, arg, backing)) {
+    if (!backing) luaL_error(L, "the avatar has no object of the game's: it's gone, or its backing is only a place");
+    return backing;
+  }
+  if (auto* ud = static_cast<ObjectUD*>(luaL_testudata(L, arg, kObjectMeta))) {
+    if (ud->place.holder && ud->place.holder == ud->type) return {ud->place.held, ud->type};
+    return {Address(L, ud->place), ud->type};
+  }
+  return {CheckAddress(L, arg), nullptr};
 }
 
 Value CheckValue(lua_State* L, int arg, ValueType type) {
@@ -55,7 +125,7 @@ Value CheckValue(lua_State* L, int arg, ValueType type) {
     case ValueType::kBool: return Value(lua_toboolean(L, arg) != 0);
     case ValueType::kInt:
       // An object where an integer goes is its address, for functions that take addresses (Namespace::Args types).
-      if (auto* ud = static_cast<ObjectUD*>(luaL_testudata(L, arg, kObjectMeta))) return Value(static_cast<int64_t>(ud->address));
+      if (luaL_testudata(L, arg, kObjectMeta)) return Value(static_cast<int64_t>(CheckAddress(L, arg)));
       return Value(static_cast<int64_t>(luaL_checkinteger(L, arg)));
     case ValueType::kFloat: return Value(static_cast<double>(luaL_checknumber(L, arg)));
     case ValueType::kString: {
@@ -76,11 +146,13 @@ int CallFunction(lua_State* L) {
   args.reserve(function->params.size());
   for (size_t i = 0; i < function->params.size(); ++i) args.push_back(CheckValue(L, static_cast<int>(i + 1), function->params[i]));
   Value result;
+  std::string failure;
   try {
     result = function->invoke(args);
   } catch (const std::exception& error) {
-    return luaL_error(L, "%s: %s", function->name.c_str(), error.what());
+    failure = error.what();
   }
+  if (!failure.empty()) return luaL_error(L, "%s: %s", function->name.c_str(), failure.c_str());
   if (TypeOf(result) == ValueType::kNone) return 0;
   PushValue(L, result);
   return 1;
@@ -93,7 +165,12 @@ void PushFunction(lua_State* L, const FunctionDef& function) {
 
 // Fields -------------------------------------------------------------------------------------------------
 
-void ReadField(lua_State* L, uint32_t address, const FieldType& type) {
+void ReadField(lua_State* L, const Place& place, const FieldType& type) {
+  if (type.kind == FieldKind::kStruct) {
+    PushObjectAt(L, place, type.target);
+    return;
+  }
+  const uint32_t address = Address(L, place);
   if (!guest::Translate(address)) luaL_error(L, "guest memory is not mapped yet");
   switch (type.kind) {
     case FieldKind::kBool8: lua_pushboolean(L, guest::Read<uint8_t>(address) != 0); return;
@@ -108,8 +185,11 @@ void ReadField(lua_State* L, uint32_t address, const FieldType& type) {
     case FieldKind::kU64: lua_pushinteger(L, static_cast<lua_Integer>(guest::Read<uint64_t>(address))); return;
     case FieldKind::kF32: lua_pushnumber(L, guest::Read<float>(address)); return;
     case FieldKind::kF64: lua_pushnumber(L, guest::Read<double>(address)); return;
-    case FieldKind::kPointer: PushObject(L, {guest::Read<uint32_t>(address), type.target}); return;
-    case FieldKind::kStruct: PushObject(L, {address, type.target}); return;
+    case FieldKind::kPointer: {
+      const uint32_t target = guest::Read<uint32_t>(address);
+      PushObjectAt(L, PlaceOf(L, target, type.target), type.target);
+      return;
+    }
     case FieldKind::kCString: {
       const uint32_t text = guest::Read<uint32_t>(address);
       if (text) lua_pushstring(L, reinterpret_cast<const char*>(guest::Translate(text)));
@@ -121,10 +201,13 @@ void ReadField(lua_State* L, uint32_t address, const FieldType& type) {
       lua_pushlstring(L, text, strnlen(text, type.length));
       return;
     }
+    case FieldKind::kStruct: return;
   }
 }
 
-void WriteField(lua_State* L, uint32_t address, const FieldType& type, const std::string& name) {
+void WriteField(lua_State* L, const Place& place, const FieldType& type, const std::string& name) {
+  if (type.kind == FieldKind::kStruct || type.kind == FieldKind::kCString) luaL_error(L, "field '%s' can't be assigned", name.c_str());
+  const uint32_t address = Address(L, place);
   if (!guest::Translate(address)) luaL_error(L, "guest memory is not mapped yet");
   switch (type.kind) {
     case FieldKind::kBool8: guest::Write<uint8_t>(address, lua_toboolean(L, 3) ? 1 : 0); return;
@@ -135,7 +218,7 @@ void WriteField(lua_State* L, uint32_t address, const FieldType& type, const std
     case FieldKind::kS64: case FieldKind::kU64: guest::Write<uint64_t>(address, static_cast<uint64_t>(luaL_checkinteger(L, 3))); return;
     case FieldKind::kF32: guest::Write<float>(address, static_cast<float>(luaL_checknumber(L, 3))); return;
     case FieldKind::kF64: guest::Write<double>(address, luaL_checknumber(L, 3)); return;
-    case FieldKind::kPointer: guest::Write<uint32_t>(address, CheckObject(L, 3).address); return;
+    case FieldKind::kPointer: guest::Write<uint32_t>(address, CheckAddress(L, 3)); return;
     case FieldKind::kChars: {
       size_t length = 0;
       const char* text = luaL_checklstring(L, 3, &length);
@@ -145,9 +228,8 @@ void WriteField(lua_State* L, uint32_t address, const FieldType& type, const std
       std::memset(out + copied, 0, type.length - copied);
       return;
     }
-    case FieldKind::kStruct: case FieldKind::kCString: break;
+    case FieldKind::kStruct: case FieldKind::kCString: return;
   }
-  luaL_error(L, "field '%s' can't be assigned", name.c_str());
 }
 
 // Objects ------------------------------------------------------------------------------------------------
@@ -156,7 +238,13 @@ int ObjectIndex(lua_State* L) {
   const auto* self = static_cast<ObjectUD*>(luaL_checkudata(L, 1, kObjectMeta));
   const std::string_view key = luaL_checkstring(L, 2);
   if (key == "address") {
-    lua_pushinteger(L, self->address);
+    const uint32_t address = TryAddress(L, self->place);
+    if (address) lua_pushinteger(L, address);
+    else lua_pushnil(L);
+    return 1;
+  }
+  if (key == "valid") {
+    lua_pushboolean(L, TryAddress(L, self->place) != 0);
     return 1;
   }
   if (key == "type") {
@@ -164,14 +252,14 @@ int ObjectIndex(lua_State* L) {
     else lua_pushnil(L);
     return 1;
   }
-  if (!self->type) return luaL_error(L, "an untyped object at 0x%08X has no field '%s'", self->address, lua_tostring(L, 2));
+  if (!self->type) return luaL_error(L, "an untyped object at %s has no field '%s'", Hex(TryAddress(L, self->place)).c_str(), lua_tostring(L, 2));
   if (const FieldDef* field = self->type->FindField(key)) {
     if (field->count) {
       auto* array = static_cast<ArrayUD*>(lua_newuserdatauv(L, sizeof(ArrayUD), 0));
-      *array = {self->address + field->offset, field};
+      *array = {Inside(self->place, field->offset), field};
       luaL_setmetatable(L, kArrayMeta);
     } else {
-      ReadField(L, self->address + field->offset, field->type);
+      ReadField(L, Inside(self->place, field->offset), field->type);
     }
     return 1;
   }
@@ -188,29 +276,32 @@ int ObjectNewIndex(lua_State* L) {
   const FieldDef* field = self->type ? self->type->FindField(key) : nullptr;
   if (!field) return luaL_error(L, "%s has no field '%s'", self->type ? self->type->name().c_str() : "an untyped object", lua_tostring(L, 2));
   if (field->count) return luaL_error(L, "array field '%s' can't be assigned; assign its elements", field->name.c_str());
-  WriteField(L, self->address + field->offset, field->type, field->name);
+  WriteField(L, Inside(self->place, field->offset), field->type, field->name);
   return 0;
 }
 
 int ObjectEq(lua_State* L) {
   const auto* a = static_cast<ObjectUD*>(luaL_checkudata(L, 1, kObjectMeta));
   const auto* b = static_cast<ObjectUD*>(luaL_checkudata(L, 2, kObjectMeta));
-  lua_pushboolean(L, a->address == b->address && a->type == b->type);
+  lua_pushboolean(L, a->place == b->place && a->type == b->type);
   return 1;
 }
 
 int ObjectToString(lua_State* L) {
   const auto* self = static_cast<ObjectUD*>(luaL_checkudata(L, 1, kObjectMeta));
-  lua_pushfstring(L, "%s(0x%08X)", self->type ? self->type->name().c_str() : "object", self->address);
+  const char* name = self->type ? self->type->name().c_str() : "object";
+  const uint32_t address = TryAddress(L, self->place);
+  if (address) lua_pushfstring(L, "%s(%s)", name, Hex(address).c_str());
+  else lua_pushfstring(L, "%s(gone)", name);
   return 1;
 }
 
 // Arrays -------------------------------------------------------------------------------------------------
 
-uint32_t CheckElement(lua_State* L, const ArrayUD& array) {
+Place CheckElement(lua_State* L, const ArrayUD& array) {
   const lua_Integer index = luaL_checkinteger(L, 2);
   if (index < 1 || index > array.field->count) luaL_error(L, "index %I out of range [1, %d] for '%s'", index, static_cast<int>(array.field->count), array.field->name.c_str());
-  return array.address + static_cast<uint32_t>(index - 1) * array.field->stride;
+  return Inside(array.place, static_cast<uint32_t>(index - 1) * array.field->stride);
 }
 
 int ArrayIndex(lua_State* L) {
@@ -232,10 +323,11 @@ int ArrayLen(lua_State* L) {
 
 // Types --------------------------------------------------------------------------------------------------
 
-// tip.Pinata(address): upvalue 1 is the TypeDef. Argument 1 is the type table itself, from __call.
+// tip.Pinata(address): upvalue 1 is the TypeDef. Argument 1 is the type table itself, from __call. A type held by
+// handle gives nil for an address where no such object is.
 int ConstructObject(lua_State* L) {
   const auto* type = static_cast<const TypeDef*>(lua_touserdata(L, lua_upvalueindex(1)));
-  PushObject(L, {CheckObject(L, 2).address, type});
+  PushObjectAt(L, PlaceOf(L, CheckAddress(L, 2), type), type);
   return 1;
 }
 
@@ -285,6 +377,21 @@ void PushValue(lua_State* L, const Value& value) {
     case ValueType::kString: lua_pushlstring(L, std::get<std::string>(value).data(), std::get<std::string>(value).size()); return;
     case ValueType::kObject: PushObject(L, std::get<Object>(value)); return;
   }
+}
+
+Object AsObject(lua_State* L, int arg, const TypeDef& type) {
+  if (Object backing; AvatarObject(L, arg, backing)) {
+    if (!backing) return {};
+    PushValue(L, Value(backing));
+    const Object as = AsObject(L, -1, type);
+    lua_pop(L, 1);
+    return as;
+  }
+  const auto* object = static_cast<ObjectUD*>(luaL_testudata(L, arg, kObjectMeta));
+  if (!object && !lua_isinteger(L, arg)) return {};
+  const uint32_t address = object ? TryAddress(L, object->place) : CheckAddress(L, arg);
+  const Place place = address ? PlaceOf(L, address, &type) : Place{};
+  return place.held ? Object{place.held, &type} : Object{};
 }
 
 void OpenGame(lua_State* L) {

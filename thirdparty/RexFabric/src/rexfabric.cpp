@@ -9,15 +9,23 @@
 
 #include <rex/hid/input_system.h>
 #include <rex/platform/file.h>
+#include <rex/setting.h>
 #include <rex/settings_registry.h>
 #include <rex/ui/ui_system.h>
 #include <rexfabric/game_api.h>
 
+#include "content/avatars.h"
+#include "content/classes.h"
+#include "content/map_edits.h"
+#include "content/world_saves.h"
 #include "hooks.h"
 #include "log.h"
+#include "lua/lua_definitions.h"
 #include "lua/lua_scripts.h"
 #include "mods.h"
 #include "native_loader.h"
+#include "ui/content_browser.h"
+#include "ui/lua_console_window.h"
 #include "ui/imgui_menu.h"
 #include "ui/menu_model.h"
 #include "ui/screen_text.h"
@@ -43,11 +51,26 @@ struct State {
 #if REXFABRIC_WITH_NODE_EDITOR
   ui::NodeEditorWindow* editor = nullptr;
 #endif
+  ui::ContentBrowserWindow* browser = nullptr;
+  ui::LuaConsoleWindow* console = nullptr;
 };
 
 State& Get() {
   static State state;
   return state;
+}
+
+// RexFabric's own settings, under "rexfabric". Registered once in Configure and never freed.
+class FabricSettings final : public rex::SettingOwner {
+ public:
+  FabricSettings() : rex::SettingOwner("rexfabric") {}
+
+  REX_SETTING(bool, show_editors, true, "Show the buttons and keys that open the mod editors. Off, mods still run; only editing them is hidden.");
+};
+
+FabricSettings& Settings() {
+  static auto* settings = new FabricSettings();
+  return *settings;
 }
 
 const Event& FrameEvent() {
@@ -78,6 +101,14 @@ class Hotkey final : public rex::ui::DialogBase {
 
 std::unique_ptr<rex::ui::IDialog> MenuHotkey(rex::ui::IUISystem&) { return std::make_unique<Hotkey>(ToggleMenu); }
 
+std::unique_ptr<rex::ui::IDialog> ContentBrowserHotkey(rex::ui::IUISystem&) {
+  return std::make_unique<Hotkey>(+[] { ShowContentBrowser(!ContentBrowserShown()); });
+}
+
+std::unique_ptr<rex::ui::IDialog> LuaConsoleHotkey(rex::ui::IUISystem&) {
+  return std::make_unique<Hotkey>(+[] { ShowLuaConsole(!LuaConsoleShown()); });
+}
+
 #if REXFABRIC_WITH_NODE_EDITOR
 std::unique_ptr<rex::ui::IDialog> NodeEditorHotkey(rex::ui::IUISystem&) {
   return std::make_unique<Hotkey>(+[] { ShowNodeEditor(!NodeEditorShown()); });
@@ -103,6 +134,8 @@ rex::Result<void> Configure(rex::SettingsRegistry& settings) {
   REX_TRY_VOID(REX_LOGGER().AddCategories(rex::log::kRexFabricLog));
   settings.AddAlias("bind_mods", "ui.bind.mods");
   settings.AddAlias("bind_node_editor", "ui.bind.node_editor");
+  settings.AddAlias("bind_content_browser", "ui.bind.content_browser");
+  if (auto registered = settings.Register(Settings()); !registered) RF_ERROR("can't register RexFabric's settings, so the editors stay shown");
   return rex::Ok();
 }
 
@@ -200,10 +233,20 @@ void Start() {
   ModList list(state.config.mods_dir);
   list.Scan();
   list.Save();
-  const std::vector<ModInfo> enabled(list.mods().begin(), list.mods().begin() + static_cast<ptrdiff_t>(list.EnabledCount()));
-  RF_INFO("{} of {} mods enabled in {}", enabled.size(), list.mods().size(), list.root().string());
+  const std::vector<ModInfo> on(list.mods().begin(), list.mods().begin() + static_cast<ptrdiff_t>(list.EnabledCount()));
+  RF_INFO("{} of {} mods enabled in {}", on.size(), list.mods().size(), list.root().string());
+  // Only mods whose dependencies and game version are met load, each after what it depends on.
+  std::vector<RefusedMod> refused;
+  const std::vector<ModInfo> enabled = LoadableMods(on, state.config.game_version, &refused);
+  for (const RefusedMod& mod : refused) RF_WARN("[{}] not loaded: it {}", mod.folder, mod.reason);
+  content::LoadModContent(enabled);
   if (state.config.native_mods) state.native.Load(enabled);
-  if (state.config.lua_mods) lua::Start(enabled);
+  if (state.config.lua_mods) {
+    // The mods' rex.world_data goes into the worlds' saves.
+    content::SetModDataSource({.save = lua::SaveWorldData, .restore = lua::RestoreWorldData});
+    lua::WriteDefinitions(state.config.mods_dir);
+    lua::Start(enabled);
+  }
 
   if (state.config.frame_function) {
     state.frame_hook = Hooks::Get().Add(Host(), state.config.frame_function, OnFrame, nullptr);
@@ -226,6 +269,9 @@ void Tick() {
   const auto now = std::chrono::steady_clock::now();
   const double seconds = state.last_frame.time_since_epoch().count() ? std::chrono::duration<double>(now - state.last_frame).count() : 0.0;
   state.last_frame = now;
+  content::TickMapEdits();
+  content::TickAvatars(seconds);
+  lua::RunConsole();
   FrameEvent().Fire(seconds);
 }
 
@@ -249,6 +295,8 @@ rex::Result<void> CreateMenus(rex::ui::IUISystem& ui, Images images) {
 #if REXFABRIC_WITH_NODE_EDITOR
   add("node_editor", state.config.node_editor_key, NodeEditorHotkey);
 #endif
+  add("content_browser", state.config.content_browser_key, ContentBrowserHotkey);
+  add("lua_console", state.config.lua_console_key, LuaConsoleHotkey);
   if (hotkeys.empty()) return rex::Ok();
   return ui.AddOverlays(hotkeys);
 }
@@ -278,12 +326,14 @@ bool ModsMenuShown() {
 
 void ToggleMenu() { ShowMenu(!ModsMenuShown()); }
 
-bool MenuShown() { return ModsMenuShown() || NodeEditorShown(); }
+bool MenuShown() { return ModsMenuShown() || NodeEditorShown() || ContentBrowserShown(); }
+
+bool EditorsShown() { return Settings().show_editors.Get(); }
 
 void ShowNodeEditor(bool show) {
 #if REXFABRIC_WITH_NODE_EDITOR
   State& state = Get();
-  if (!state.menu) return;
+  if (!state.menu || (show && !EditorsShown())) return;
   if (show && !state.editor) state.editor = OpenWindow<ui::NodeEditorWindow>([&state] { return new ui::NodeEditorWindow(*state.menu, [] { Get().editor = nullptr; }); });
   else if (!show && state.editor) state.editor->Hide();
 #else
@@ -298,5 +348,23 @@ bool NodeEditorShown() {
   return false;
 #endif
 }
+
+void ShowContentBrowser(bool show) {
+  State& state = Get();
+  if (!state.menu || (show && !EditorsShown())) return;
+  if (show && !state.browser) state.browser = OpenWindow<ui::ContentBrowserWindow>([&state] { return new ui::ContentBrowserWindow(*state.menu, [] { Get().browser = nullptr; }); });
+  else if (!show && state.browser) state.browser->Hide();
+}
+
+bool ContentBrowserShown() { return Get().browser != nullptr; }
+
+void ShowLuaConsole(bool show) {
+  State& state = Get();
+  if (!state.menu || (show && !EditorsShown())) return;
+  if (show && !state.console) state.console = OpenWindow<ui::LuaConsoleWindow>([] { return new ui::LuaConsoleWindow([] { Get().console = nullptr; }); });
+  else if (!show && state.console) state.console->Hide();
+}
+
+bool LuaConsoleShown() { return Get().console != nullptr; }
 
 }  // namespace rexfabric

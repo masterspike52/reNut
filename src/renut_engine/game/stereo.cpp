@@ -282,9 +282,26 @@ struct ModSound {
   float range = 70.0f;  // silent this far from the camera
 };
 
+// NutTool's studio music: the Stereo's songs (the game's, then the music folder's), one looping at a time.
+struct StudioMusic {
+  std::vector<Track> list;
+  size_t index = 0;
+  size_t playing = SIZE_MAX;  // the list entry started, SIZE_MAX for none
+  int steps = 0;              // moves asked for since the last tick
+  bool paused = false;
+  std::unordered_set<size_t> unavailable;  // entries that wouldn't play
+  HeldWavebanks held;
+  uint32_t record = 0;  // guest cue record (kCueRecordSize)
+  bool started = false;
+  Clock::time_point since{};
+  std::unique_ptr<ma_sound> sound;  // a file playing
+  bool holds_music = false;
+};
+
 std::mutex g_mutex;  // the stereos, the source, the engine, the challenge's song, the world's music, the one-shots
 std::unordered_map<uint32_t, Stereo> g_stereos;
 ChallengeMusic g_challenge;
+StudioMusic g_studio;
 WorldMusic g_world_music;
 std::unordered_map<uint32_t, OneShot> g_one_shots;  // by channel
 std::unordered_map<uint32_t, ModSound> g_mod_sounds;  // by handle
@@ -724,7 +741,7 @@ void PauseLevelMusic(PPCContext &ctx, uint8_t *base, bool pause) {
 // Pauses the level's music (each update) while any Stereo or the challenge
 // plays a game song, resumes it after. Requires g_mutex.
 void UpdateLevelMusic(PPCContext &ctx, uint8_t *base) {
-  const bool hold = g_challenge.holds_music || g_world_music.holds_music ||
+  const bool hold = g_challenge.holds_music || g_world_music.holds_music || g_studio.holds_music ||
                     std::any_of(g_stereos.begin(), g_stereos.end(),
                                 [](const auto &entry) { return entry.second.holds_music; });
   if (hold) {
@@ -1388,4 +1405,150 @@ void renut::game::ChallengeMusicTick(PPCContext &ctx, uint8_t *base, uint32_t ch
     m.since = now;
   }
   UpdateLevelMusic(ctx, base);
+}
+
+// --- NutTool's studio music ---------------------------------------------------------
+
+namespace {
+
+// Stops what the studio plays. Requires g_mutex.
+void StopStudioMusic(PPCContext &ctx, uint8_t *base) {
+  StudioMusic &m = g_studio;
+  StopRecord(ctx, base, m.record);
+  ReleaseWavebanks(ctx, base, m.held);
+  if (m.sound) {
+    ma_sound_stop(m.sound.get());
+    ma_sound_uninit(m.sound.get());
+    m.sound.reset();
+  }
+  m.started = false;
+  m.holds_music = false;
+  m.playing = SIZE_MAX;
+}
+
+// The Stereo's songs: the game's, then the music folder's files by name. Requires g_mutex.
+void ListStudioMusic() {
+  StudioMusic &m = g_studio;
+  m.list.clear();
+  for (const GameSong &song : kGameSongs)
+    m.list.push_back({Kind::Game, song.cue, 0, &song, {}, song.title});
+  std::vector<std::filesystem::path> files;
+  std::error_code ec;
+  for (const auto &entry : std::filesystem::directory_iterator(MusicFolder(), ec))
+    if (entry.is_regular_file(ec) && IsMusicFile(entry.path()))
+      files.push_back(entry.path());
+  std::sort(files.begin(), files.end());
+  for (const std::filesystem::path &file : files)
+    m.list.push_back({Kind::File, 0, 0, nullptr, file, FileTitle(file)});
+}
+
+// Starts the list's entry `index`; false when it can't play. Requires g_mutex.
+bool StartStudioEntry(PPCContext &ctx, uint8_t *base, size_t index) {
+  StudioMusic &m = g_studio;
+  StopStudioMusic(ctx, base);
+  const Track &track = m.list[index];
+  m.playing = index;
+  m.since = Clock::now();
+  if (track.kind == Kind::Game) {
+    if (!m.record && (m.record = REX_RUNTIME()->GetGuestHeap().SystemHeapAlloc(kCueRecordSize)))
+      std::memset(base + m.record, 0, kCueRecordSize);
+    return m.record && WantWavebanks(ctx, base, m.held, *track.song);
+  }
+  if (!EnsureEngine())
+    return false;
+  auto sound = std::make_unique<ma_sound>();
+  const ma_uint32 flags = MA_SOUND_FLAG_STREAM | MA_SOUND_FLAG_NO_SPATIALIZATION;
+#ifdef _WIN32
+  const bool ok = ma_sound_init_from_file_w(&g_engine, track.file.c_str(), flags, nullptr, nullptr, sound.get()) == MA_SUCCESS;
+#else
+  const bool ok = ma_sound_init_from_file(&g_engine, track.file.c_str(), flags, nullptr, nullptr, sound.get()) == MA_SUCCESS;
+#endif
+  if (!ok)
+    return false;
+  ma_sound_set_looping(sound.get(), MA_TRUE);
+  ma_sound_start(sound.get());
+  m.sound = std::move(sound);
+  return true;
+}
+
+}  // namespace
+
+void renut::game::StudioMusicTick(PPCContext &ctx, uint8_t *base, bool on) {
+  std::lock_guard lock(g_mutex);
+  StudioMusic &m = g_studio;
+  if (!on || m.paused) {
+    if (m.playing != SIZE_MAX) {
+      StopStudioMusic(ctx, base);
+      UpdateLevelMusic(ctx, base);
+    }
+    if (!on)
+      m.list.clear();  // read again next time, with any new files
+    return;
+  }
+  if (m.list.empty())
+    ListStudioMusic();
+  const size_t count = m.list.size();
+  if (m.unavailable.size() >= count)
+    return;
+  // Moves asked for, skipping what wouldn't play.
+  if (m.steps != 0 || m.playing == SIZE_MAX) {
+    const int direction = m.steps < 0 ? -1 : 1;
+    size_t index = (m.index + size_t(int64_t(count) * 64 + m.steps)) % count;
+    for (size_t tries = 0; m.unavailable.contains(index) && tries < count; ++tries)
+      index = (index + count + size_t(direction)) % count;
+    m.index = index;
+    m.steps = 0;
+    if (m.index != m.playing && !StartStudioEntry(ctx, base, m.index)) {
+      m.unavailable.insert(m.index);
+      StopStudioMusic(ctx, base);
+      m.steps = direction;
+      return;
+    }
+  }
+  const Track &track = m.list[m.index];
+  if (track.kind == Kind::File)
+    return;
+  const auto now = Clock::now();
+  if (!m.started) {
+    const uint32_t state = SongState(base, *track.song);
+    if (state == kWavebankPrepared) {
+      StartRecord(ctx, base, m.record, track.cue);
+      m.started = true;
+      m.since = now;
+    } else if (state == kWavebankFailed || now - m.since > kWavebankWait) {
+      m.unavailable.insert(m.index);
+      StopStudioMusic(ctx, base);
+      m.steps = 1;
+    }
+    return;
+  }
+  // The cue ends at the song's end: it starts again, so the song loops.
+  m.holds_music = RecordPlaying(ctx, base, m.record);
+  if (!m.holds_music && now - m.since > kStartGrace) {
+    StartRecord(ctx, base, m.record, track.cue);
+    m.since = now;
+  }
+  UpdateLevelMusic(ctx, base);
+}
+
+void renut::game::StudioMusicStep(int step) {
+  std::lock_guard lock(g_mutex);
+  g_studio.steps += step;
+  g_studio.paused = false;
+}
+
+void renut::game::StudioMusicPause(bool paused) {
+  std::lock_guard lock(g_mutex);
+  g_studio.paused = paused;
+}
+
+bool renut::game::StudioMusicPaused() {
+  std::lock_guard lock(g_mutex);
+  return g_studio.paused;
+}
+
+std::string renut::game::StudioMusicTitle() {
+  std::lock_guard lock(g_mutex);
+  const StudioMusic &m = g_studio;
+  return m.index < m.list.size() ? m.list[m.index].title : std::string();
 }

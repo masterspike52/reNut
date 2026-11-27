@@ -10,7 +10,7 @@
 extern "C" {
 #endif
 
-#define REXFABRIC_API_VERSION 1
+#define REXFABRIC_API_VERSION 2
 
 #if defined(_WIN32)
 #define REXFABRIC_MOD_EXPORT __declspec(dllexport)
@@ -153,6 +153,9 @@ typedef struct RexFabricApi {
   // there's no such cvar.
   int32_t (*get_cvar)(const char* name, char* buffer, uint32_t size);
   int (*set_cvar)(const char* name, const char* value);
+
+  // Version 2. The address of the guest function the game named `name` ("obj.objInstIsDerivedFrom"), or 0.
+  uint32_t (*find_guest_function)(const char* name);
 } RexFabricApi;
 
 // A native mod exports RexFabricModInit and may export RexFabricModShutdown. Init runs once guest memory exists

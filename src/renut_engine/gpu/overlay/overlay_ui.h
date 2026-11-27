@@ -27,6 +27,11 @@ void RemoveDialog(Dialog *dialog);
 // mouse should be a free cursor.
 bool WantsCursor();
 
+// Any thread: the overlay is drawn under the SDK's menus (RexFabric's, the Guide) instead of over them, while a
+// full-screen overlay window (NutTool) shows; set from a Dialog's Draw each frame.
+void SetUnderMenus(bool under);
+bool UnderMenus();
+
 // Any thread: the game window's mouse wheel since the last call (120 a detent, up positive).
 int32_t ConsumeMouseWheel();
 

@@ -28,6 +28,7 @@
 #include "renut_engine/mods/sha256.h"
 #include "renut_engine/mods/xcompress.h"
 #include "renut_engine/mods/zip_reader.h"
+#include "nuttool/studio.h"
 
 namespace {
 struct ModSettings final : rex::SettingOwner {
@@ -630,6 +631,8 @@ void InstallVehicles(const fs::path &user_root) {
 // The game's data folder, for GameFileSize (set by LoadMods, mods on or off).
 static fs::path g_game_root;
 
+fs::path GameFolder() { return g_game_root; }
+
 std::uintmax_t GameFileSize(const std::string &rel) {
     if (g_game_root.empty())
         return 0;
@@ -670,6 +673,17 @@ static std::set<uint32_t> g_character_packs;
 
 bool HasCharacterPack(uint32_t id) { return g_character_packs.contains(id); }
 
+// The mod folders LoadMods served (set before the game starts).
+static std::set<fs::path> g_served_mods;
+
+static fs::path SameFolderKey(const fs::path &dir) {
+    std::error_code ec;
+    const fs::path canonical = fs::weakly_canonical(fs::absolute(dir, ec), ec);
+    return ec ? dir.lexically_normal() : canonical;
+}
+
+bool ModFilesServed(const fs::path &dir) { return g_served_mods.contains(SameFolderKey(dir)); }
+
 void LoadMods(rex::kernel::TitleRuntime &title) {
     const fs::path folder = ModsFolder();
     std::error_code ec;
@@ -678,11 +692,10 @@ void LoadMods(rex::kernel::TitleRuntime &title) {
     const fs::path user_data_root = REX_PATHS().user_root.Get();
     if (!game_data_root.empty())
         g_game_root = fs::absolute(game_data_root, ec);
-    if (!g_mod_settings.renut_mods.Get())
-        return;
     if (game_data_root.empty())
         return;
     rex::filesystem::IFileSystem &vfs = title.GetFileSystem();
+    const bool mods = g_mod_settings.renut_mods.Get();
 
     LoadState state;
     state.game_root = fs::absolute(game_data_root, ec);
@@ -691,29 +704,41 @@ void LoadMods(rex::kernel::TitleRuntime &title) {
         if (fs::is_directory(update_root, ec))
             state.update_root = update_root;
     }
-    fs::create_directories(folder, ec);
     state.cache_dir = folder / ".cache";
 
-    // The loose files, then the enabled mod folders' in the load order.
-    std::vector<fs::path> packages = PackagesIn(folder);
-    for (const fs::path &dir : rexfabric::EnabledModDirs()) {
-        std::vector<fs::path> in_dir = PackagesIn(dir);
-        packages.insert(packages.end(), in_dir.begin(), in_dir.end());
+    // NutTool's studio, part of reNut whether mods are on or not: served first, so no mod takes its files. Its scene
+    // loads with the game, its stage with the scene.
+    if (renut::nuttool::PrepareStudio(state.game_root)) {
+        const fs::path studio = renut::nuttool::StudioFolder();
+        ServeBundles(studio / "bundles", "NutTool", true, state);
+        ServeBundles(studio / "worlds", "NutTool", false, state);
     }
 
-    for (const fs::path &package : packages)
-        LoadMod(package, state);
-    for (const fs::path &dir : rexfabric::EnabledModDirs())
-        LoadFolderBundles(dir, state);
-    for (const uint32_t id : ServeBundles(folder / ".characters", "character packs", false, state))
-        g_character_packs.insert(id);
-    PruneCache(state);
-    InstallVehicles(user_data_root);
-    if (!user_data_root.empty())
-        g_save_folder = renut::workshop::SaveFolder(user_data_root);
+    if (mods) {
+        fs::create_directories(folder, ec);
+        // The loose files, then the enabled mod folders' in the load order.
+        std::vector<fs::path> packages = PackagesIn(folder);
+        for (const fs::path &dir : rexfabric::EnabledModDirs()) {
+            std::vector<fs::path> in_dir = PackagesIn(dir);
+            packages.insert(packages.end(), in_dir.begin(), in_dir.end());
+        }
+
+        for (const fs::path &package : packages)
+            LoadMod(package, state);
+        for (const fs::path &dir : rexfabric::EnabledModDirs()) {
+            LoadFolderBundles(dir, state);
+            g_served_mods.insert(SameFolderKey(dir));
+        }
+        for (const uint32_t id : ServeBundles(folder / ".characters", "character packs", false, state))
+            g_character_packs.insert(id);
+        PruneCache(state);
+        InstallVehicles(user_data_root);
+        if (!user_data_root.empty())
+            g_save_folder = renut::workshop::SaveFolder(user_data_root);
+    }
 
     // The merged folders are rebuilt each start; they're links, so removing them leaves the files alone.
-    const fs::path merged_root = folder / ".merged";
+    const fs::path merged_root = (mods ? folder : renut::nuttool::StudioFolder().parent_path()) / ".merged";
     fs::remove_all(merged_root, ec);
     std::map<fs::path, std::string> mounts;
     size_t merged_count = 0;

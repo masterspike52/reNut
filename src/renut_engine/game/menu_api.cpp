@@ -21,6 +21,7 @@
 #include <vector>
 
 #include "renut_engine/game/guest_call.h"
+#include "renut_engine/mods/custom_parts.h"
 
 // Hooked: the game's list class, under every XUI list its menus fill, and its scenes' presses.
 REX_EXTERN(__imp__sub_823B2130);  // (list, count): inserts count rows at the top
@@ -37,6 +38,7 @@ REX_IMPORT(__imp__sub_82263290, XuiElementGetUserFocus, u32(u32));
 REX_IMPORT(__imp__sub_8255E5B0, XuiContainerGetCurSel, u32(u32));
 REX_IMPORT(__imp__rex_uiSystemSfxPlayOperation, PlayUiSound, void(u32, u32));
 REX_IMPORT(__imp__sub_823B0090, ButtonScene, u32(u32));  // (button): the scene object its presses go to
+REX_IMPORT(__imp__sub_823B27F0, ListItemSetImageAsset, u32(u32, u32, u32));  // (row, image slot, &texture aid)
 
 namespace renut::game::menu_api {
 namespace {
@@ -56,6 +58,10 @@ constexpr uint32_t kSoundSelect = 0;
 // List objects: + 4 HXUIOBJ, + 8 the row vector (u16 row size, then begin, end).
 constexpr uint32_t kListHandle = 4;
 constexpr uint32_t kListRows = 8;
+// A list's row count (vtable + 48); sub_82CC58A8 returns the count its menu stored at + 28.
+constexpr uint32_t kListCountMethod = 48;
+constexpr uint32_t kCountAt28 = 0x82CC58A8;
+constexpr uint32_t kListCount = 28;
 // A row record: column 0's text (128 wide chars) at + 8 as sub_823B2798 writes it; + 3016 set once the
 // list's text callback (vtable + 40) filled it, which sub_823B1EC8 then skips.
 constexpr uint32_t kRowText = 8;
@@ -80,7 +86,11 @@ struct Row {
   std::string key;
   std::string list;
   std::u16string text;
+  uint32_t image = 0;  // a texture asset the row shows (icon lists such as the main menu's), or 0
+  std::function<void()> builtin;  // a row of reNut's own: what its press does (no Lua, never cleared)
 };
+
+constexpr uint8_t kTypeTexture = 0x01;
 
 // A list showing rows of ours: its object, its own rows (before ours) and ours, in order.
 struct Shown {
@@ -133,11 +143,31 @@ const Row *FindRow(int64_t id) {
   return nullptr;
 }
 
-// "singlePlayerList" matches ".../singlePlayerList"; "StartMenu/singlePlayerList" its end too.
+std::vector<std::string> SplitIds(const std::string &path) {
+  std::vector<std::string> ids;
+  for (size_t start = 0; start <= path.size();) {
+    const size_t end = std::min(path.find('/', start), path.size());
+    ids.push_back(path.substr(start, end - start));
+    start = end + 1;
+  }
+  return ids;
+}
+
+// "singlePlayerList" matches ".../singlePlayerList". "StartMenu/toolBarList" matches a path ending in toolBarList with
+// StartMenu before it, any groups between.
 bool Matches(const std::string &path, const std::string &list) {
-  if (path == list)
-    return true;
-  return path.size() > list.size() && path.ends_with(list) && path[path.size() - list.size() - 1] == '/';
+  const std::vector<std::string> have = SplitIds(path), want = SplitIds(list);
+  if (want.empty() || have.empty() || have.back() != want.back())
+    return false;
+  size_t at = 0;
+  for (size_t i = 0; i + 1 < want.size(); ++i) {
+    while (at + 1 < have.size() && have[at] != want[i])
+      ++at;
+    if (at + 1 >= have.size())
+      return false;
+    ++at;
+  }
+  return true;
 }
 
 std::string ElementId(renut::guest::Guest &g, uint8_t *base, uint32_t handle) {
@@ -198,6 +228,27 @@ void WriteRows(uint8_t *base, uint32_t list, uint32_t first, const std::vector<s
   }
 }
 
+// Rows [first, first + images) of the list show those textures (0: none), as the lists' own fill callbacks set them.
+void SetImages(PPCContext &ctx, uint8_t *base, uint32_t list, uint32_t first, const std::vector<uint32_t> &images) {
+  const uint32_t rows = Load32(base, list + kListRows);
+  if (!rows)
+    return;
+  const uint32_t size = Load16(base, rows);
+  const uint32_t begin = Load32(base, rows + 4);
+  const uint32_t end = Load32(base, rows + 8);
+  if (size < kRowMinSize || !begin || end < begin)
+    return;
+  const uint32_t count = (end - begin) / size;
+  renut::guest::Guest g(ctx, base);
+  const uint32_t aid = g.Alloc(4);
+  for (uint32_t i = 0; i < images.size() && first + i < count; ++i) {
+    if (!images[i])
+      continue;
+    Store32(base, aid, images[i]);
+    ListItemSetImageAsset(g.ctx(), base, begin + (first + i) * size, 0, aid);
+  }
+}
+
 // The texts of a shown list's rows of ours; a removed row keeps its text until the menu fills the list again.
 std::vector<std::u16string> Texts(uint8_t *base, uint32_t list, const Shown &shown) {
   std::vector<std::u16string> texts;
@@ -250,6 +301,9 @@ bool APrompt(renut::guest::Guest &g, uint8_t *base, uint32_t source) {
 // The press renut.menu_select's listeners run inside, while they do.
 thread_local const Press *t_press = nullptr;
 
+bool RunRow(renut::guest::Guest &g, PPCContext &ctx, uint8_t *base, uint32_t list, int32_t selected, uint32_t user,
+            uint32_t scene);
+
 // Whether a press is A on a row of ours: from the list itself, or the page's A prompt while the list has
 // the focus. Fires renut.menu_select once per press, with the press lent to its listeners.
 bool PressOnOurRow(PPCContext &ctx, uint8_t *base, uint32_t source, uint32_t user, uint32_t scene) {
@@ -284,6 +338,12 @@ bool PressOnOurRow(PPCContext &ctx, uint8_t *base, uint32_t source, uint32_t use
       return false;
   }
   const int32_t selected = int32_t(XuiContainerGetCurSel(g.ctx(), base, list));
+  return RunRow(g, ctx, base, list, selected, user, scene);
+}
+
+// Row `selected` of the shown list `list` (its handle), when it's ours: its press runs, once per press.
+bool RunRow(renut::guest::Guest &g, PPCContext &ctx, uint8_t *base, uint32_t list, int32_t selected, uint32_t user,
+            uint32_t scene) {
   int64_t id = 0;
   {
     std::lock_guard lock(g_mutex);
@@ -300,7 +360,21 @@ bool PressOnOurRow(PPCContext &ctx, uint8_t *base, uint32_t source, uint32_t use
     g_last_select = now;
   }
   PlayUiSound(g.ctx(), base, kSounds, kSoundSelect);
-  if (g_select) {
+  std::function<void()> builtin;
+  {
+    std::lock_guard lock(g_mutex);
+    if (const Row *row = FindRow(id))
+      builtin = row->builtin;
+  }
+  if (builtin) {
+    const Press press{&ctx, base, scene};
+    const Press *const outer = std::exchange(t_press, &press);
+    try {
+      builtin();
+    } catch (const std::exception &) {
+    }
+    t_press = outer;
+  } else if (g_select) {
     const Press press{&ctx, base, scene};
     const Press *const outer = std::exchange(t_press, &press);
     g_select->Fire(id, int64_t(user));
@@ -331,8 +405,10 @@ function menu.add(def)
   text_of(def.text, "renut.menu.add")
   assert(def.on_select == nil or type(def.on_select) == "function", "renut.menu.add: on_select is a function")
   assert(def.key == nil or type(def.key) == "string", "renut.menu.add: key is a string")
+  assert(def.image == nil or type(def.image) == "string", "renut.menu.add: image is a texture asset's name")
   local key = def.key or (def.list .. "\n" .. def.text)
   local id = menu._add(key, def.list, def.text)
+  menu._set_image(id, def.image or "")
   local row = rows[id] or setmetatable({id = id}, Row)
   row.key, row.list, row.text, row.on_select = key, def.list, def.text, def.on_select
   rows[id] = row
@@ -365,12 +441,42 @@ end)
 
 const Press *CurrentPress() { return t_press; }
 
+bool PressModRow(PPCContext &ctx, uint8_t *base, uint32_t list, int32_t index, uint32_t user, uint32_t scene) {
+  if (!list || !g_any_shown.load(std::memory_order_relaxed))
+    return false;
+  renut::guest::Guest g(ctx, base);
+  return RunRow(g, ctx, base, Load32(base, list + kListHandle), index, user, scene);
+}
+
+void AddBuiltinRow(const std::string &list, const std::string &text, uint32_t image, std::function<void()> on_select) {
+  std::lock_guard lock(g_mutex);
+  Row row{g_next_id++, "renut.builtin\n" + list + "\n" + text, list, Wide(text), image, std::move(on_select)};
+  if (!row.builtin)
+    row.builtin = [] {};
+  g_rows.push_back(std::move(row));
+}
+
+bool ModRow(const uint8_t *base, uint32_t list, int32_t index, std::u16string *text) {
+  const auto [first, last] = OurRows(base, list);
+  if (index < first || index >= last)
+    return false;
+  std::lock_guard lock(g_mutex);
+  const auto it = g_shown.find(Load32(base, list + kListHandle));
+  if (it == g_shown.end())
+    return false;
+  const Row *row = FindRow(it->second.ids[size_t(index - first)]);
+  if (text)
+    *text = row ? row->text : std::u16string();
+  return true;
+}
+
 void Declare() {
   rexfabric::Namespace renut("renut");
   renut.Category("menu.", "Menus");  // the node editor's add menu
   for (const auto &[name, args] : std::initializer_list<std::pair<const char *, std::vector<std::string>>>{
            {"menu._add", {"key", "list", "text"}},
            {"menu._set_text", {"row", "text"}},
+           {"menu._set_image", {"row", "image"}},
            {"menu._remove", {"row"}},
            {"menu._lists", {}},
            {"menu._reset", {}},
@@ -406,9 +512,17 @@ void Declare() {
           shown.dirty = true;
     g_any_dirty.store(true, std::memory_order_relaxed);
   });
+  renut.Function("menu._set_image", [](int64_t id, std::string image) {
+    if (image.starts_with("aid_texture_"))
+      image.erase(0, sizeof("aid_texture_") - 1);
+    std::lock_guard lock(g_mutex);
+    for (Row &row : g_rows)
+      if (row.id == id)
+        row.image = image.empty() ? 0 : renut::mods::AssetId(kTypeTexture, image);
+  });
   renut.Function("menu._remove", [](int64_t id) {
     std::lock_guard lock(g_mutex);
-    std::erase_if(g_rows, [id](const Row &row) { return row.id == id; });
+    std::erase_if(g_rows, [id](const Row &row) { return row.id == id && !row.builtin; });
   });
   renut.Function("menu._lists", []() -> std::string {
     std::lock_guard lock(g_mutex);
@@ -419,7 +533,7 @@ void Declare() {
   });
   renut.Function("menu._reset", [] {
     std::lock_guard lock(g_mutex);
-    g_rows.clear();
+    std::erase_if(g_rows, [](const Row &row) { return !row.builtin; });
   });
   g_select = renut.Event("menu_select");
   renut.Lua(kLua);
@@ -444,6 +558,7 @@ REX_HOOK_RAW(sub_823B2130) {
   const uint32_t handle = list ? Load32(base, list + m::kListHandle) : 0;
   std::vector<int64_t> ids;
   std::vector<std::u16string> texts;
+  std::vector<uint32_t> images;
   if (handle && int32_t(count) >= 0) {
     const std::string path = m::ElementPath(ctx, base, handle);
     std::lock_guard lock(g_mutex);
@@ -454,6 +569,7 @@ REX_HOOK_RAW(sub_823B2130) {
       if (!path.empty() && m::Matches(path, row.list)) {
         ids.push_back(row.id);
         texts.push_back(row.text);
+        images.push_back(row.image);
       }
     if (ids.empty())
       g_shown.erase(handle);
@@ -463,8 +579,17 @@ REX_HOOK_RAW(sub_823B2130) {
   }
   ctx.r4.u64 = count + uint32_t(ids.size());
   __imp__sub_823B2130(ctx, base);
-  if (!ids.empty())
+  if (!ids.empty()) {
+    // Lists that count their rows by + 28 (the count the menu set, as the icon bars do) count ours too, so the
+    // per-frame fill reaches them.
+    if (const uint32_t vtable = Load32(base, list);
+        vtable && Load32(base, vtable + m::kListCountMethod) == m::kCountAt28 && Load32(base, list + m::kListCount) == count)
+      Store32(base, list + m::kListCount, count + uint32_t(ids.size()));
     m::WriteRows(base, list, count, texts);
+    const auto result = ctx.r3;
+    m::SetImages(ctx, base, list, count, images);
+    ctx.r3 = result;
+  }
 }
 
 // The list's per-frame fill: a row of ours whose text changed is rewritten first.

@@ -10,6 +10,8 @@
 
 #include <imgui.h>
 
+#include "widgets.h"
+
 namespace rexfabric::ui::node_widgets {
 
 enum class PinShape {
@@ -49,8 +51,8 @@ ClipboardRequest TakeClipboardRequest();
 // Selects exactly these nodes, as after pasting.
 void SelectNodes(std::span<const int> nodes);
 
-// ImGui text input into a std::string, which grows as it's typed into.
-bool InputString(const char* label, std::string& text, ImGuiInputTextFlags flags = 0, const char* hint = nullptr);
-bool InputStringMultiline(const char* label, std::string& text, const ImVec2& size, ImGuiInputTextFlags flags = 0);
+// Text input into a std::string, shared with the other windows.
+using widgets::InputString;
+using widgets::InputStringMultiline;
 
 }  // namespace rexfabric::ui::node_widgets

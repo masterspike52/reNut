@@ -129,10 +129,16 @@ void ModsWindow::DrawMods() {
   }
   ImGui::SameLine();
   if (ImGui::Button("Reload Scripts")) pending_ = [this] { model_.ReloadScripts(); };
+  if (EditorsShown()) {
 #if REXFABRIC_WITH_NODE_EDITOR
-  ImGui::SameLine();
-  if (ImGui::Button("Node Editor")) pending_ = [] { ShowNodeEditor(); };
+    ImGui::SameLine();
+    if (ImGui::Button("Node Editor")) pending_ = [] { ShowNodeEditor(); };
 #endif
+    ImGui::SameLine();
+    if (ImGui::Button("Content Browser")) pending_ = [] { ShowContentBrowser(); };
+    ImGui::SameLine();
+    if (ImGui::Button("Lua Console")) pending_ = [] { ShowLuaConsole(); };
+  }
 }
 
 void ModsWindow::DrawColumn(const char* id, bool enabled, float width, float height) {

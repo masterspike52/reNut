@@ -9,9 +9,12 @@ project(renut LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-include(generated/rexglue.cmake)
-
-
+if(REXSDK_DIR)
+    add_subdirectory("${REXSDK_DIR}" rexglue-sdk)
+else()
+    find_package(rexglue 0.11.0 REQUIRED CONFIG)
+endif()
+rexglue_project(renut)
 
 set(RENUT_SOURCES
     src/main.cpp
@@ -39,6 +42,7 @@ set(RENUT_SOURCES
 	src/renut_engine/game/custom_materials.cpp
 	src/renut_engine/game/sound_api.cpp
 	src/renut_engine/game/menu_api.cpp
+	src/renut_engine/game/arcade_api.cpp
 	src/renut_engine/game/mod_data.cpp
 	src/renut_engine/game/renut_lua.cpp
 	src/renut_engine/game/mod_bundles.cpp
@@ -74,7 +78,8 @@ set(RENUT_SOURCES
 	src/renut_engine/mods/xcompress.cpp
 	src/renut_engine/mods/zip_reader.cpp
 	src/hooks.cpp
-	src/renut_engine/game/audio_client_guard.cpp
+	src/renut_engine/game/audio_driver.cpp
+	#src/renut_engine/game/audio_client_guard.cpp
 )
 
 if(WIN32)
@@ -137,9 +142,11 @@ rexglass_attach(renut)
 include(thirdparty/RexFabric/CMakeLists.txt)
 rexfabric_attach(renut WITH_GUIDE WITH_NODE_EDITOR)
 rexfabric_template_fragment(codegen/pch_h BEFORE "#define REX_SHIM_HEAP" FILE ${CMAKE_SOURCE_DIR}/config/templates/pch_image_size.inja)
+include(src/nuttool/nuttool.cmake)
+renut_nuttool_setup(renut)
 set(renut_asset_dir "${CMAKE_BINARY_DIR}/renut_assets")
 foreach(picture launcher_background workshop_background launcher_logo launcher_gear_top
-                launcher_gear_middle launcher_gear_corner)
+                launcher_gear_middle launcher_gear_corner nuttool)
     set(source "${CMAKE_SOURCE_DIR}/icon/${picture}.png")
     set(inc "${renut_asset_dir}/${picture}.png.inc")
     set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${source}")

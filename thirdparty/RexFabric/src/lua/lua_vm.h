@@ -44,11 +44,20 @@ VM& Vm();
 
 // The parts of the API, each installed into the `rex` table on top of the stack.
 void OpenRex(lua_State* L);
+// rex.content, the classes (lua_content.cpp).
+void OpenContent(lua_State* L);
+// Whether the value at `arg` is an avatar of a mod's class; with its backing's game object, none for a gone avatar or
+// a backing that's only a place.
+bool AvatarObject(lua_State* L, int arg, Object& object);
 void OpenHost(lua_State* L);
 // The game's namespaces, as globals.
 void OpenGame(lua_State* L);
 // rex.after, rex.every and rex.cancel (lua_timers.cpp), once the `rex` global is set.
 void OpenTimers(lua_State* L);
+// rex.world_data (lua_world_data.cpp), into the `rex` table on top of the stack.
+void OpenWorldData(lua_State* L);
+// Keeps the mods' world data tables beside the VM before it closes, so a reload gives them back.
+void KeepWorldData(lua_State* L);
 
 // Drops what the parts keep beside the VM: hook sites, claims, listeners, caches. The VM is still open.
 void ResetRex();
@@ -56,6 +65,9 @@ void ResetHost();
 
 // A game value as Lua sees it: objects become proxies, none becomes nil.
 void PushValue(lua_State* L, const Value& value);
+// The value at `arg` as an object of `type`: an object of any type, or an address, where one of `type` is. None for
+// anything else, nil, a gone object, or an address where no object of `type` is.
+Object AsObject(lua_State* L, int arg, const TypeDef& type);
 
 // Runs the cvar watchers whose cvar changed since the last call. Frame thread, under the lock.
 void DrainCvarChanges(lua_State* L);
@@ -66,5 +78,17 @@ bool CallProtected(lua_State* L, int nargs, int nresults, const char* what);
 void RegistryTable(lua_State* L, const char* key);
 // The mod a Lua function belongs to: the one loading, or the one whose file the caller lives in.
 std::string CallerMod(lua_State* L);
+// The mod whose dependencies limit the content Lua may name (content::MayReference): the caller's, or none for the
+// console, a developer's tool that may name every mod's.
+std::string ContentMod(lua_State* L);
+// The mod the console's lines run as.
+inline constexpr const char* kConsoleMod = "console";
+
+// "0x8216C9B0", for messages: Lua's own formatting (lua_pushfstring, luaL_error) has no width or hex.
+std::string Hex(uint32_t value);
+
+// A guest function by its address or by the name the game gave it (rexfabric::NameGuestFunction): its address, or
+// a Lua error for a name the game doesn't have.
+uint32_t CheckFunction(lua_State* L, int arg);
 
 }  // namespace rexfabric::lua

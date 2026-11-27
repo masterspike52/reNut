@@ -71,12 +71,12 @@ void main(
     out float4 oClip0 : SV_ClipDistance0,
     out float2 oClip1 : SV_ClipDistance1)
 {
-    // The vertex's direction from the camera, at infinity, just inside the far plane: the world
-    // always draws in front of it, however far it reaches.
+    // The vertex's direction from the camera, at infinity, just inside the far plane (a few steps of a 24-bit
+    // depth): the world draws in front of it to the far plane, which 0.99999 cut to 1e5 near distances.
     const float4 direction = float4(iPosition.xyz, 0.0);
     oPos = float4(dot(direction, VsConstant(0)), dot(direction, VsConstant(1)), dot(direction, VsConstant(2)),
                   dot(direction, VsConstant(3)));
-    oPos.z = oPos.w * (DepthAtInfinity() > 0.5 ? 0.99999 : 0.00001);
+    oPos.z = oPos.w * (DepthAtInfinity() > 0.5 ? 0.999999 : 0.000001);
 
     [unroll] for (uint i = 0; i < 16; ++i)
         oTexcoord[i] = 0.0;

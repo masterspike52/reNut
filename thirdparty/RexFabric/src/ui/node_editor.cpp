@@ -17,11 +17,16 @@
 #include <rex/hid/input_system.h>
 #include <rexfabric/rexfabric.h>
 
+#include "../content/assets.h"
+#include "../content/classes.h"
+#include "../content/tables.h"
+#include "../content/types.h"
 #include "../graph/graph_file.h"
 #include "../graph/node_library.h"
 #include "../lua/lua_scripts.h"
 #include "glass.h"
 #include "node_graph_widgets.h"
+#include "value_widgets.h"
 
 namespace ed = ax::NodeEditor;
 
@@ -100,7 +105,9 @@ constexpr std::array<const char*, 5> kDispatcherNodes = {"dispatch.call", "dispa
 constexpr const char* kAskPopup = "###ask";
 constexpr const char* kSavePopup = "Unsaved changes###save";
 
-constexpr std::array<PinKind, 5> kVariableKinds = {PinKind::kBool, PinKind::kInt, PinKind::kFloat, PinKind::kString, PinKind::kAny};
+constexpr std::array<PinKind, 8> kVariableKinds = {PinKind::kBool, PinKind::kInt, PinKind::kFloat, PinKind::kString, PinKind::kObject, PinKind::kEnum, PinKind::kStruct, PinKind::kAny};
+// What a map's keys can be.
+constexpr std::array<PinKind, 4> kKeyKinds = {PinKind::kBool, PinKind::kInt, PinKind::kString, PinKind::kEnum};
 
 ed::NodeId NodeId(int node) { return ed::NodeId(static_cast<size_t>(node)); }
 ed::PinId PinId(int node, size_t index, bool output) { return ed::PinId(static_cast<size_t>(kPinBase + static_cast<uint64_t>(node) * kPinsPerNode + (output ? kOutputOffset : 0) + index)); }
@@ -135,6 +142,8 @@ ImU32 PinColor(PinKind kind) {
     case PinKind::kRegisters: return IM_COL32(255, 170, 60, 255);
     case PinKind::kDelegate: return IM_COL32(255, 70, 70, 255);
     case PinKind::kAny: return IM_COL32(190, 190, 190, 255);
+    case PinKind::kEnum: return IM_COL32(40, 175, 120, 255);
+    case PinKind::kStruct: return IM_COL32(50, 100, 215, 255);
   }
   return IM_COL32(190, 190, 190, 255);
 }
@@ -208,10 +217,139 @@ const char* KindLabel(PinKind kind) {
     case PinKind::kInt: return "Int";
     case PinKind::kFloat: return "Float";
     case PinKind::kString: return "String";
+    case PinKind::kObject: return "Object";
+    case PinKind::kEnum: return "Enum";
+    case PinKind::kStruct: return "Struct";
     default: return "Any";
   }
 }
 
+// Picks an Object's type: any object, a game type, or a class the mod may use (content::TypeNames). True when it
+// changed. A type that went away stays picked, so the graph says so when it compiles.
+bool ObjectTypeCombo(const char* label, std::string& object, std::string_view mod) {
+  bool changed = false;
+  if (ImGui::BeginCombo(label, object.empty() ? "Any object" : object.c_str())) {
+    if (ImGui::Selectable("Any object", object.empty()) && !object.empty()) {
+      object.clear();
+      changed = true;
+    }
+    for (const std::string& name : content::TypeNames(mod)) {
+      if (ImGui::Selectable(name.c_str(), name == object) && name != object) {
+        object = name;
+        changed = true;
+      }
+    }
+    ImGui::EndCombo();
+  }
+  ImGui::SetItemTooltip("What it holds: a game type, or a class. Anything below it goes in too; going down takes a cast");
+  return changed;
+}
+
+// The setting of a node's description that picks one of content's enums, structs or tables, or null.
+const graph::SettingDesc* ContentSetting(const NodeDesc& desc) {
+  const auto found = std::find_if(desc.settings.begin(), desc.settings.end(), [](const graph::SettingDesc& setting) { return setting.kind == graph::SettingKind::kEnum || setting.kind == graph::SettingKind::kStruct || setting.kind == graph::SettingKind::kTable || setting.kind == graph::SettingKind::kAvatarClass; });
+  return found != desc.settings.end() ? &*found : nullptr;
+}
+
+// The enums, structs or tables the mod may use, for a setting picking one.
+std::vector<std::string> ContentPaths(graph::SettingKind kind, std::string_view mod) {
+  switch (kind) {
+    case graph::SettingKind::kEnum: return content::EnumPaths(mod);
+    case graph::SettingKind::kStruct: return content::StructPaths(mod);
+    case graph::SettingKind::kTable: return content::TablePaths(mod);
+    case graph::SettingKind::kAvatarClass: return content::AvatarClassPaths(mod);
+    default: return {};
+  }
+}
+
+graph::SettingKind SettingFor(PinKind kind) { return kind == PinKind::kEnum ? graph::SettingKind::kEnum : graph::SettingKind::kStruct; }
+
+// Picks an enum, a struct or a table the mod may use. True when it changed.
+bool ContentCombo(const char* label, graph::SettingKind kind, std::string& object, std::string_view mod) {
+  const char* what = kind == graph::SettingKind::kEnum ? "enum" : kind == graph::SettingKind::kStruct ? "struct" : kind == graph::SettingKind::kTable ? "data table" : "class";
+  const std::string none = std::string("Pick ") + (kind == graph::SettingKind::kEnum ? "an " : "a ") + what;
+  bool changed = false;
+  if (ImGui::BeginCombo(label, object.empty() ? none.c_str() : object.c_str(), ImGuiComboFlags_HeightLarge)) {
+    for (const std::string& path : ContentPaths(kind, mod)) {
+      if (ImGui::Selectable(path.c_str(), path == object) && path != object) {
+        object = path;
+        changed = true;
+      }
+    }
+    ImGui::EndCombo();
+  }
+  ImGui::SetItemTooltip("The %s: the game's, or one of the mod's or its dependencies'", what);
+  return changed;
+}
+
+// Picks the enum or struct an Enum or a Struct is. True when it changed.
+bool ContentTypeCombo(const char* label, PinKind kind, std::string& object, std::string_view mod) { return ContentCombo(label, SettingFor(kind), object, mod); }
+
+const char* ContainerLabel(graph::PinContainer container) {
+  switch (container) {
+    case graph::PinContainer::kArray: return "Array";
+    case graph::PinContainer::kMap: return "Map";
+    default: return "One";
+  }
+}
+
+// What a variable or a param holds: one value, an array, or a map under keys. True when it changed.
+bool ContainerCombo(const char* label, graph::PinContainer& container) {
+  bool changed = false;
+  if (ImGui::BeginCombo(label, ContainerLabel(container))) {
+    for (const graph::PinContainer option : {graph::PinContainer::kSingle, graph::PinContainer::kArray, graph::PinContainer::kMap}) {
+      if (ImGui::Selectable(ContainerLabel(option), option == container) && option != container) {
+        container = option;
+        changed = true;
+      }
+    }
+    ImGui::EndCombo();
+  }
+  ImGui::SetItemTooltip("One value, an array of them, or a map of them under keys");
+  return changed;
+}
+
+// The type of a variable or a param past its kind: what it names, what it holds, and a map's key. True when it
+// changed. `compact` keeps it on the line, for a param's row.
+template <typename Typed>
+bool TypeDetails(Typed& typed, std::string_view mod, bool compact) {
+  const float font = ImGui::GetFontSize();
+  const auto next = [&](float width) {
+    if (compact) {
+      ImGui::SameLine();
+      ImGui::SetNextItemWidth(font * width);
+    }
+  };
+  bool changed = false;
+  if (typed.type == PinKind::kObject) {
+    next(9.0f);
+    changed |= ObjectTypeCombo(compact ? "##object" : "Class", typed.object, mod);
+  } else if (typed.type == PinKind::kEnum || typed.type == PinKind::kStruct) {
+    next(9.0f);
+    changed |= ContentTypeCombo(compact ? "##object" : (typed.type == PinKind::kEnum ? "Enum" : "Struct"), typed.type, typed.object, mod);
+  }
+  if (typed.type == PinKind::kExec) return changed;
+  next(4.0f);
+  changed |= ContainerCombo(compact ? "##container" : "Holds", typed.container);
+  if (typed.container != graph::PinContainer::kMap) return changed;
+  next(4.0f);
+  if (ImGui::BeginCombo(compact ? "##key" : "Key", KindLabel(typed.key))) {
+    for (const PinKind kind : kKeyKinds) {
+      if (ImGui::Selectable(KindLabel(kind), kind == typed.key) && kind != typed.key) {
+        typed.key = kind;
+        typed.key_object.clear();
+        changed = true;
+      }
+    }
+    ImGui::EndCombo();
+  }
+  ImGui::SetItemTooltip("What the map's keys are");
+  if (typed.key == PinKind::kEnum) {
+    next(9.0f);
+    changed |= ContentTypeCombo(compact ? "##key_object" : "Key enum", PinKind::kEnum, typed.key_object, mod);
+  }
+  return changed;
+}
 // The mod and graph last open, so the window opens again where it was.
 struct LastOpen {
   std::string mod;
@@ -221,21 +359,6 @@ struct LastOpen {
 LastOpen& Last() {
   static LastOpen last;
   return last;
-}
-
-// The SDK's ImGui drawer reports Ctrl, Shift and Alt as keys but not as ImGui's modifiers, which ImGui rebuilds
-// io.KeyCtrl and the rest from each frame, so its shortcuts never see them. While the editor is open the modifiers
-// follow their keys, a frame behind, so Ctrl+S, the canvas's Ctrl+C and text fields' shortcuts work.
-void SyncModifiers(ImGuiIO& io) {
-  constexpr std::array<std::array<ImGuiKey, 3>, 3> kModifiers = {{
-      {ImGuiMod_Ctrl, ImGuiKey_LeftCtrl, ImGuiKey_RightCtrl},
-      {ImGuiMod_Shift, ImGuiKey_LeftShift, ImGuiKey_RightShift},
-      {ImGuiMod_Alt, ImGuiKey_LeftAlt, ImGuiKey_RightAlt},
-  }};
-  for (const auto& [modifier, left, right] : kModifiers) {
-    const bool held = ImGui::IsKeyDown(left) || ImGui::IsKeyDown(right);
-    if (held != ImGui::IsKeyDown(modifier)) io.AddKeyEvent(modifier, held);
-  }
 }
 
 // The small swatch of color a sidebar row starts with: a variable's type, a function or macro.
@@ -334,7 +457,7 @@ bool NodeEditorWindow::Draw(ImGuiIO& io) {
 }
 
 void NodeEditorWindow::OnDraw(ImGuiIO& io) {
-  SyncModifiers(io);
+  widgets::SyncModifiers(io);
   model_.Poll();
   ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x * 0.5f, io.DisplaySize.y * 0.5f), ImGuiCond_FirstUseEver, ImVec2(0.5f, 0.5f));
   ImGui::SetNextWindowSize(ImVec2(1320.0f, 780.0f), ImGuiCond_FirstUseEver);
@@ -413,6 +536,9 @@ void NodeEditorWindow::DrawToolbar() {
   if (glass::Button("Redo")) Redo();
   ImGui::EndDisabled();
   ImGui::EndDisabled();
+  ImGui::SameLine();
+  if (glass::Button("Content")) ShowContentBrowser();
+  ImGui::SetItemTooltip("Opens the content browser: every mod's classes and folders");
 
   ImGui::SameLine();
   ImGui::AlignTextToFramePadding();
@@ -564,7 +690,7 @@ void NodeEditorWindow::DrawVariables() {
       ImGui::Text("Get or set %s", variable.name.c_str());
       ImGui::EndDragDropSource();
     }
-    ImGui::SetItemTooltip("%s%s%s\nDrag onto the graph to get or set it", KindLabel(variable.type), variable.comment.empty() ? "" : "\n", variable.comment.c_str());
+    ImGui::SetItemTooltip("%s%s%s\nDrag onto the graph to get or set it", graph::TypeName(graph::VariableType(variable)).c_str(), variable.comment.empty() ? "" : "\n", variable.comment.c_str());
     if (ImGui::BeginPopupContextItem()) {
       if (ImGui::MenuItem("Delete")) removed = variable.name;
       ImGui::EndPopup();
@@ -973,6 +1099,8 @@ void NodeEditorWindow::DrawCompactNode(Node& node, const NodePins& pins) {
 void NodeEditorWindow::DrawInlineValue(Node& node, const Pin& pin) {
   const PinKind kind = pin.type.kind;
   if (kind == PinKind::kExec || kind == PinKind::kObject || kind == PinKind::kRegisters) return;
+  // Arrays, maps and structs come linked, or start empty.
+  if (pin.type.container != graph::PinContainer::kSingle || kind == PinKind::kStruct) return;
 
   const auto stored = node.values.find(pin.name);
   const nlohmann::json value = stored != node.values.end() ? stored->second : pin.initial;
@@ -1297,6 +1425,15 @@ void NodeEditorWindow::DrawAddMenu() {
     if (desc->category.empty()) continue;
     // Events start the event graph's chains; a function or macro starts at its inputs.
     if (owner_ != 0 && desc->role == NodeRole::kEvent) continue;
+    // One of each for every enum or struct the mod may use: Make Spot, Break Spot.
+    if (const graph::SettingDesc* picks = ContentSetting(*desc)) {
+      const std::string mod = document_->mod_dir().filename().string();
+      for (const std::string& path : ContentPaths(picks->kind, mod)) {
+        Node prototype = Prototype(*desc, {{picks->name, path}});
+        offer(*desc, graph::TitleOf(prototype), desc->category + "/" + std::string(content::NameOf(path)), {{picks->name, path}}, &desc->description);
+      }
+      continue;
+    }
     if (const graph::SettingDesc* member = MemberSetting(*desc)) {
       if (member->kind == graph::SettingKind::kVariable) {
         for (const graph::Variable& variable : graph.variables()) {
@@ -1627,6 +1764,17 @@ void NodeEditorWindow::DrawNodeDetails() {
         }
         if (ImGui::IsItemDeactivatedAfterEdit()) Edited();
         break;
+      case graph::SettingKind::kEnum:
+      case graph::SettingKind::kStruct:
+      case graph::SettingKind::kTable:
+      case graph::SettingKind::kAvatarClass: {
+        if (ContentCombo(setting.name.c_str(), setting.kind, value, document_->mod_dir().filename().string())) {
+          node->settings[setting.name] = value;
+          graph::RemoveDanglingLinks(document_->graph());
+          Edited();
+        }
+        break;
+      }
       case graph::SettingKind::kChoice:
       case graph::SettingKind::kVariable:
       case graph::SettingKind::kDispatcher: {
@@ -1791,19 +1939,45 @@ void NodeEditorWindow::DrawVariableDetails() {
   }
   ImGui::SetItemTooltip("Press Enter to rename. The nodes using it follow");
 
+  bool retyped = false;
   if (ImGui::BeginCombo("Type", KindLabel(variable->type))) {
     for (PinKind kind : kVariableKinds) {
       if (ImGui::Selectable(KindLabel(kind), kind == variable->type) && kind != variable->type) {
         variable->type = kind;
-        variable->initial = graph::DefaultValue(kind);
-        Edited();
+        variable->object.clear();
+        retyped = true;
       }
     }
     ImGui::EndCombo();
   }
+  retyped |= TypeDetails(*variable, document_->mod_dir().filename().string(), false);
+  if (retyped) {
+    // It starts as its type's empty value: an empty array or map, a struct of its fields' defaults, an enum's first.
+    const std::optional<content::ValueType> type = graph::ContentType(graph::VariableType(*variable));
+    const bool content_value = variable->container != graph::PinContainer::kSingle || variable->type == PinKind::kEnum || variable->type == PinKind::kStruct;
+    variable->initial = content_value ? (type ? content::EmptyValue(content::LoadedTypes(), *type) : nlohmann::json()) : graph::DefaultValue(variable->type);
+    Edited();
+  }
 
-  // The value it starts with, as the script loads.
-  switch (variable->type) {
+  // The value it starts with, as the script loads. Arrays, maps, structs and enums as content's editors show them.
+  const PinType type = graph::VariableType(*variable);
+  if (type.container != graph::PinContainer::kSingle || type.kind == PinKind::kEnum || type.kind == PinKind::kStruct) {
+    if (const std::optional<content::ValueType> content_type = graph::ContentType(type)) {
+      nlohmann::json value = variable->initial.is_null() ? content::EmptyValue(content::LoadedTypes(), *content_type) : variable->initial;
+      ImGui::TextUnformatted("Starts as");
+      if (ValueField("##starts", *content_type, value, content::LoadedTypes(), TypeChoices{})) {
+        variable->initial = std::move(value);
+        Edited(false);
+        initial_editing_ = true;
+      }
+    } else {
+      ImGui::TextDisabled("Starts empty");
+    }
+    if (initial_editing_ && !ImGui::IsAnyItemActive()) {
+      initial_editing_ = false;
+      Edited();
+    }
+  } else switch (variable->type) {
     case PinKind::kBool: {
       bool checked = variable->initial.is_boolean() && variable->initial.get<bool>();
       if (ImGui::Checkbox("Starts as", &checked)) {
@@ -1821,6 +1995,7 @@ void NodeEditorWindow::DrawVariableDetails() {
       if (ImGui::IsItemDeactivatedAfterEdit()) Edited();
       break;
     }
+    case PinKind::kObject:
     case PinKind::kAny: ImGui::TextDisabled("Starts as nil"); break;
     default: {
       std::string text;
@@ -1946,10 +2121,16 @@ void NodeEditorWindow::DrawParamList(const char* title, std::vector<graph::Param
       for (PinKind kind : kinds) {
         if (ImGui::Selectable(KindLabel(kind), kind == param.type) && kind != param.type) {
           param.type = kind;
+          param.object.clear();
+          if (kind == PinKind::kExec) param.container = graph::PinContainer::kSingle;
           Edited();
         }
       }
       ImGui::EndCombo();
+    }
+    if (TypeDetails(param, document_->mod_dir().filename().string(), true)) {
+      graph::RemoveDanglingLinks(graph);
+      Edited();
     }
     ImGui::SameLine();
     if (glass::SmallButton("x", glass::kDanger)) removed = static_cast<int>(index);

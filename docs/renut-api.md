@@ -58,6 +58,7 @@ order and reloading, see [mods-and-scripts.md](mods-and-scripts.md); for worked 
 - [The player: `renut.player`](#the-player-renutplayer)
 - [Shape keys: `renut.shapes`](#shape-keys-renutshapes)
 - [Materials: `renut.materials`](#materials-renutmaterials)
+- [Klungo's arcade: `renut.arcade`](#klungos-arcade-renutarcade)
 - [Other values](#other-values)
 - [Event reference](#event-reference)
   - [Events by `.on`](#events-by-on)
@@ -959,7 +960,8 @@ game's rows.
 
 | Key | Default | What |
 |---|---|---|
-| `list` | required | The list it goes in: the end of a path from `lists()`, such as `"singlePlayerList"` (it matches every list whose path ends with it). |
+| `list` | required | The list it goes in: an id from a path from `lists()`, such as `"singlePlayerList"` (it matches every list whose path ends with it), or ids from the path joined with `/`, the list's last: `"StartMenu/toolBarList"` is the main menu's icon bar, not the pause menu's, whatever groups sit between. |
+| `image` | none | A texture asset the row shows (any [asset form](#asset-ids-and-names)), for icon lists such as the main menu's icon bar. It has to be loaded, for example in a mod's own bundle. |
 | `text` | required | The row's text (up to 127 characters; what the game's font can't show becomes `?`). |
 | `on_select` | none | `function(row, user)`, called when the row is picked with A; `user` is the controller's user index. The game never sees that press. |
 | `key` | `list .. "\n" .. text` | Identifies the row: adding again with the same key updates that row. |
@@ -1459,6 +1461,157 @@ renut.worlds.set_material("mymod_isle", "lava", {emissive = {1, 0.4, 0.1}, emiss
 
 ---
 
+## Klungo's arcade: `renut.arcade`
+
+Klungo's arcade game in Showdown Town is a side-scroller: Klungo runs right by himself, A jumps, and
+an enemy, a fall or being left behind by the screen kills him. It has five levels, the fifth a boss
+fight, and draws everything at 320 by 240 from one sprite sheet. `renut.arcade` changes its levels,
+sprites and tuning, and reads and moves what's in play.
+
+Positions are pixels in the level, `y` down: a tile is 32 by 32, and the screen is 10 tiles across and
+7.5 down. Levels, columns and rows count from 1.
+
+### Levels
+
+| Function | What |
+|---|---|
+| `renut.arcade.set_map(level, text)` | Replaces level `level`'s map (1 to 5) from the next time the arcade opens. |
+| `renut.arcade.map(level)` | Its map's text, as the game reads it (8 lines). |
+| `renut.arcade.reset_map(level)` | Back to the game's map, from the next time the arcade opens. |
+
+A map is up to 8 lines of text, a character a tile. Its last line is the bottom of the screen; shorter
+maps get blank lines on top.
+
+| Character | Tile |
+|---|---|
+| space | Nothing. |
+| `X` | Ground. |
+| `T` | Ground's top (solid, a different sprite). |
+| `F` | The finish flag: only a picture, not solid. |
+| `1` to `9` | That many enemies stacked up from this tile (nothing solid). |
+
+A map needs at least 10 columns. A level is won when Klungo gets to its last 10 columns (where the
+screen stops), so put the flag there. Level 5 always has the boss, whatever its map. Any other
+character raises an error.
+
+```lua
+renut.arcade.set_map(1, [[
+                                     F
+TTTTTT  TTTT 1  TTT   2   TTTTTTTTTTTTTTTTTT
+XXXXXX  XXXXTTTTXXX TTTTT XXXXXXXXXXXXXXXXXX
+]])
+```
+
+### While it's open
+
+These return `nil` while the arcade is closed (`enemies` an empty list). The setters raise
+`Klungo's arcade isn't open`.
+
+| Function | What |
+|---|---|
+| `renut.arcade.open()` | Whether the arcade is open. |
+| `renut.arcade.state()` | Its screen: `"title"`, `"main_menu"`, `"level_menu"`, `"playing"`, `"credits"` (also `"starting"`, `"closing"`). |
+| `renut.arcade.level()` | The level up, 1 to 5. |
+| `renut.arcade.won()` | How many levels the save has won. |
+| `renut.arcade.paused()` | Whether its pause screen is up. |
+| `renut.arcade.player()` | Klungo: `{x, y, vx, vy, state, on_ground}` (`vx`, `vy` his move a frame). |
+| `renut.arcade.set_player{x, y, vx, vy}` | Moves him or changes his speed; the keys left out stay. |
+| `renut.arcade.camera()` / `set_camera(x)` | The screen's left edge in the level. |
+| `renut.arcade.size()` | The level's columns, rows and width in pixels. |
+| `renut.arcade.tile(column, row)` | A tile: `" "`, `"X"`, `"T"` or `"F"` (row 1 the top). |
+| `renut.arcade.set_tile(column, row, tile)` | Changes one, drawn and solid at once. |
+| `renut.arcade.enemies()` | The level's enemies: `{index, x, y}` each. |
+| `renut.arcade.move_enemy(index, x, y)` | Moves one; off the screen takes it out of play. |
+
+The arcade builds its five levels as it opens and keeps them while it's open: a changed tile or a
+moved enemy stays that way when the level is played again, until the arcade closes.
+| `renut.arcade.kill()` | Klungo is hit, on the arcade's next frame. |
+| `renut.arcade.win()` | He wins the level, on the next frame: he's put at its end; in level 5 the boss is beaten instead. |
+| `renut.arcade.full_speed(on)` | Lets the game run past the arcade's 30 fps cap, for a mod running its own game on the arcade's screen. The arcade's own games move once a frame, so turn it off before they play; it goes off by itself when the arcade closes. |
+
+`kill` and `win` only do something while a level is being played (not paused), and Klungo's alive.
+
+Klungo's `state` is `"entering"` (dropping in), `"running"`, `"boss"` (level 5's fight), `"dying"`,
+`"dead"`, `"finishing"` (walking off the end), `"finished"`, `"credits"` or `"crashed"` (the game's own
+"crash" joke: a random fake crash that sends you back to the title).
+
+### Sprites
+
+| Function | What |
+|---|---|
+| `renut.arcade.sprite(sprite)` | Its rect in the sprite sheet: `{x0, y0, x1, y1}` in pixels. |
+| `renut.arcade.set_sprite(sprite, rect)` | Another rect for it (`{x0 = ..., y0 = ..., x1 = ..., y1 = ...}` or `{x0, y0, x1, y1}`), from the next time the arcade opens. |
+| `renut.arcade.reset_sprite(sprite)` | Back to the game's. |
+
+A sprite's rect sets its size on screen too, and Klungo's is his hit box. The sprites:
+
+| Name | What |
+|---|---|
+| `tile_x`, `tile_t`, `finish` | The `X`, `T` and `F` tiles. |
+| `klungo_run1` ... `klungo_run4` | Klungo's run (`klungo_run1` is also his pose as he drops in). |
+| `klungo_credits` | Klungo in the credits. |
+| `enemy1`, `enemy2` | The enemies' two frames. |
+| `boss1`, `boss2`, `boss_beaten` | The boss's two frames, and beaten. |
+| `boss_shot1`, `boss_shot2` | Its shot's two frames. |
+| `background` | The scrolling background (160 wide, repeated). |
+| `crash_screen`, `crash_overlay` | The fake crash's screen, and what's drawn over the level with it. |
+| `bezel` | The cabinet frame around the game. |
+
+Rows 11 and 12 of the game's table have no name: pass the number.
+
+### Tuning
+
+`renut.arcade.tune{...}` changes how the arcade plays: at once if it's open, and each time it opens.
+`renut.arcade.untune(key)` (or `untune()` for all) gives the game's values back from the next time it
+opens. `renut.arcade.tuning(key)` is the open arcade's value, else what `tune` set (`nil` for none).
+
+| Key | The game's | What |
+|---|---|---|
+| `speed` | 3 | Klungo's run and the screen's scroll, pixels a frame. |
+| `gravity` | 0.35 | Added to his fall a frame. |
+| `jump` | 7.3 | His jump's speed up. |
+| `crash_chance` | the game's | The fake crash: one in this many frames, at most once a visit. `0`: never. |
+| `crash_seconds` | the game's | How long the crash screen stays before the title. |
+| `boss_shot_min`, `boss_shot_max` | the game's | Seconds between the boss's shots, at least and at most. |
+| `boss_shot_speed` | the game's | The shots' speed. |
+| `unlocked` | the save's | The level menu lets him play up to this level (1 to 5). The save isn't changed. |
+
+The arcade runs at 30 fps (reNut holds it there), so "a frame" is a thirtieth of a second.
+
+```lua
+renut.arcade.tune{crash_chance = 0, jump = 8.5, unlocked = 5}
+```
+
+### Arcade events
+
+`renut.arcade.on(event, fn)` returns a [handle](#handles-and-off). These aren't game events, but no
+`renut.arcade` function needs one.
+
+| Event | `fn` gets | When |
+|---|---|---|
+| `"open"` | | The arcade opened. |
+| `"close"` | | It's closing (its values can still be read). |
+| `"tick"` | `dt` | Every arcade frame, after the game's. |
+| `"state"` | `new, old` | Its screen changed. |
+| `"player"` | `new, old` | Klungo's state changed. |
+| `"start"` | `level` | A level starts. |
+| `"won"` | `level` | Klungo reached the level's end. |
+| `"died"` | `level` | He was hit or fell. |
+| `"crashed"` | `level` | The fake crash came up. |
+
+```lua
+-- Level 2 without jumping: a jump is a hit.
+renut.arcade.on("tick", function()
+  local k = renut.arcade.player()
+  if renut.arcade.level() == 2 and k and k.state == "running" and not k.on_ground and k.vy < 0 then
+    renut.arcade.kill()
+  end
+end)
+renut.arcade.on("won", function(level) rex.log("arcade level " .. level .. " won") end)
+```
+
+---
+
 ## Other values
 
 | Value | What |
@@ -1549,6 +1702,7 @@ functions work in it at once; the others make them wait for the next game tick.
 | `renut.net.on` | a message name | `value, peer` | no |
 | `renut.net.on_tick` | | | no |
 | `renut.challenges.on` | `"finish"` | `id, won, time, score` | (runs where the challenge ends) |
+| `renut.arcade.on` | `"open"`, `"close"`, `"tick"`, `"state"`, `"player"`, `"start"`, `"won"`, `"died"`, `"crashed"` | see [arcade events](#arcade-events) | no |
 | `renut.settings.on_change` | a key | `value` | no |
 
 An unknown event name raises an error naming the function and its events.
@@ -1616,6 +1770,11 @@ Other events (not game events: event functions in them wait for the next game ti
 | `renut.menu_select` | `row, user` | A mod's menu row is picked (`row` is the row's id). |
 | `renut.net_message` | `peer, name, data` | A `renut.net` message arrived (`data` still encoded). |
 | `renut.net_tick` | | Every frame, after the messages. |
+| `renut.arcade_open` | | Klungo's arcade opened. |
+| `renut.arcade_close` | | It's closing. |
+| `renut.arcade_tick` | `dt` | Every arcade frame, after the game's. |
+| `renut.arcade_state` | `new, old` | Its screen changed (`renut.arcade.state`'s names). |
+| `renut.arcade_player` | `new, old` | Klungo's state changed. |
 
 ```lua
 rex.on("renut.vehicle_collide", function(vehicle, part, strength)

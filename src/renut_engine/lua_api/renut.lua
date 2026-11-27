@@ -1524,8 +1524,9 @@ renut.menu = {}
 
 ---`renut.menu.add`'s row.
 ---@class renut.MenuRowDef
----@field list string The list's XUI Id (`"singlePlayerList"`), or the end of its Id path (`"StartMenu/singlePlayerList"`).
+---@field list string The list's XUI Id (`"singlePlayerList"`), or Ids of its path joined with `/`, its own last (`"StartMenu/toolBarList"`; groups between may be left out).
 ---@field text string Up to 127 characters.
+---@field image? string A loaded texture asset the row shows, for icon lists (the main menu's icon bar).
 ---@field on_select? fun(row: renut.MenuRow, user: integer) A on the row (`user`: the controller, `0`-`3`); the menu never sees that press.
 ---@field key? string Adding a row with the same key again changes that row. Default: `list` and `text`.
 
@@ -2387,3 +2388,218 @@ function renut.materials.reset(model, name) end
 ---@param model string
 ---@return string[]
 function renut.materials.list(model) end
+
+---------------------------------------------------------------------------------------------------
+-- Klungo's arcade
+---------------------------------------------------------------------------------------------------
+
+renut.arcade = {}
+
+---The arcade's screen.
+---@alias renut.ArcadeState
+---| "starting"
+---| "title"
+---| "main_menu"
+---| "level_menu"
+---| "credits"
+---| "playing"
+---| "closing"
+
+---What Klungo is doing.
+---@alias renut.ArcadeKlungoState
+---| "entering" Dropping in at a level's start.
+---| "running"
+---| "dying" Hit, bouncing off the screen.
+---| "finishing" Reached the level's end, walking off.
+---| "finished"
+---| "dead"
+---| "boss" Level 5: jumping the boss's shots.
+---| "credits"
+---| "crashed" The game's "crash" joke.
+
+---@alias renut.ArcadeTile " "|"X"|"T"|"F"
+
+---A sprite of the arcade's sheet: a name, or its row in the game's table (0 to 20).
+---@alias renut.ArcadeSprite
+---| "tile_x"
+---| "tile_t"
+---| "finish"
+---| "klungo_run1"
+---| "klungo_run2"
+---| "klungo_run3"
+---| "klungo_run4"
+---| "klungo_credits"
+---| "boss1"
+---| "boss2"
+---| "boss_beaten"
+---| "boss_shot1"
+---| "boss_shot2"
+---| "enemy1"
+---| "enemy2"
+---| "background"
+---| "crash_screen"
+---| "crash_overlay"
+---| "bezel"
+---| integer
+
+---@class renut.ArcadeKlungo
+---@field x number His centre, in level pixels (y down; the screen is 320 by 240).
+---@field y number
+---@field vx number His move a frame.
+---@field vy number
+---@field state renut.ArcadeKlungoState
+---@field on_ground boolean
+
+---@class renut.ArcadeEnemy
+---@field index integer What `renut.arcade.move_enemy` takes.
+---@field x number
+---@field y number
+
+---A rect of the sprite sheet, in its pixels.
+---@class renut.ArcadeRect
+---@field x0 integer
+---@field y0 integer
+---@field x1 integer
+---@field y1 integer
+
+---What `renut.arcade.tune` takes; the ones left out keep the game's.
+---@class renut.ArcadeTuning
+---@field speed? number Klungo's run and the camera's scroll, pixels a frame. The game's: 3.
+---@field gravity? number Added to his fall a frame. The game's: 0.35.
+---@field jump? number His jump's speed up. The game's: 7.3.
+---@field crash_chance? integer The "crash" joke: one in this many frames, at most once a visit; 0 for never.
+---@field crash_seconds? number How long the crash screen stays.
+---@field boss_shot_min? number The boss's seconds between shots, at least.
+---@field boss_shot_max? number ... and at most.
+---@field boss_shot_speed? number The shots' speed.
+---@field unlocked? integer The level menu lets him play up to this level (1 to 5); the save isn't changed.
+
+---Whether the arcade is open.
+---@return boolean
+function renut.arcade.open() end
+
+---The arcade's screen, or `nil` while it's closed.
+---@return renut.ArcadeState?
+function renut.arcade.state() end
+
+---The level up (1 to 5), or `nil`.
+---@return integer?
+function renut.arcade.level() end
+
+---How many levels the save has won, or `nil`.
+---@return integer?
+function renut.arcade.won() end
+
+---Whether the arcade's pause screen is up, or `nil`.
+---@return boolean?
+function renut.arcade.paused() end
+
+---Klungo, or `nil`.
+---@return renut.ArcadeKlungo?
+function renut.arcade.player() end
+
+---Moves him or changes his speed: the keys left out stay.
+---@param t {x?: number, y?: number, vx?: number, vy?: number}
+function renut.arcade.set_player(t) end
+
+---The screen's left edge in the level, or `nil`.
+---@return number?
+function renut.arcade.camera() end
+
+---@param x number
+function renut.arcade.set_camera(x) end
+
+---The level up: its columns, rows and width in pixels.
+---@return integer? columns
+---@return integer? rows
+---@return integer? width
+function renut.arcade.size() end
+
+---A tile of the level up: column and row from 1, row 1 the top.
+---@param column integer
+---@param row integer
+---@return renut.ArcadeTile
+function renut.arcade.tile(column, row) end
+
+---Changes a tile of the level up until the arcade closes: it's drawn and solid at once.
+---@param column integer
+---@param row integer
+---@param tile renut.ArcadeTile
+function renut.arcade.set_tile(column, row, tile) end
+
+---The level's enemies; empty while the arcade's closed.
+---@return renut.ArcadeEnemy[]
+function renut.arcade.enemies() end
+
+---Moves an enemy until the arcade closes; off the screen takes it out of play.
+---@param index integer
+---@param x number
+---@param y number
+function renut.arcade.move_enemy(index, x, y) end
+
+---A level's map: its text, 8 lines.
+---@param level integer 1 to 5.
+---@return string
+function renut.arcade.map(level) end
+
+---A level's map from the next time the arcade opens. `X` ground, `T` ground's top, `F` the flag (not solid), a digit a stack of that many enemies.
+---@param level integer 1 to 5 (5 has the boss).
+---@param text string Up to 8 lines (the last is the bottom of the screen), 10 columns at least.
+function renut.arcade.set_map(level, text) end
+
+---Back to the game's map, from the next time the arcade opens.
+---@param level integer
+function renut.arcade.reset_map(level) end
+
+---A sprite's rect.
+---@param sprite renut.ArcadeSprite
+---@return renut.ArcadeRect
+function renut.arcade.sprite(sprite) end
+
+---Another rect of the sheet for a sprite (its size on screen too), from the next time the arcade opens.
+---@param sprite renut.ArcadeSprite
+---@param rect renut.ArcadeRect|integer[]
+function renut.arcade.set_sprite(sprite, rect) end
+
+---@param sprite renut.ArcadeSprite
+function renut.arcade.reset_sprite(sprite) end
+
+---Changes how the game plays: at once if it's open, and each time it opens.
+---@param t renut.ArcadeTuning
+function renut.arcade.tune(t) end
+
+---Back to the game's (one key, or all), from the next time the arcade opens.
+---@param key? string
+function renut.arcade.untune(key) end
+
+---A tuning value: the open arcade's, else the one `tune` set (`nil` for none).
+---@param key string
+---@return number?
+function renut.arcade.tuning(key) end
+
+---Klungo is hit, on the arcade's next frame (while a level's played and he's alive).
+function renut.arcade.kill() end
+
+---Klungo wins the level, on the arcade's next frame: he's put at its end; in level 5 the boss is beaten.
+function renut.arcade.win() end
+
+---Lets the game run past the arcade's 30 fps, for a mod running its own game on the arcade's screen. The arcade's
+---own games move once a frame, so turn it off before they play; it goes off by itself as the arcade closes.
+---@param on boolean
+function renut.arcade.full_speed(on) end
+
+---@alias renut.ArcadeEvent
+---| "open" `fn()`
+---| "close" `fn()`, while its values can still be read.
+---| "tick" `fn(dt)`, every arcade frame.
+---| "state" `fn(new, old)`: the screen changed.
+---| "player" `fn(new, old)`: Klungo's state changed.
+---| "start" `fn(level)`: a level starts.
+---| "won" `fn(level)`
+---| "died" `fn(level)`
+---| "crashed" `fn(level)`
+
+---@param event renut.ArcadeEvent
+---@param fn function
+---@return renut.Handle
+function renut.arcade.on(event, fn) end

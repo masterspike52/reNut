@@ -1,8 +1,10 @@
 #include "renut_engine/gpu/render/draw.h"
+#include "renut_engine/app/renut_logging.h"
 
 #include <algorithm>
 #include <atomic>
 #include <bit>
+#include <chrono>
 #include <cmath>
 #include <condition_variable>
 #include <cstring>
@@ -1889,10 +1891,14 @@ bool BindStreams(const GuestDevice &device, const DrawCall &call, const ShaderRe
       count = std::min(count, src.vertex_count - first);
     else
       count = src.data ? 0 : count;
-    const u32 bytes = std::max<u32>(count, 1) * hs.host_stride;
+    // The draw reads its whole vertex range: what the stream lacks (an empty morph stream) reads as zeros,
+    // not as the upload memory after a shorter buffer.
+    const u32 span = constant ? 1 : std::max<u32>(g.vertex_range, 1);
+    const bool padded = count < span;
+    const u32 bytes = std::max(count, span) * hs.host_stride;
     const bool fills = src.data && count;
     const u8 *guest = fills ? src.data + size_t(first) * src.stride : nullptr;
-    const bool queued = fills && !(stream == 0 && call.up_vertices);
+    const bool queued = fills && !padded && !(stream == 0 && call.up_vertices);
     const StreamKey key{guest, layout_hash, stream, src.stride, count, src.endian};
     CachedStream *cached = nullptr;
     if (queued && src.stride) {
@@ -1920,6 +1926,8 @@ bool BindStreams(const GuestDevice &device, const DrawCall &call, const ShaderRe
     // Conversion writes every vertex; only an unfilled buffer needs zeros.
     if (!fills)
       std::memset(alloc.cpu, 0, bytes);
+    else if (padded)
+      std::memset(static_cast<u8 *>(alloc.cpu) + size_t(count) * hs.host_stride, 0, bytes - count * hs.host_stride);
     if (fills && !reused) {
       if (call.up_vertices && stream == 0) {
         // A copy taken at the call (queued.cpp).
@@ -1938,7 +1946,8 @@ bool BindStreams(const GuestDevice &device, const DrawCall &call, const ShaderRe
         fill.host_ref = alloc.ref;
         fill.key = key;
         fill.cacheable = cached && !cached->dynamic;
-        g_queued_streams.emplace(key, alloc);
+        if (queued)
+          g_queued_streams.emplace(key, alloc);
       }
     }
     const plume::RenderVertexBufferView view(alloc.ref, bytes);
@@ -3102,6 +3111,92 @@ VertexDeclarationRecord &NoDeclaration() {
   return record;
 }
 
+// Logging: NutTool world-model draws (vertex shader "RENUTVW2"), how far each got, summed once a second.
+constexpr uint64_t kWorldVertexHash = 0x52454E5554565732ull;
+constexpr const char *kWorldDrawStages[] = {"no declaration", "no host shader", "no targets", "no geometry",
+                                            "no streams", "no uploads", "no pipeline", "no bound targets",
+                                            "no bound streams", "drawn"};
+// A kind of drawn world draw: its transform, cull and face bits, material flags and viewport, and how many there were.
+struct WorldDrawKind {
+  float c[4][4] = {}, world[3][4] = {};
+  u32 mode = 0, material = 0, count = 0, indices = 0;
+  float viewport[4] = {};
+};
+struct WorldDrawLog {
+  u32 seen = 0, stages[std::size(kWorldDrawStages)] = {};
+  float c[4][4] = {}, world[3][4] = {};
+  u32 indices = 0, vertices = 0;
+  float viewport[4] = {};
+  std::vector<WorldDrawKind> kinds;
+  std::chrono::steady_clock::time_point next;
+};
+WorldDrawLog g_world_log;
+
+void NoteWorldDrawKind(u32 mode, u32 material) {
+  WorldDrawLog &l = g_world_log;
+  for (WorldDrawKind &k : l.kinds)
+    if (k.mode == mode && k.material == material && std::memcmp(k.c, l.c, sizeof(k.c)) == 0 &&
+        std::memcmp(k.world, l.world, sizeof(k.world)) == 0 &&
+        std::memcmp(k.viewport, l.viewport, sizeof(k.viewport)) == 0) {
+      ++k.count;
+      k.indices += l.indices;
+      return;
+    }
+  if (l.kinds.size() >= 12)
+    return;
+  WorldDrawKind k;
+  std::memcpy(k.c, l.c, sizeof(k.c));
+  std::memcpy(k.world, l.world, sizeof(k.world));
+  std::memcpy(k.viewport, l.viewport, sizeof(k.viewport));
+  k.mode = mode;
+  k.material = material;
+  k.count = 1;
+  k.indices = l.indices;
+  l.kinds.push_back(k);
+}
+
+float GuestRegisterFloat(const FloatConstants &constants, u32 r, u32 lane) {
+  u32 bits;
+  std::memcpy(&bits, constants.Register(r) + 4 * lane, 4);
+  bits = std::byteswap(bits);
+  float f;
+  std::memcpy(&f, &bits, 4);
+  return f;
+}
+
+void NoteWorldDraw(int stage) {
+  WorldDrawLog &l = g_world_log;
+  ++l.seen;
+  ++l.stages[std::clamp(stage, 0, int(std::size(kWorldDrawStages)) - 1)];
+  const auto now = std::chrono::steady_clock::now();
+  if (now < l.next)
+    return;
+  l.next = now + std::chrono::seconds(1);
+  std::string stages;
+  for (size_t i = 0; i < std::size(kWorldDrawStages); ++i)
+    if (l.stages[i])
+      stages += std::string(stages.empty() ? "" : ", ") + kWorldDrawStages[i] + " " + std::to_string(l.stages[i]);
+  RNUT_INFO("[world draws] {} this second ({}); last: {} indices, {} vertices, viewport {} {} {}x{}", l.seen, stages,
+            l.indices, l.vertices, l.viewport[0], l.viewport[1], l.viewport[2], l.viewport[3]);
+  RNUT_INFO("[world draws] last c0-c3: [{} {} {} {}] [{} {} {} {}] [{} {} {} {}] [{} {} {} {}]", l.c[0][0], l.c[0][1],
+            l.c[0][2], l.c[0][3], l.c[1][0], l.c[1][1], l.c[1][2], l.c[1][3], l.c[2][0], l.c[2][1], l.c[2][2],
+            l.c[2][3], l.c[3][0], l.c[3][1], l.c[3][2], l.c[3][3]);
+  for (const WorldDrawKind &k : l.kinds)
+    RNUT_INFO("[world draws] kind: {} draws, {} indices, viewport {} {} {}x{}, mode {:X} (cull {}, face {}), material "
+              "{:X}, c0-c3 [{} {} {} {}] [{} {} {} {}] [{} {} {} {}] [{} {} {} {}]",
+              k.count, k.indices, k.viewport[0], k.viewport[1], k.viewport[2], k.viewport[3], k.mode, k.mode & 3,
+              (k.mode >> 2) & 1, k.material, k.c[0][0], k.c[0][1], k.c[0][2], k.c[0][3], k.c[1][0], k.c[1][1],
+              k.c[1][2], k.c[1][3], k.c[2][0], k.c[2][1], k.c[2][2], k.c[2][3], k.c[3][0], k.c[3][1], k.c[3][2],
+              k.c[3][3]);
+  for (const WorldDrawKind &k : l.kinds)
+    RNUT_INFO("[world draws] kind of {} draws: c120-c122 [{} {} {} {}] [{} {} {} {}] [{} {} {} {}]", k.count,
+              k.world[0][0], k.world[0][1], k.world[0][2], k.world[0][3], k.world[1][0], k.world[1][1],
+              k.world[1][2], k.world[1][3], k.world[2][0], k.world[2][1], k.world[2][2], k.world[2][3]);
+  l.kinds.clear();
+  l.seen = 0;
+  std::fill(std::begin(l.stages), std::end(l.stages), 0u);
+}
+
 } // namespace
 
 namespace detail {
@@ -3181,15 +3276,34 @@ bool DrawStateLocked(const u8 *device_state, const DrawCall &call, const ReplayC
   } else {
     declaration = &NoDeclaration();
   }
+  // Logging: a world-model draw notes how far it got (kWorldDrawStages) as it leaves.
+  const bool world_draw = vs && vs->entry && vs->entry->hash == kWorldVertexHash;
+  int world_stage = 0;
+  struct WorldDrawNote {
+    bool on;
+    const int &stage;
+    ~WorldDrawNote() {
+      if (on)
+        NoteWorldDraw(stage);
+    }
+  } world_note{world_draw, world_stage};
   // A vertex shader or declaration the renderer doesn't know: the draw is
   // dropped.
   if (!vs || !declaration)
     return false;
+  world_stage = 1;
 
   // Earlier memexport results reach guest memory before this draw reads them
   // (WaitForExportsLocked may submit the list: before anything is recorded).
   const FloatConstants vs_constants = DrawFloatConstants(device_state, replay, false);
   const FloatConstants ps_constants = DrawFloatConstants(device_state, replay, true);
+  if (world_draw)
+    for (u32 r = 0; r < 4; ++r)
+      for (u32 k = 0; k < 4; ++k) {
+        g_world_log.c[r][k] = GuestRegisterFloat(vs_constants, r, k);
+        if (r < 3)
+          g_world_log.world[r][k] = GuestRegisterFloat(vs_constants, 120 + r, k);
+      }
   // Waiting for an older slot's results leaves the current slot's, which the
   // draw may need as well: another pass checks (none are left after it).
   while (AnyPendingExports()) {
@@ -3208,10 +3322,12 @@ bool DrawStateLocked(const u8 *device_state, const DrawCall &call, const ReplayC
   plume::RenderShader *host_ps = ps ? GetHostShader(ps) : nullptr;
   if (!host_vs || (ps && !host_ps))
     return false;  // missing from the shader cache (captured for the next build)
+  world_stage = 2;
 
   Targets targets;
   if (!GatherTargets(device, targets))
     return false;
+  world_stage = 3;
   // Everything that records copies or barriers comes before the framebuffer.
   SharedConstants sc;
   std::memset(&sc, 0, sizeof(sc));
@@ -3273,6 +3389,15 @@ bool DrawStateLocked(const u8 *device_state, const DrawCall &call, const ReplayC
                         : !PrepareGeometry(device, call, geometry)) {
     return false;
   }
+  world_stage = 4;
+  if (world_draw) {
+    g_world_log.indices = geometry.indexed ? geometry.index_count : 0;
+    g_world_log.vertices = geometry.vertex_count;
+    g_world_log.viewport[0] = viewport.viewport.x;
+    g_world_log.viewport[1] = viewport.viewport.y;
+    g_world_log.viewport[2] = viewport.viewport.width;
+    g_world_log.viewport[3] = viewport.viewport.height;
+  }
   // The host draws the vertex range in use from vertex 0 (indices rebased to
   // it in PrepareGeometry); the guest's r0.x is the vertex index itself.
   if (!call.tessellation)
@@ -3282,6 +3407,7 @@ bool DrawStateLocked(const u8 *device_state, const DrawCall &call, const ReplayC
                                     gpu_streams)) {
     return false;
   }
+  world_stage = 5;
 
   // NutTool's shape keys: stream 0 read by address too, for their deltas.
   ShapeDraw shapes;
@@ -3324,6 +3450,7 @@ bool DrawStateLocked(const u8 *device_state, const DrawCall &call, const ReplayC
   // (Fetch data from the fetch cache has no upload memory, only the buffer.)
   if (!fetch_alloc.ref.ref || !vs_alloc || !ps_alloc || !sc_alloc || !memexport)
     return false;
+  world_stage = 6;
 
   PipelineKey key = MakeKey(device, vs, ps, declaration, targets, call.primitive, geometry.per_instance);
   if (alpha_to_coverage)
@@ -3333,8 +3460,10 @@ bool DrawStateLocked(const u8 *device_state, const DrawCall &call, const ReplayC
   plume::RenderPipeline *pipeline = GetPipelineLocked(key, {host_vs, host_ps, &declaration->layout});
   if (!pipeline)
     return false;
+  world_stage = 7;
   if (!BindTargets(targets))
     return false;
+  world_stage = 8;
   plume::RenderCommandList *cmd = s.command_list;
   SetViewport(cmd, viewport.viewport, viewport.scissor, targets.color_count);
 
@@ -3384,6 +3513,9 @@ bool DrawStateLocked(const u8 *device_state, const DrawCall &call, const ReplayC
                    declaration->layout_hash, geometry, gpu_streams)) {
     return false;
   }
+  world_stage = 9;
+  if (world_draw)
+    NoteWorldDrawKind(key.mode_control, has_material ? material.flags : 0);
   if (geometry.indexed) {
     SetIndexBuffer(cmd, geometry.index_view);
     cmd->drawIndexedInstanced(geometry.index_count, 1, 0, 0, 0);

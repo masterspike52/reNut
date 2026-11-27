@@ -240,10 +240,16 @@ void PresentLocked(VideoState &s, const PresentImage *image) {
 
   cmd->setViewports(plume::RenderViewport(0.0f, 0.0f, float(out_w), float(out_h)));
   cmd->setScissors(plume::RenderRect(0, 0, int32_t(out_w), int32_t(out_h)));
-  // The SDK's own menus, then reNut's overlay over them.
-  if (s.overlay_hook)
-    s.overlay_hook(cmd, target, out_w, out_h);
-  overlay::DrawLocked(cmd, out_w, out_h);
+  // The SDK's own menus, then reNut's overlay over them; under them while a full-screen overlay window (NutTool) asks.
+  if (overlay::UnderMenus()) {
+    overlay::DrawLocked(cmd, out_w, out_h);
+    if (s.overlay_hook)
+      s.overlay_hook(cmd, target, out_w, out_h);
+  } else {
+    if (s.overlay_hook)
+      s.overlay_hook(cmd, target, out_w, out_h);
+    overlay::DrawLocked(cmd, out_w, out_h);
+  }
   if (screen_fb)
     FinishScreenLocked(s, back_fb, out_w, out_h);
 

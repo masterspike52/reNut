@@ -5,6 +5,7 @@
 
 #include <rexfabric/midasm.h>
 
+#include "../content/avatars.h"
 #include "../events.h"
 #include "../hooks.h"
 #include "../log.h"
@@ -60,6 +61,7 @@ lua_State* Create() {
   lua_newtable(L);
   OpenRex(L);
   OpenHost(L);
+  OpenWorldData(L);
   lua_setglobal(L, "rex");
   OpenTimers(L);
   OpenGame(L);
@@ -97,6 +99,9 @@ void Teardown(VM& vm) {
   events::UnlistenAll(vm.owner);
   ResetRex();
   ResetHost();
+  // The avatars the scripts spawned go with them, but for the saved ones; the world data waits for the next VM.
+  content::RemoveAllAvatars();
+  KeepWorldData(vm.L);
   lua_close(vm.L);
   vm.L = nullptr;
   vm.ctx_ref = LUA_NOREF;
@@ -147,6 +152,11 @@ std::string CallerMod(lua_State* L) {
     return std::string(mod_dir.substr(mod_dir.rfind('/') + 1));
   }
   return "lua";
+}
+
+std::string ContentMod(lua_State* L) {
+  std::string mod = CallerMod(L);
+  return mod == kConsoleMod ? std::string() : mod;
 }
 
 void Start(const std::vector<ModInfo>& mods) {

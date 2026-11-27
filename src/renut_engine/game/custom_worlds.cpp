@@ -20,6 +20,7 @@
 #include "renut_engine/game/custom_npcs.h"
 #include "renut_engine/game/part_classes.h"
 #include "renut_engine/mods/custom_parts.h"
+#include "renut_engine/mods/mod_loader.h"
 
 REX_EXTERN(__imp__sub_82364768);  // adds a marker asset's records to a scene's marker list
 REX_EXTERN(__imp__sub_82332D38);  // (block, size): the block grown to size, moved if need be
@@ -354,9 +355,22 @@ uint32_t BuildTree(PPCContext &ctx, uint8_t *base, uint32_t mesh) {
 constexpr const char kLua[] = R"lua(
 local worlds, doors = renut.worlds, renut.doors
 
+-- The folder of the mod whose script called worlds.add or doors.add, or nil when it's not a mod's script.
+local function caller_folder()
+  return (debug.getinfo(3, "S").source or ""):match("^@?(.*)[/\\]scripts[/\\][^/\\]+$")
+end
+
+-- A mod turned on after the game started has no files in the game yet: its worlds and doors would be the dirty-disc screen.
+local function check_served(folder, what)
+  assert(folder == nil or worlds._served(folder),
+         what .. ": this mod was turned on after the game started, so its worlds and doors come with the next start")
+end
+
 -- renut.worlds.add{id, name, scene, music, music_volume}: a world of a mod, entered through its doors.
 function worlds.add(def)
   assert(type(def) == "table", "renut.worlds.add takes a table")
+  local folder = caller_folder()
+  check_served(folder, "renut.worlds.add")
   assert(type(def.id) == "string" and def.id:match("^[%w_]+$"),
          "renut.worlds.add: the world needs an id of letters, digits and _")
   local scene = def.scene or ("renutworld_" .. def.id)
@@ -366,9 +380,7 @@ function worlds.add(def)
   local music = def.music or ""
   assert(type(music) == "string", "renut.worlds.add: music is a sound file's path in the mod")
   if music ~= "" and not music:match("^%a:[/\\]") and not music:match("^[/\\]") then
-    local source = debug.getinfo(2, "S").source or ""
-    local folder = source:match("^@?(.*)[/\\]scripts[/\\][^/\\]+$")
-    assert(folder, "renut.worlds.add: music needs a full path here (not called from a mod's scripts folder)")
+    assert(folder,"renut.worlds.add: music needs a full path here (not called from a mod's scripts folder)")
     music = folder .. "/" .. music
   end
   local volume = def.music_volume or 0.8
@@ -432,6 +444,7 @@ local door_styles = {wall = "", palace = "banjox_portal_hornportal", hidden = "b
 -- renut.doors.add{world, position, yaw, style, look, id}: a door in Showdown Town into a world.
 function doors.add(def)
   assert(type(def) == "table", "renut.doors.add takes a table")
+  check_served(caller_folder(), "renut.doors.add")
   assert(type(def.world) == "string", "renut.doors.add: the door needs the id of the world it leads to")
   local p = def.position
   assert(type(p) == "table", "renut.doors.add: the door needs a position {x, y, z}")
@@ -513,6 +526,9 @@ void Declare() {
     if (world == g_worlds.end())
       throw Error("renut.worlds.add: no world '" + id + "'");
     world->player_model = PlayerModelId(model);
+  });
+  renut.Function("worlds._served", [](std::string folder) {
+    return renut::mods::ModFilesServed(std::filesystem::path(std::u8string(folder.begin(), folder.end())));
   });
   renut.Function("worlds._count", [] {
     std::lock_guard lock(g_mutex);

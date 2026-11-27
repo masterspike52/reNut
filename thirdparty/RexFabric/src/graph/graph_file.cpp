@@ -20,9 +20,38 @@ json NodeJson(const Node& node) {
   return out;
 }
 
+// The type of a variable or param: its kind, what it names when it names something, and its container with a map's
+// key. Older files have neither, and read as one value.
+template <typename Typed>
+void WriteType(json& out, const Typed& typed) {
+  out["type"] = PinKindName(typed.type);
+  const bool names = typed.type == PinKind::kObject || typed.type == PinKind::kEnum || typed.type == PinKind::kStruct;
+  if (names && !typed.object.empty()) out["object"] = typed.object;
+  if (typed.container == PinContainer::kSingle) return;
+  out["container"] = PinContainerName(typed.container);
+  if (typed.container != PinContainer::kMap) return;
+  out["key"] = PinKindName(typed.key);
+  if (typed.key == PinKind::kEnum) out["key_object"] = typed.key_object;
+}
+
+template <typename Typed>
+void ReadType(const json& in, Typed& typed) {
+  ParsePinKind(in.value("type", std::string("float")), typed.type);
+  const bool names = typed.type == PinKind::kObject || typed.type == PinKind::kEnum || typed.type == PinKind::kStruct;
+  typed.object = names ? in.value("object", std::string()) : std::string();
+  ParsePinContainer(in.value("container", std::string("single")), typed.container);
+  if (typed.container != PinContainer::kMap) return;
+  ParsePinKind(in.value("key", std::string("string")), typed.key);
+  typed.key_object = typed.key == PinKind::kEnum ? in.value("key_object", std::string()) : std::string();
+}
+
 json ParamsJson(const std::vector<Param>& params) {
   json out = json::array();
-  for (const Param& param : params) out.push_back({{"name", param.name}, {"type", PinKindName(param.type)}});
+  for (const Param& param : params) {
+    json entry = {{"name", param.name}};
+    WriteType(entry, param);
+    out.push_back(std::move(entry));
+  }
   return out;
 }
 
@@ -32,7 +61,7 @@ std::vector<Param> ReadParams(const json& in) {
   for (const json& entry : in) {
     Param param;
     param.name = entry.value("name", std::string());
-    ParsePinKind(entry.value("type", std::string("float")), param.type);
+    ReadType(entry, param);
     params.push_back(std::move(param));
   }
   return params;
@@ -80,7 +109,11 @@ void ReadLinks(const json& in, Graph& graph) {
 std::string Write(const Graph& graph) {
   json out = {{"version", kFileVersion}};
   json variables = json::array();
-  for (const Variable& variable : graph.variables()) variables.push_back({{"name", variable.name}, {"type", PinKindName(variable.type)}, {"initial", variable.initial}, {"comment", variable.comment}});
+  for (const Variable& variable : graph.variables()) {
+    json entry = {{"name", variable.name}, {"initial", variable.initial}, {"comment", variable.comment}};
+    WriteType(entry, variable);
+    variables.push_back(std::move(entry));
+  }
   out["variables"] = std::move(variables);
   json routines = json::array();
   for (const Routine& routine : graph.routines()) {
@@ -111,7 +144,7 @@ bool Read(std::string_view text, Graph& graph, std::string* error) {
       for (const json& entry : *variables) {
         Variable variable;
         variable.name = entry.value("name", std::string());
-        ParsePinKind(entry.value("type", std::string("float")), variable.type);
+        ReadType(entry, variable);
         variable.initial = entry.value("initial", json());
         variable.comment = entry.value("comment", std::string());
         loaded.variables().push_back(std::move(variable));

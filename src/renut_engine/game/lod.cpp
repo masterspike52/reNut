@@ -7,6 +7,7 @@
 #include <string>
 
 #include "renut_engine/app/renut_settings.h"
+#include "renut_engine/game/part_api.h"
 
 REX_EXTERN(__imp__sub_82BC3F98);
 REX_EXTERN(__imp__sub_8238D650);
@@ -100,9 +101,10 @@ class ScaledGrassBands {
 
 } // namespace
 
-// BOOL sub_82BC3F98(model, instance, view, ..., double distance_scale, double bias)
+// BOOL sub_82BC3F98(model, instance, view, ..., double distance_scale, double bias). NutTool's shown model keeps
+// its top detail level, as "Max" does: a player model's lower levels can lack parts (its mouth).
 REX_HOOK_RAW(sub_82BC3F98) {
-  ctx.f1.f64 *= LodDistanceScale();
+  ctx.f1.f64 *= renut::game::part_api::ShownRenderInstance(ctx.r4.u32) ? 0.0 : LodDistanceScale();
   __imp__sub_82BC3F98(ctx, base);
 }
 

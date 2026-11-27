@@ -206,6 +206,9 @@ class NodeEditorWindow : public rex::ui::DialogBase {
   std::function<void()> after_saving_;
   bool open_save_prompt_ = false;
 
+  // A variable's starting value is being typed into; the edit settles once nothing is active.
+  bool initial_editing_ = false;
+
   std::string status_;
   bool status_error_ = false;
   double status_time_ = 0.0;
